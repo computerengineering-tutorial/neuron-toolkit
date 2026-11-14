@@ -1,0 +1,28 @@
+{
+  "rule_id": "index_tensor_routing",
+  "description": "Fuses index-based tensor routing and slicing patterns (e.g. Gather with constant index and slice chains) into TensorRoute / IndexSelect",
+  "pattern": {
+    "nodes": [
+      {
+        "id": "gather_node",
+        "op_type": "Gather",
+        "inputs": ["$input_tensor", "$index_const"],
+        "outputs": ["$gathered_out"]
+      }
+    ],
+    "conditions": [
+      {
+        "type": "is_constant",
+        "tensor": "$index_const"
+      }
+    ]
+  },
+  "action": {
+    "type": "fuse_to_function",
+    "op_type": "TensorRoute",
+    "domain": "custom.pytorch",
+    "pytorch_module": "neuron_toolkit.runtime.ops:eval_tensor_route",
+    "inputs": ["$input_tensor"],
+    "outputs": ["$gathered_out"]
+  }
+}

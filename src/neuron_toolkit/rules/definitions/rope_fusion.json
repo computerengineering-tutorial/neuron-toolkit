@@ -1,0 +1,36 @@
+{
+  "rule_id": "rope_fusion",
+  "description": "Fuses 12-node Rotary Position Embedding (RoPE) expansions and intermediate frequency slicing pipelines into a single RotaryEmbedding custom op",
+  "pattern": {
+    "nodes": [
+      {
+        "id": "mul_cos_node",
+        "op_type": "Mul",
+        "inputs": ["$x_slice", "$cos"],
+        "outputs": ["$mul_cos_out"]
+      },
+      {
+        "id": "mul_sin_node",
+        "op_type": "Mul",
+        "inputs": ["$rot_x", "$sin"],
+        "outputs": ["$mul_sin_out"]
+      },
+      {
+        "id": "add_rope_node",
+        "op_type": "Add",
+        "inputs": ["$mul_cos_out", "$mul_sin_out"],
+        "outputs": ["$out"]
+      }
+    ],
+    "conditions": []
+  },
+  "action": {
+    "type": "fuse_to_function",
+    "op_type": "RotaryEmbedding",
+    "domain": "custom.pytorch",
+    "pytorch_module": "torch.nn.modules.RotaryEmbedding",
+    "inputs": ["$x_slice", "$theta"],
+    "outputs": ["$out"],
+    "attributes": {}
+  }
+}

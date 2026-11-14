@@ -1,0 +1,51 @@
+{
+  "rule_id": "groupnorm_fusion",
+  "description": "Fuses 9-node GroupNorm pattern (Reshape to 1 channel -> InstanceNorm -> Reshape back -> Mul scale -> Add bias) into unified GroupNorm op",
+  "pattern": {
+    "nodes": [
+      {
+        "id": "reshape_expand",
+        "op_type": "Reshape",
+        "inputs": ["$x", "$shape_expand"],
+        "outputs": ["$x_1channel"]
+      },
+      {
+        "id": "in_node",
+        "op_type": "InstanceNormalization",
+        "inputs": ["$x_1channel", "$dummy_scale", "$dummy_bias"],
+        "outputs": ["$in_out"]
+      },
+      {
+        "id": "reshape_restore",
+        "op_type": "Reshape",
+        "inputs": ["$in_out", "$shape_orig"],
+        "outputs": ["$restored_out"]
+      },
+      {
+        "id": "mul_node",
+        "op_type": "Mul",
+        "inputs": ["$restored_out", "$affine_scale"],
+        "outputs": ["$mul_out"]
+      },
+      {
+        "id": "add_node",
+        "op_type": "Add",
+        "inputs": ["$mul_out", "$affine_bias"],
+        "outputs": ["$final_out"]
+      }
+    ],
+    "conditions": []
+  },
+  "action": {
+    "type": "fuse_to_function",
+    "op_type": "GroupNorm",
+    "domain": "custom.pytorch",
+    "pytorch_module": "torch.nn.functional.group_norm",
+    "inputs": ["$x", "$affine_scale", "$affine_bias"],
+    "outputs": ["$final_out"],
+    "attributes": {
+      "num_groups": 1,
+      "epsilon": 1e-5
+    }
+  }
+}

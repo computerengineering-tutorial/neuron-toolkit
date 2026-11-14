@@ -478,6 +478,43 @@ class NeuronGraph:
             atol=atol,
         )
 
+    def apply_json_rules(
+        self,
+        rules: list[str] | None = None,
+        mode: str = "function_proto",
+    ) -> NeuronGraph:
+        """Apply declarative JSON pattern rules (Cast folding, GELU fusion, Math collapse)."""
+        from neuron_toolkit.rules.engine import JSONRuleEngine
+
+        engine = JSONRuleEngine(mode=mode)
+        engine.load_rules_from_dir()
+        opt_proto = engine.apply(self, rule_ids=rules)
+        return NeuronGraph(opt_proto)
+
+    def run_pytorch(
+        self,
+        inputs: dict[str, Any],
+        device: str = "cpu",
+    ) -> dict[str, Any]:
+        """Execute graph natively using PyTorch runtime engine."""
+        from neuron_toolkit.runtime.runner import PyTorchRunner
+
+        runner = PyTorchRunner(self, device=device)
+        return runner.run(inputs)
+
+    def cross_verify(
+        self,
+        simplified_graph: NeuronGraph | object | str,
+        inputs: dict[str, Any] | None = None,
+        rtol: float = 1e-4,
+        atol: float = 1e-4,
+    ) -> Any:
+        """Cross-verify numerical outputs between this model (on ORT) and a simplified model (on PyTorch)."""
+        from neuron_toolkit.runtime.cross_verifier import CrossVerifier
+
+        verifier = CrossVerifier(self, simplified_graph, rtol=rtol, atol=atol)
+        return verifier.verify(inputs=inputs)
+
     @property
     def passes(self) -> GraphPasses:
         """Return a namespace for common graph optimization passes."""

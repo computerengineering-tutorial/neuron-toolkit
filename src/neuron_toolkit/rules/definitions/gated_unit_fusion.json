@@ -1,0 +1,30 @@
+{
+  "rule_id": "gated_unit_fusion",
+  "description": "Fuses Attention Gating (Sigmoid -> Mul) into a unified GatedUnit op",
+  "pattern": {
+    "nodes": [
+      {
+        "id": "sigmoid_node",
+        "op_type": "Sigmoid",
+        "inputs": ["$gate"],
+        "outputs": ["$sig_out"]
+      },
+      {
+        "id": "mul_node",
+        "op_type": "Mul",
+        "inputs": ["$x", "$sig_out"],
+        "outputs": ["$out"]
+      }
+    ],
+    "conditions": []
+  },
+  "action": {
+    "type": "fuse_to_function",
+    "op_type": "GatedUnit",
+    "domain": "custom.pytorch",
+    "pytorch_module": "torch.nn.modules.GatedUnit",
+    "inputs": ["$x", "$gate"],
+    "outputs": ["$out"],
+    "attributes": {}
+  }
+}

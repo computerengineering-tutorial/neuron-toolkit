@@ -1,0 +1,66 @@
+{
+  "rule_id": "erf_gelu_fusion",
+  "description": "Fuses 7-node ERF-based GELU expansion (Div -> Erf -> Add -> Mul -> Mul) into a single Gelu function op",
+  "pattern": {
+    "nodes": [
+      {
+        "id": "div_node",
+        "op_type": "Div",
+        "inputs": ["$x", "$c_sqrt2"],
+        "outputs": ["$div_out"]
+      },
+      {
+        "id": "erf_node",
+        "op_type": "Erf",
+        "inputs": ["$div_out"],
+        "outputs": ["$erf_out"]
+      },
+      {
+        "id": "add_node",
+        "op_type": "Add",
+        "inputs": ["$erf_out", "$c_one"],
+        "outputs": ["$add_out"]
+      },
+      {
+        "id": "mul1_node",
+        "op_type": "Mul",
+        "inputs": ["$x", "$add_out"],
+        "outputs": ["$mul1_out"]
+      },
+      {
+        "id": "mul2_node",
+        "op_type": "Mul",
+        "inputs": ["$mul1_out", "$c_half"],
+        "outputs": ["$gelu_out"]
+      }
+    ],
+    "conditions": [
+      {
+        "type": "scalar_approx",
+        "tensor": "$c_sqrt2",
+        "value": 1.41421356,
+        "tolerance": 0.01
+      },
+      {
+        "type": "scalar_approx",
+        "tensor": "$c_one",
+        "value": 1.0,
+        "tolerance": 0.001
+      },
+      {
+        "type": "scalar_approx",
+        "tensor": "$c_half",
+        "value": 0.5,
+        "tolerance": 0.001
+      }
+    ]
+  },
+  "action": {
+    "type": "fuse_to_function",
+    "op_type": "Gelu",
+    "domain": "custom.pytorch",
+    "pytorch_module": "torch.nn.functional.gelu",
+    "inputs": ["$x"],
+    "outputs": ["$gelu_out"]
+  }
+}

@@ -1,0 +1,55 @@
+{
+  "rule_id": "scaled_dot_product_attention_fusion",
+  "version": "1.0",
+  "name": "Scaled Dot-Product Attention Fusion",
+  "description": "Fuses the 14-node attention scaling, transposition, dot-product, softmax, and value projection chain into ScaledDotProductAttention under custom.pytorch domain.",
+  "source_pattern": {
+    "nodes": [
+      {
+        "id": "q_mul",
+        "op_type": "Mul",
+        "inputs": ["Q", "sqrt_scale"],
+        "outputs": ["Q_scaled"]
+      },
+      {
+        "id": "k_trans",
+        "op_type": "Transpose",
+        "inputs": ["K"],
+        "outputs": ["K_trans"]
+      },
+      {
+        "id": "k_mul",
+        "op_type": "Mul",
+        "inputs": ["K_trans", "sqrt_scale"],
+        "outputs": ["K_scaled"]
+      },
+      {
+        "id": "mm_qk",
+        "op_type": "MatMul",
+        "inputs": ["Q_scaled", "K_scaled"],
+        "outputs": ["scores"]
+      },
+      {
+        "id": "sm_matmul",
+        "op_type": "SoftmaxMatMul",
+        "inputs": ["scores", "V"],
+        "outputs": ["Y"]
+      }
+    ],
+    "constraints": [
+      "count_users(scores) == 1",
+      "count_users(Q_scaled) == 1",
+      "count_users(K_scaled) == 1"
+    ]
+  },
+  "target_pattern": {
+    "nodes": [
+      {
+        "op_type": "ScaledDotProductAttention",
+        "domain": "custom.pytorch",
+        "inputs": ["Q", "K", "V"],
+        "outputs": ["Y"]
+      }
+    ]
+  }
+}

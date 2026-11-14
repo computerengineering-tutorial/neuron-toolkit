@@ -1,0 +1,46 @@
+{
+  "rule_id": "split_qkv_fusion",
+  "version": "1.0",
+  "name": "Split QKV Fusion",
+  "description": "Fuses Reshape -> Transpose(perm=[2, 0, 3, 1, 4]) -> Unbind (or Split) into custom.pytorch::SplitQKV, unpacking projected QKV activations into distinct [Q, K, V] tensors.",
+  "source_pattern": {
+    "nodes": [
+      {
+        "id": "reshape",
+        "op_type": "Reshape",
+        "inputs": ["QKV", "shape"],
+        "outputs": ["R"]
+      },
+      {
+        "id": "trans",
+        "op_type": "Transpose",
+        "inputs": ["R"],
+        "outputs": ["T"]
+      },
+      {
+        "id": "unbind",
+        "op_type": "Unbind",
+        "inputs": ["T"],
+        "outputs": ["Q", "K", "V"]
+      }
+    ],
+    "constraints": [
+      "trans.perm == [2, 0, 3, 1, 4]",
+      "count_users(R) == 1",
+      "count_users(T) == 1"
+    ]
+  },
+  "target_pattern": {
+    "nodes": [
+      {
+        "op_type": "SplitQKV",
+        "domain": "custom.pytorch",
+        "inputs": ["QKV"],
+        "outputs": ["Q", "K", "V"],
+        "attributes": {
+          "num_heads": "@inferred_heads"
+        }
+      }
+    ]
+  }
+}

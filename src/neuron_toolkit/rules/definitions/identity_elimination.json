@@ -1,0 +1,28 @@
+{
+  "rule_id": "identity_elimination",
+  "description": "Eliminates redundant identity arithmetic operations (Mul by 1.0, Add with 0.0, Sub with 0.0, Div by 1.0)",
+  "pattern": {
+    "nodes": [
+      {
+        "id": "mul_node",
+        "op_type": "Mul",
+        "inputs": ["$x", "$c_one"],
+        "outputs": ["$out"]
+      }
+    ],
+    "conditions": [
+      {
+        "type": "scalar_approx",
+        "tensor": "$c_one",
+        "value": 1.0,
+        "tolerance": 1e-6
+      }
+    ]
+  },
+  "action": {
+    "type": "replace_op",
+    "op_type": "Identity",
+    "inputs": ["$x"],
+    "outputs": ["$out"]
+  }
+}

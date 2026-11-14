@@ -1,0 +1,26 @@
+{
+  "rule_id": "unbind_fusion",
+  "description": "Fuses Split into multiple singletons followed by Squeeze nodes into a single Unbind custom op",
+  "pattern": {
+    "nodes": [
+      {
+        "id": "split_node",
+        "op_type": "Split",
+        "inputs": ["$x"],
+        "outputs": ["$s0", "$s1", "$s2"]
+      }
+    ],
+    "conditions": []
+  },
+  "action": {
+    "type": "fuse_to_function",
+    "op_type": "Unbind",
+    "domain": "custom.pytorch",
+    "pytorch_module": "torch.unbind",
+    "inputs": ["$x"],
+    "outputs": ["$out0", "$out1", "$out2"],
+    "attributes": {
+      "axis": 0
+    }
+  }
+}

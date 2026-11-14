@@ -1,0 +1,47 @@
+{
+  "rule_id": "instancenorm_1d_fusion",
+  "description": "Fuses 9-node 1D InstanceNorm pattern (Reshape->IN->Reshape->Mul->Add) into a unified InstanceNorm1d node",
+  "pattern": {
+    "nodes": [
+      {
+        "id": "reshape_expand",
+        "op_type": "Reshape",
+        "inputs": ["$x_3d", "$shape_const_expand"],
+        "outputs": ["$x_4d"]
+      },
+      {
+        "id": "in_node",
+        "op_type": "InstanceNormalization",
+        "inputs": ["$x_4d", "$dummy_scale", "$dummy_bias"],
+        "outputs": ["$in_4d_out"]
+      },
+      {
+        "id": "reshape_restore",
+        "op_type": "Reshape",
+        "inputs": ["$in_4d_out", "$shape_orig"],
+        "outputs": ["$restored_3d"]
+      },
+      {
+        "id": "mul_scale",
+        "op_type": "Mul",
+        "inputs": ["$restored_3d", "$affine_scale"],
+        "outputs": ["$scaled_out"]
+      },
+      {
+        "id": "add_bias",
+        "op_type": "Add",
+        "inputs": ["$scaled_out", "$affine_bias"],
+        "outputs": ["$final_out"]
+      }
+    ],
+    "conditions": []
+  },
+  "action": {
+    "type": "fuse_to_function",
+    "op_type": "InstanceNorm1d",
+    "domain": "custom.pytorch",
+    "pytorch_module": "torch.nn.functional.instance_norm",
+    "inputs": ["$x_3d", "$affine_scale", "$affine_bias"],
+    "outputs": ["$final_out"]
+  }
+}

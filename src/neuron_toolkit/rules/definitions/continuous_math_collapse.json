@@ -1,0 +1,27 @@
+{
+  "rule_id": "continuous_math_collapse",
+  "description": "Collapses continuous arithmetic chains (Add, Sub, Mul, Div, Pow) into a unified Math node or folded constant",
+  "pattern": {
+    "nodes": [
+      {
+        "id": "math_op1",
+        "op_type": "Div|Mul|Add|Sub",
+        "inputs": ["$arg1", "$arg2"],
+        "outputs": ["$inter_out"]
+      },
+      {
+        "id": "math_op2",
+        "op_type": "Div|Mul|Add|Sub",
+        "inputs": ["$inter_out", "$arg3"],
+        "outputs": ["$math_out"]
+      }
+    ],
+    "conditions": []
+  },
+  "action": {
+    "type": "math_collapse",
+    "op_type": "Math",
+    "domain": "custom.pytorch",
+    "pytorch_module": "neuron_toolkit.runtime.ops:eval_math_op"
+  }
+}

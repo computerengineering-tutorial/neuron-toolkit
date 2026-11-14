@@ -1,0 +1,25 @@
+{
+  "rule_id": "cast_initializer_folding",
+  "description": "Folds redundant Cast nodes converting FP16 initializers to FP32 directly into the initializer for any consumer op (Conv, Mul, Add, Gemm, MatMul)",
+  "pattern": {
+    "nodes": [
+      {
+        "id": "cast_node",
+        "op_type": "Cast",
+        "inputs": ["$initializer_raw"],
+        "outputs": ["$casted_tensor"]
+      }
+    ],
+    "conditions": [
+      {
+        "type": "is_initializer",
+        "tensor": "$initializer_raw"
+      }
+    ]
+  },
+  "action": {
+    "type": "cast_fold",
+    "target_tensor": "$initializer_raw",
+    "cast_node": "cast_node"
+  }
+}

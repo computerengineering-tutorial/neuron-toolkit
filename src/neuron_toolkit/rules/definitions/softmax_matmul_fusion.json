@@ -1,0 +1,32 @@
+{
+  "rule_id": "softmax_matmul_fusion",
+  "description": "Fuses Attention core (Softmax -> MatMul) into a single SoftmaxMatMul op",
+  "pattern": {
+    "nodes": [
+      {
+        "id": "softmax_node",
+        "op_type": "Softmax",
+        "inputs": ["$scores"],
+        "outputs": ["$probs"]
+      },
+      {
+        "id": "matmul_node",
+        "op_type": "MatMul",
+        "inputs": ["$probs", "$v"],
+        "outputs": ["$out"]
+      }
+    ],
+    "conditions": []
+  },
+  "action": {
+    "type": "fuse_to_function",
+    "op_type": "SoftmaxMatMul",
+    "domain": "custom.pytorch",
+    "pytorch_module": "torch.nn.modules.SoftmaxMatMul",
+    "inputs": ["$scores", "$v"],
+    "outputs": ["$out"],
+    "attributes": {
+      "axis": -1
+    }
+  }
+}

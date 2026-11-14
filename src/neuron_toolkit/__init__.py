@@ -47,6 +47,23 @@ from .pattern import MatchResult, Pattern, PatternDetector, RewriteRule
 from .profiler import ProfilerReport, profile_graph
 from .query import NeuronQuery
 from .rewriter import NeuronRewriter
+from .rules import (
+    JSONRule,
+    JSONRuleEngine,
+    NodePattern,
+    RuleAction,
+    RuleCondition,
+    export_simplified_onnx,
+)
+from .runtime import (
+    CrossVerificationReport,
+    CrossVerifier,
+    OpRegistry,
+    OutputMetric,
+    PyTorchRunner,
+    global_registry,
+    toposort_graph,
+)
 from .viz import to_html, to_mermaid
 
 save_safetensors = export_safetensors
@@ -76,19 +93,27 @@ __all__ = [
     "IRGraph",
     "IRNode",
     "IRTensor",
+    "JSONRule",
+    "JSONRuleEngine",
     "MatchResult",
     "NeuronGraph",
     "NeuronQuery",
     "NeuronRewriter",
     "NeuronToolkitError",
+    "NodePattern",
+    "OpRegistry",
+    "OutputMetric",
     "PassManager",
     "PassStats",
     "Pattern",
     "PatternDetector",
     "PatternMatchError",
     "ProfilerReport",
+    "PyTorchRunner",
     "RewriteError",
     "RewriteRule",
+    "RuleAction",
+    "RuleCondition",
     "TensorMap",
     "VerificationMismatchError",
     "build_onnx_model_from_json",
@@ -97,7 +122,9 @@ __all__ = [
     "export_graph_dict",
     "export_graph_json",
     "export_safetensors",
+    "export_simplified_onnx",
     "from_json",
+    "global_registry",
     "load_graph_from_json",
     "load_safetensors",
     "profile_graph",
@@ -106,4 +133,7 @@ __all__ = [
     "to_html",
     "to_json",
     "to_mermaid",
+    "toposort_graph",
+    "CrossVerificationReport",
+    "CrossVerifier",
 ]

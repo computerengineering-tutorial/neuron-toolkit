@@ -1,0 +1,10 @@
+{
+  "rule_id": "common_subexpression_elimination",
+  "description": "Deduplicates redundant deterministic subexpressions (Constant, Shape, Gather, Unsqueeze, Concat, Squeeze, Slice, Cast, Reshape) and performs dead code elimination",
+  "pattern": {
+    "nodes": []
+  },
+  "action": {
+    "type": "deduplicate_subexpressions"
+  }
+}

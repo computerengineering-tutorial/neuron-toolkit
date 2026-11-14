@@ -1,0 +1,96 @@
+"""Schema definitions for declarative JSON pattern rules."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Any
+
+
+@dataclass
+class NodePattern:
+    """Pattern specification for a single node inside a subgraph."""
+
+    id: str
+    op_type: str
+    inputs: list[str] = field(default_factory=list)
+    outputs: list[str] = field(default_factory=list)
+    attributes: dict[str, Any] = field(default_factory=dict)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> NodePattern:
+        return cls(
+            id=data["id"],
+            op_type=data.get("op_type", "*"),
+            inputs=list(data.get("inputs", [])),
+            outputs=list(data.get("outputs", [])),
+            attributes=dict(data.get("attributes", {})),
+        )
+
+
+@dataclass
+class RuleCondition:
+    """Predicate condition on tensors, shapes, constants, or dtypes."""
+
+    condition_type: str  # 'is_initializer', 'dtype_eq', 'scalar_approx', 'is_constant'
+    tensor: str  # Binding variable e.g. '$weight_in'
+    value: Any = None
+    tolerance: float = 1e-4
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> RuleCondition:
+        return cls(
+            condition_type=data.get("type", "is_initializer"),
+            tensor=data.get("tensor", ""),
+            value=data.get("value"),
+            tolerance=float(data.get("tolerance", 1e-4)),
+        )
+
+
+@dataclass
+class RuleAction:
+    """Action definition for graph replacement and rewriting."""
+
+    action_type: str  # 'fuse_to_function', 'cast_fold', 'math_collapse', 'replace_op'
+    op_type: str = ""
+    domain: str = "custom.pytorch"
+    pytorch_module: str = ""
+    inputs: list[str] = field(default_factory=list)
+    outputs: list[str] = field(default_factory=list)
+    attributes: dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> RuleAction:
+        return cls(
+            action_type=data.get("type", "replace_op"),
+            op_type=data.get("op_type", ""),
+            domain=data.get("domain", "custom.pytorch"),
+            pytorch_module=data.get("pytorch_module", ""),
+            inputs=list(data.get("inputs", [])),
+            outputs=list(data.get("outputs", [])),
+            attributes=dict(data.get("attributes", {})),
+            metadata=dict(data.get("metadata", {})),
+        )
+
+
+@dataclass
+class JSONRule:
+    """Declarative rewrite rule loaded from JSON."""
+
+    rule_id: str
+    description: str
+    nodes: list[NodePattern]
+    conditions: list[RuleCondition] = field(default_factory=list)
+    action: RuleAction = field(default_factory=lambda: RuleAction("replace_op"))
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> JSONRule:
+        return cls(
+            rule_id=data.get("rule_id", "unnamed_rule"),
+            description=data.get("description", ""),
+            nodes=[NodePattern.from_dict(n) for n in data.get("pattern", {}).get("nodes", [])],
+            conditions=[
+                RuleCondition.from_dict(c) for c in data.get("pattern", {}).get("conditions", [])
+            ],
+            action=RuleAction.from_dict(data.get("action", {})),
+        )
