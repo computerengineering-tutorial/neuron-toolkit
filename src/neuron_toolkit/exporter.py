@@ -159,9 +159,7 @@ def compute_weight_stats(tensor: Any) -> dict[str, Any]:
             "min": None,
             "max": None,
             "std": None,
-            "zeros_count": int(np.count_nonzero(arr == 0))
-            if arr.dtype == bool
-            else 0,
+            "zeros_count": int(np.count_nonzero(arr == 0)) if arr.dtype == bool else 0,
             "zero_fraction": 0.0,
             "has_nan": False,
             "has_inf": False,
@@ -304,16 +302,19 @@ def export_graph_dict(source: Any) -> dict[str, Any]:
         quant_info = getattr(backend, "quantization_info", None)
         sparse_info = getattr(backend, "sparsity_info", None)
         try:
-            full_shapes = _extract_tflite_full_shapes(
-                subgraph, quant_info, sparse_info
-            )
+            full_shapes = _extract_tflite_full_shapes(subgraph, quant_info, sparse_info)
         except Exception as exc:
             log.debug("Could not extract full TFLite shapes: %s", exc)
 
     # Enrich full_shapes with tensor_map shapes and basic shape_info
     for name, (rank, dtype) in shape_info_basic.items():
         if name not in full_shapes:
-            full_shapes[name] = {"name": name, "shape": None, "rank": rank, "dtype": dtype}
+            full_shapes[name] = {
+                "name": name,
+                "shape": None,
+                "rank": rank,
+                "dtype": dtype,
+            }
 
     # 2. Extract and analyze all weight initializers
     weights_summary_list: list[dict[str, Any]] = []
@@ -367,7 +368,9 @@ def export_graph_dict(source: Any) -> dict[str, Any]:
 
     # 4. Extract Nodes
     nodes_list: list[dict[str, Any]] = []
-    node_output_producer: dict[str, tuple[str, int]] = {}  # tensor_name -> (node_id, output_idx)
+    node_output_producer: dict[
+        str, tuple[str, int]
+    ] = {}  # tensor_name -> (node_id, output_idx)
 
     for idx, node in enumerate(nodes_raw):
         op_type = getattr(node, "op_type", "Unknown")
@@ -389,9 +392,7 @@ def export_graph_dict(source: Any) -> dict[str, Any]:
         sanitized_attrs = _sanitize_for_json(attrs_raw)
 
         # Inputs and Outputs
-        node_inputs: list[str] = [
-            str(inp) for inp in getattr(node, "input", []) if inp
-        ]
+        node_inputs: list[str] = [str(inp) for inp in getattr(node, "input", []) if inp]
         node_outputs: list[str] = [
             str(out) for out in getattr(node, "output", []) if out
         ]
@@ -435,8 +436,12 @@ def export_graph_dict(source: Any) -> dict[str, Any]:
             zp_name = node_inputs[2] if len(node_inputs) >= 3 else None
             zp_val = tensor_map.get(zp_name) if zp_name else None
             node_quantization = {
-                "scale": _sanitize_for_json(scale_val) if scale_val is not None else scale_name,
-                "zero_point": _sanitize_for_json(zp_val) if zp_val is not None else zp_name,
+                "scale": _sanitize_for_json(scale_val)
+                if scale_val is not None
+                else scale_name,
+                "zero_point": _sanitize_for_json(zp_val)
+                if zp_val is not None
+                else zp_name,
                 "axis": sanitized_attrs.get("axis", 1),
             }
 
@@ -692,20 +697,20 @@ def load_safetensors(path: str) -> dict[str, np.ndarray]:
 
 
 _NP_DTYPE_TO_ONNX: dict[str, int] = {
-    "float32": 1,   # TensorProto.FLOAT
-    "uint8": 2,     # TensorProto.UINT8
-    "int8": 3,      # TensorProto.INT8
-    "uint16": 4,    # TensorProto.UINT16
-    "int16": 5,     # TensorProto.INT16
-    "int32": 6,     # TensorProto.INT32
-    "int64": 7,     # TensorProto.INT64
-    "string": 8,    # TensorProto.STRING
-    "object": 8,    # TensorProto.STRING
-    "bool": 9,      # TensorProto.BOOL
+    "float32": 1,  # TensorProto.FLOAT
+    "uint8": 2,  # TensorProto.UINT8
+    "int8": 3,  # TensorProto.INT8
+    "uint16": 4,  # TensorProto.UINT16
+    "int16": 5,  # TensorProto.INT16
+    "int32": 6,  # TensorProto.INT32
+    "int64": 7,  # TensorProto.INT64
+    "string": 8,  # TensorProto.STRING
+    "object": 8,  # TensorProto.STRING
+    "bool": 9,  # TensorProto.BOOL
     "float16": 10,  # TensorProto.FLOAT16
     "float64": 11,  # TensorProto.DOUBLE
-    "uint32": 12,   # TensorProto.UINT32
-    "uint64": 13,   # TensorProto.UINT64
+    "uint32": 12,  # TensorProto.UINT32
+    "uint64": 13,  # TensorProto.UINT64
     "complex64": 14,  # TensorProto.COMPLEX64
     "complex128": 15,  # TensorProto.COMPLEX128
     "bfloat16": 16,  # TensorProto.BFLOAT16
@@ -840,7 +845,9 @@ def build_onnx_model_from_json(
         for k, v in raw_attrs.items():
             if op_type == "Constant" and k == "value":
                 if isinstance(v, (list, np.ndarray)):
-                    cleaned_attrs[k] = numpy_helper.from_array(np.asarray(v), name="value")
+                    cleaned_attrs[k] = numpy_helper.from_array(
+                        np.asarray(v), name="value"
+                    )
                 elif isinstance(v, dict) and v.get("type") == "ndarray":
                     shape = v.get("shape", [1])
                     dtype = v.get("dtype", "float32")
@@ -1070,9 +1077,7 @@ def build_tflite_model_from_json(
         code_idx = op_type_to_code_idx[op_type]
 
         node_inputs = [
-            tensor_to_idx[inp]
-            for inp in node.get("inputs", [])
-            if inp in tensor_to_idx
+            tensor_to_idx[inp] for inp in node.get("inputs", []) if inp in tensor_to_idx
         ]
         node_outputs = [
             tensor_to_idx[out]
@@ -1189,15 +1194,21 @@ def load_graph_from_json(
 
     model_type = None
     if isinstance(json_source, dict):
-        model_type = json_source.get("model_type") or json_source.get("metadata", {}).get("model_type")
+        model_type = json_source.get("model_type") or json_source.get(
+            "metadata", {}
+        ).get("model_type")
     elif isinstance(json_source, str) and json_source.strip().startswith("{"):
         with contextlib.suppress(Exception):
             parsed = json.loads(json_source)
-            model_type = parsed.get("model_type") or parsed.get("metadata", {}).get("model_type")
+            model_type = parsed.get("model_type") or parsed.get("metadata", {}).get(
+                "model_type"
+            )
     elif isinstance(json_source, str):
         with contextlib.suppress(Exception):
             parsed = json.loads(Path(json_source).read_text(encoding="utf-8"))
-            model_type = parsed.get("model_type") or parsed.get("metadata", {}).get("model_type")
+            model_type = parsed.get("model_type") or parsed.get("metadata", {}).get(
+                "model_type"
+            )
 
     if model_type == "tflite":
         tflite_bytes = build_tflite_model_from_json(
@@ -1213,4 +1224,3 @@ def load_graph_from_json(
         seed=seed,
     )
     return NeuronGraph(model_proto, **kwargs)
-

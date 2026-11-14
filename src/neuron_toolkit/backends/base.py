@@ -66,12 +66,13 @@ class BaseParser(ABC):
 
         return export_graph_json(self, path=path, indent=indent)
 
-    def save_safetensors(self, path: str, metadata: dict[str, str] | None = None) -> None:
+    def save_safetensors(
+        self, path: str, metadata: dict[str, str] | None = None
+    ) -> None:
         """Save model weight and parameter tensors into a .safetensors file."""
         from neuron_toolkit.exporter import export_safetensors
 
         export_safetensors(self, path, metadata=metadata)
-
 
     def replace_weights(
         self,

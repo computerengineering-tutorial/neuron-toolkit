@@ -25,6 +25,7 @@ print(f"Querying across {q.count()} nodes.")
 Filtering methods return a new cloned `NeuronQuery` instance, allowing seamless method chaining:
 
 ### By Operator Type
+
 ```python
 # Select all Conv operators
 convs = graph.query().op("Conv")
@@ -34,6 +35,7 @@ bns = graph.query().op("BatchNormalization")
 ```
 
 ### By Node Name
+
 ```python
 # Substring match (case-insensitive by default)
 backbone_nodes = graph.query().name("layer1")
@@ -43,6 +45,7 @@ stem_conv = graph.query().name("conv1_relu", exact=True)
 ```
 
 ### By Attributes
+
 ```python
 # Filter by attribute existence or specific value
 grouped_convs = graph.query().op("Conv").attr("group", 1)
@@ -54,6 +57,7 @@ dilated_convs = graph.query().op("Conv").attr(
 ```
 
 ### By Tensor Shape & Data Type
+
 ```python
 # Filter nodes whose primary output has rank 4:
 rank4_nodes = graph.query().rank(4)
@@ -63,12 +67,14 @@ fp16_nodes = graph.query().dtype("float16")
 ```
 
 ### Custom Predicate Filtering
+
 ```python
 # Arbitrary lambda or function predicate:
 multi_input_nodes = graph.query().filter(lambda n: len(n.input) > 2)
 ```
 
 ### Parameter Presence
+
 ```python
 # Filter nodes that own weight / bias initializer tensors:
 nodes_with_weights = graph.query().has_params()

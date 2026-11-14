@@ -13,7 +13,9 @@ from neuron_toolkit import Pattern
 ```
 
 ### Specific Operators (`Pattern.op`)
+
 Specify an operator type and its upstream inputs:
+
 ```python
 # Match a Relu node consuming any input:
 relu_pat = Pattern.op("Relu", Pattern.any())
@@ -24,13 +26,17 @@ bn = Pattern.op("BatchNormalization", conv)
 ```
 
 ### Wildcards (`Pattern.any`)
+
 Matches any node regardless of op_type:
+
 ```python
 wildcard = Pattern.any()
 ```
 
 ### Constant Matching (`Pattern.const`)
+
 Matches weight initializers or constant tensors:
+
 ```python
 # Match a constant float value 0.5:
 half_const = Pattern.const(0.5)
@@ -40,7 +46,9 @@ add_one = Pattern.op("Add", Pattern.any(), Pattern.const(1.0))
 ```
 
 ### Alternative Branches (`Pattern.any_of`)
+
 Matches any one of multiple alternative subgraphs:
+
 ```python
 # Match either Relu or LeakyRelu:
 act_pat = Pattern.any_of(Pattern.op("Relu"), Pattern.op("LeakyRelu"))
@@ -51,20 +59,25 @@ act_pat = Pattern.any_of(Pattern.op("Relu"), Pattern.op("LeakyRelu"))
 ## 2. Captures & Constraints
 
 ### Named Captures (`.capture`)
+
 Bind specific matched nodes to named variables for downstream inspection or rewriting:
+
 ```python
 conv_node = Pattern.op("Conv", Pattern.any()).capture("conv_layer")
 bn_node = Pattern.op("BatchNormalization", conv_node).capture("bn_layer")
 ```
 
 ### Attribute Constraints (`.where`)
+
 Match nodes only if their attributes satisfy specific criteria:
+
 ```python
 # Match Conv where group == 1 and dilations == [1, 1]
 standard_conv = Pattern.op("Conv").where(group=1, dilations=[1, 1])
 ```
 
 ### Output Shape & Dtype Constraints
+
 ```python
 # Match a node producing a 4D float32 tensor:
 pat = (
@@ -156,6 +169,7 @@ for m in matches:
 ## 6. Commutative Matching & Diamond DAG Patterns
 
 ### Commutative Matching
+
 Binary operations like `Add`, `Mul`, `Equal`, `And`, `Or`, `Xor`, `BitwiseAnd`, `BitwiseOr`, `BitwiseXor`, `Maximum`, and `Minimum` can have their inputs in either order in real-world graphs. `Pattern.commutative(...)` automatically matches regardless of operand ordering:
 
 ```python
@@ -164,4 +178,5 @@ pat = Pattern.commutative("Add", Pattern.any().capture("x"), Pattern.const(1.0))
 ```
 
 ### Diamond DAG Multi-Branch Consistency
+
 When pattern matching split-and-merge topologies (such as residual add blocks `Add(Conv(x), x)`), any named capture `.capture("x")` used across multiple branches is guaranteed to bind to the identical node instance across both branches. If the branches originate from different nodes, the pattern matcher automatically rejects the match, preventing false-positive cross-branch matches.

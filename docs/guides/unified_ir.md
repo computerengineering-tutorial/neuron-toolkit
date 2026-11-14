@@ -24,7 +24,9 @@ print(f"Total IR Tensors: {len(ir.tensors)}")
 ## 2. Inspecting Nodes and Tensors
 
 ### `IRNode`
+
 Represents an operation in the graph:
+
 ```python
 node = ir.nodes[0]
 print(node.op_type)     # e.g., "Conv"
@@ -34,7 +36,9 @@ print(node.attributes)  # {'kernel_shape': [3, 3], 'pads': [1, 1, 1, 1]}
 ```
 
 ### `IRTensor`
+
 Represents activations or weight parameters:
+
 ```python
 tensor = ir.tensors["W_conv"]
 print(tensor.shape)          # (64, 3, 3, 3)

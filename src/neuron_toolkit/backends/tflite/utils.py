@@ -53,8 +53,6 @@ def _init_opt_mappings() -> None:
         pass
 
 
-
-
 _EMPTY_OPTIONS_CLASSES: set[str] = {
     "ATan2Options",
     "AbsOptions",

@@ -347,7 +347,9 @@ def test_pytorch_comparison(complex_tflite_model):
         _is_tflite_runnable,
     )
 
-    assert _is_tflite_runnable(), "LiteRT/TFLite interpreter must be available and runnable"
+    assert _is_tflite_runnable(), (
+        "LiteRT/TFLite interpreter must be available and runnable"
+    )
     assert _get_tflite_interpreter_cls() is not None
 
     graph = NeuronGraph(complex_tflite_model)
@@ -452,7 +454,9 @@ def test_verifier_decorator_handles_failure(complex_model):
     graph = NeuronGraph(complex_model)
 
     # Intentionally give nonexistent start/end points
-    @graph.verify_against_pytorch(start_points="nonexistent_start", end_points="nonexistent_end")
+    @graph.verify_against_pytorch(
+        start_points="nonexistent_start", end_points="nonexistent_end"
+    )
     def dummy_func(x):
         return x
 
@@ -461,4 +465,3 @@ def test_verifier_decorator_handles_failure(complex_model):
 
     assert hasattr(dummy_func, "similarity_report")
     assert "error" in dummy_func.similarity_report
-

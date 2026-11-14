@@ -20,9 +20,6 @@ if TYPE_CHECKING:
 log = logging.getLogger("neuron_toolkit.graph")
 
 
-
-
-
 class NeuronGraph:
     """Unified interface for a model graph (ONNX or TFLite)."""
 
@@ -265,9 +262,7 @@ class NeuronGraph:
             self.nodes, self.tensor_map, self.shape_info, backend=self._backend
         )
 
-    def apply_rules(
-        self, rules: Any, max_iterations: int = 10
-    ) -> NeuronGraph:
+    def apply_rules(self, rules: Any, max_iterations: int = 10) -> NeuronGraph:
         """Apply declarative RewriteRules iteratively until fixed point or max_iterations."""
         from neuron_toolkit.pattern.rules import RewriteRule
 
@@ -291,6 +286,34 @@ class NeuronGraph:
             current_graph = rewriter.build_graph()
 
         return current_graph
+
+    def equality_saturation(
+        self,
+        rules: Any = None,
+        cost_model: Any = None,
+        max_iterations: int = 10,
+        node_limit: int = 5000,
+    ) -> tuple[Any, dict[str, Any]]:
+        """Apply equality saturation using E-Graphs and extract the optimal IRGraph.
+
+        Returns:
+            A tuple of (optimal_ir_graph, saturation_stats).
+        """
+        from neuron_toolkit.egraph import EGraph, Extractor, saturate
+
+        ir = self.to_ir()
+        egraph, tensor_map = EGraph.from_ir(ir)
+        stats = saturate(
+            egraph, rules=rules, max_iterations=max_iterations, node_limit=node_limit
+        )
+
+        root_ids = [tensor_map[out] for out in self.outputs if out in tensor_map]
+        extractor = Extractor(egraph, cost_model=cost_model)
+        graph_name = getattr(self, "name", getattr(ir, "name", "model"))
+        optimal_ir = extractor.extract_to_ir(
+            root_ids, graph_name=f"{graph_name}_optimized"
+        )
+        return optimal_ir, stats
 
     def slice(
         self,
@@ -359,11 +382,23 @@ class NeuronGraph:
 
         return export_graph_json(self, path=path, indent=indent)
 
-    def save_safetensors(self, path: str, metadata: dict[str, str] | None = None) -> None:
+    def save_safetensors(
+        self, path: str, metadata: dict[str, str] | None = None
+    ) -> None:
         """Save model weight and parameter tensors into a .safetensors file."""
         from neuron_toolkit.exporter import export_safetensors
 
         export_safetensors(self, path, metadata=metadata)
+
+    def profile(
+        self,
+        device: str | Any = "a100",
+        dtype: str = "float16",
+    ) -> Any:
+        """Profile FLOPs, MACs, active working set memory, and Roofline latency bounds."""
+        from neuron_toolkit.profiler import profile_graph
+
+        return profile_graph(self, device=device, dtype=dtype)
 
     def load_safetensors(
         self,
@@ -588,4 +623,32 @@ class GraphPasses:
         from neuron_toolkit.passes import ConstantFolding
 
         new_g, _ = ConstantFolding().run(self.graph)
+        return new_g
+
+    def fuse_rmsnorm(self) -> NeuronGraph:
+        """Apply FuseRMSNorm pass."""
+        from neuron_toolkit.passes import FuseRMSNorm
+
+        new_g, _ = FuseRMSNorm().run(self.graph)
+        return new_g
+
+    def fuse_swiglu(self) -> NeuronGraph:
+        """Apply FuseSwiGLU pass."""
+        from neuron_toolkit.passes import FuseSwiGLU
+
+        new_g, _ = FuseSwiGLU().run(self.graph)
+        return new_g
+
+    def fuse_attention(self) -> NeuronGraph:
+        """Apply FuseAttention pass."""
+        from neuron_toolkit.passes import FuseAttention
+
+        new_g, _ = FuseAttention().run(self.graph)
+        return new_g
+
+    def fuse_rope(self) -> NeuronGraph:
+        """Apply FuseRotaryEmbedding pass."""
+        from neuron_toolkit.passes import FuseRotaryEmbedding
+
+        new_g, _ = FuseRotaryEmbedding().run(self.graph)
         return new_g

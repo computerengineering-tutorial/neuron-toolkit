@@ -133,9 +133,7 @@ class GraphVerifier:
         else:  # TFLite
             InterpreterCls = _get_tflite_interpreter_cls()
             if InterpreterCls is None:
-                msg = (
-                    "LiteRT / TFLite interpreter is not available or not usable on this CPU."
-                )
+                msg = "LiteRT / TFLite interpreter is not available or not usable on this CPU."
                 raise RuntimeError(msg)
 
             model_bytes = sliced_graph._backend.source

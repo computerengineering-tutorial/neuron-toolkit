@@ -38,7 +38,8 @@ optimized_graph, stats = pm.run(graph)
 print(stats.summary())
 ```
 
-### Summary Output Example:
+### Summary Output Example
+
 ```text
 PassManager Execution Summary:
   Initial node count: 120
@@ -53,19 +54,27 @@ PassManager Execution Summary:
 ```
 
 ### Direct Graph Pass Calls (`graph.passes`)
+
 For quick, single-pass transformations without manually instantiating `PassManager`, use the `graph.passes` namespace:
 
 ```python
-# Apply individual passes directly:
+# Apply standard optimization passes:
 g1 = graph.passes.const_fold()
 g2 = g1.passes.cse()
 g3 = g2.passes.fuse_gelu()
 g4 = g3.passes.fuse_layer_norm()
 g5 = g4.passes.fuse_conv_act()
 g6 = g5.passes.dce()
+
+# Apply transformer & LLM passes (see guides/transformer_passes.md):
+g_llm = graph.passes.fuse_rmsnorm()
+g_llm = g_llm.passes.fuse_swiglu()
+g_llm = g_llm.passes.fuse_attention()
+g_llm = g_llm.passes.fuse_rope()
 ```
 
 ### One-Line Pipeline (`graph.optimize`)
+
 ```python
 # Automatically runs standard optimization passes
 opt_graph, stats = graph.optimize()
@@ -110,7 +119,9 @@ rw = graph.rewriter()
 ```
 
 ### Replacing Nodes
+
 Replace one or more existing nodes with a new operator:
+
 ```python
 old_add = graph.query().name("add1", exact=True).single_node
 
@@ -126,7 +137,9 @@ new_graph = rw.build_graph(output_path="modified_model.onnx")
 ```
 
 ### Deleting Nodes
+
 Completely remove obsolete or dead nodes from the graph:
+
 ```python
 orphan_dropout = graph.query().op("Dropout").all()
 rw.delete(orphan_dropout)
@@ -134,7 +147,9 @@ new_graph = rw.build_graph()
 ```
 
 ### Inserting Nodes
+
 Insert a preprocessing or activation node before a target layer:
+
 ```python
 target_conv = graph.query().name("conv2", exact=True).single_node
 

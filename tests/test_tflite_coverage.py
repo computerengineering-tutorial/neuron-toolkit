@@ -55,7 +55,9 @@ def test_all_tflite_options_files_exist(tflite_all_options: set[str]):
         if not file_path.is_file():
             missing_files.append(f"{opt_name}.py")
 
-    assert not missing_files, f"Options files missing in tflite package: {missing_files}"
+    assert not missing_files, (
+        f"Options files missing in tflite package: {missing_files}"
+    )
 
 
 def test_every_active_option_has_parser_function(tflite_all_options: set[str]):
@@ -84,7 +86,9 @@ def test_all_parser_functions_callable_and_safe(tflite_all_options: set[str]):
 
         # Test direct function
         none_res = parse_tflite_builtin_options(opt_name, None)
-        assert none_res == {}, f"parse_tflite_builtin_options({opt_name}, None) did not return empty dict"
+        assert none_res == {}, (
+            f"parse_tflite_builtin_options({opt_name}, None) did not return empty dict"
+        )
 
         # Test with mock options
         try:
@@ -92,7 +96,9 @@ def test_all_parser_functions_callable_and_safe(tflite_all_options: set[str]):
             assert isinstance(res, dict)
             tested_count += 1
         except Exception as e:
-            pytest.fail(f"parse_tflite_builtin_options({opt_name}, mock_options) failed with exception: {e}")
+            pytest.fail(
+                f"parse_tflite_builtin_options({opt_name}, mock_options) failed with exception: {e}"
+            )
 
     assert tested_count > 0, "No active parser functions were tested"
 
@@ -110,10 +116,14 @@ def test_empty_options_return_empty_dict(tflite_all_options: set[str]):
 
         # Set the option type
         if hasattr(tflite.BuiltinOptions, opt_name):
-            op_mock.BuiltinOptionsType.return_value = getattr(tflite.BuiltinOptions, opt_name)
+            op_mock.BuiltinOptionsType.return_value = getattr(
+                tflite.BuiltinOptions, opt_name
+            )
         elif hasattr(tflite.BuiltinOptions2, opt_name):
             op_mock.BuiltinOptionsType.return_value = 0
-            op_mock.BuiltinOptions2Type.return_value = getattr(tflite.BuiltinOptions2, opt_name)
+            op_mock.BuiltinOptions2Type.return_value = getattr(
+                tflite.BuiltinOptions2, opt_name
+            )
 
         attrs = _get_tflite_attr(op_mock, opt_name)
         assert attrs == {}, f"Empty option {opt_name} returned non-empty attrs: {attrs}"
@@ -134,7 +144,16 @@ def test_tflite_builtin_operators_coverage():
     builtin_op_map = {v: k for k, v in builtin_operators.items()}
 
     # Check that common and modern TFLite operators are present in map
-    critical_ops = ["ADD", "SUB", "MUL", "DIV", "CONV_2D", "DEPTHWISE_CONV_2D", "RESHAPE", "SOFTMAX"]
+    critical_ops = [
+        "ADD",
+        "SUB",
+        "MUL",
+        "DIV",
+        "CONV_2D",
+        "DEPTHWISE_CONV_2D",
+        "RESHAPE",
+        "SOFTMAX",
+    ]
     for op in critical_ops:
         code = builtin_operators.get(op)
         assert code is not None, f"Operator {op} missing from BuiltinOperator"

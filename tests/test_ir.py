@@ -11,7 +11,9 @@ from neuron_toolkit.ir import IRGraph, IRNode, IRTensor, ONNXAdapter, TFLiteAdap
 def create_sample_onnx() -> onnx.ModelProto:
     x = helper.make_tensor_value_info("X", TensorProto.FLOAT, [1, 4])
     y = helper.make_tensor_value_info("Y", TensorProto.FLOAT, [1, 4])
-    w = helper.make_tensor("W", TensorProto.FLOAT, [4, 4], np.eye(4, dtype=np.float32).flatten())
+    w = helper.make_tensor(
+        "W", TensorProto.FLOAT, [4, 4], np.eye(4, dtype=np.float32).flatten()
+    )
 
     matmul = helper.make_node("MatMul", ["X", "W"], ["mm_out"], name="matmul0")
     relu = helper.make_node("Relu", ["mm_out"], ["Y"], name="relu0")
@@ -110,7 +112,9 @@ def test_ir_topological_sort_failure_and_quant_params():
     ir.inputs = ["in_val"]
 
     # node1 requires "unproduced_val" which is neither input nor initializer
-    node1 = IRNode(op_type="Relu", name="n1", inputs=["unproduced_val"], outputs=["out1"])
+    node1 = IRNode(
+        op_type="Relu", name="n1", inputs=["unproduced_val"], outputs=["out1"]
+    )
     ir.add_node(node1)
 
     assert ir.is_topologically_sorted() is False
@@ -126,4 +130,7 @@ def test_ir_topological_sort_failure_and_quant_params():
     ir.add_tensor(tensor)
     d = ir.to_dict()
     rebuilt = IRGraph.from_dict(d)
-    assert rebuilt.tensors["QWeight"].quant_params == {"scale": [0.05], "zero_point": [128]}
+    assert rebuilt.tensors["QWeight"].quant_params == {
+        "scale": [0.05],
+        "zero_point": [128],
+    }

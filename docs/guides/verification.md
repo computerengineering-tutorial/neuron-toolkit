@@ -25,7 +25,9 @@ print(f"Sliced subgraph nodes: {len(sliced_graph.nodes)}")
 ```
 
 ### Slicing a Single Node
+
 Extract an isolated node (e.g. for micro-benchmarking or debugging):
+
 ```python
 single_node_model = graph.slice_node("layer2.0.conv1", output_path="isolated_conv.onnx")
 ```

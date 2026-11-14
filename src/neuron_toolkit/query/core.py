@@ -440,7 +440,6 @@ class NeuronQuery:
         """Alias for match_results — find all pattern matches."""
         return self.match_results(pattern)
 
-
     def replace(
         self,
         pattern: Pattern,

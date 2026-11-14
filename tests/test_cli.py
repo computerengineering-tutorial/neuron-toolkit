@@ -138,4 +138,7 @@ def test_cli_optimize_unknown_pass(tmp_path):
     with patch("sys.stdout", new_callable=StringIO) as mock_out:
         ret = main(["optimize", p, "--passes", "nonexistent_pass_xyz"])
         assert ret == 0
-        assert "Warning: Unknown pass 'nonexistent_pass_xyz', skipping." in mock_out.getvalue()
+        assert (
+            "Warning: Unknown pass 'nonexistent_pass_xyz', skipping."
+            in mock_out.getvalue()
+        )

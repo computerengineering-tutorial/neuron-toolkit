@@ -38,10 +38,14 @@ def optimize_command(args: argparse.Namespace) -> int:
         CommonSubexpressionElimination,
         ConstantFolding,
         DeadCodeElimination,
+        FuseAttention,
         FuseConvActivation,
         FuseConvBN,
         FuseGELU,
         FuseLayerNorm,
+        FuseRMSNorm,
+        FuseRotaryEmbedding,
+        FuseSwiGLU,
         PassManager,
     )
 
@@ -63,6 +67,15 @@ def optimize_command(args: argparse.Namespace) -> int:
         "fuse_layernorm": FuseLayerNorm(),
         "conv_act": FuseConvActivation(),
         "fuse_conv_act": FuseConvActivation(),
+        "fuse_rmsnorm": FuseRMSNorm(),
+        "rmsnorm": FuseRMSNorm(),
+        "fuse_swiglu": FuseSwiGLU(),
+        "swiglu": FuseSwiGLU(),
+        "fuse_attention": FuseAttention(),
+        "attention": FuseAttention(),
+        "sdpa": FuseAttention(),
+        "fuse_rope": FuseRotaryEmbedding(),
+        "rope": FuseRotaryEmbedding(),
     }
 
     for p in requested_passes:
@@ -87,7 +100,9 @@ def diff_command(args: argparse.Namespace) -> int:
     g2 = NeuronGraph.load(args.model2)
 
     print(f"Diff: {args.model1} -> {args.model2}")
-    print(f"  Node count: {len(g1.nodes)} -> {len(g2.nodes)} ({len(g2.nodes) - len(g1.nodes):+d})")
+    print(
+        f"  Node count: {len(g1.nodes)} -> {len(g2.nodes)} ({len(g2.nodes) - len(g1.nodes):+d})"
+    )
     print(f"  Inputs:     {g1.inputs} -> {g2.inputs}")
     print(f"  Outputs:    {g1.outputs} -> {g2.outputs}")
 
@@ -116,7 +131,6 @@ def export_command(args: argparse.Namespace) -> int:
     fmt = args.format.lower()
 
     if fmt == "json":
-
         data = graph.to_json() or ""
         if args.output:
             Path(args.output).write_text(data, encoding="utf-8")
@@ -139,8 +153,39 @@ def export_command(args: argparse.Namespace) -> int:
         graph.save_safetensors(out)
         print(f"Exported weights to Safetensors file: {out}")
     else:
-        print(f"Error: Unknown format '{fmt}'. Choose from json, html, mermaid, safetensors.")
+        print(
+            f"Error: Unknown format '{fmt}'. Choose from json, html, mermaid, safetensors."
+        )
         return 1
+
+    return 0
+
+
+def profile_command(args: argparse.Namespace) -> int:
+    """Profile FLOPs, MACs, memory timeline, and Roofline latency bounds."""
+    import json
+
+    from neuron_toolkit.profiler import profile_graph
+
+    graph = NeuronGraph.load(args.model_path)
+    report = profile_graph(graph, device=args.device, dtype=args.dtype)
+
+    if args.format == "json":
+        data = json.dumps(report.to_dict(), indent=2)
+        if args.output:
+            Path(args.output).write_text(data, encoding="utf-8")
+            print(f"Saved JSON profile to {args.output}")
+        else:
+            print(data)
+    elif args.format == "markdown":
+        md = report.to_markdown()
+        if args.output:
+            Path(args.output).write_text(md, encoding="utf-8")
+            print(f"Saved Markdown profile to {args.output}")
+        else:
+            print(md)
+    else:
+        print(report.summary())
 
     return 0
 
@@ -154,30 +199,72 @@ def main(argv: Sequence[str] | None = None) -> int:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     # Inspect
-    p_inspect = subparsers.add_parser("inspect", help="Inspect model graph topology and statistics.")
-    p_inspect.add_argument("model_path", help="Path to ONNX, TFLite, or JSON graph file.")
+    p_inspect = subparsers.add_parser(
+        "inspect", help="Inspect model graph topology and statistics."
+    )
+    p_inspect.add_argument(
+        "model_path", help="Path to ONNX, TFLite, or JSON graph file."
+    )
+
+    # Profile
+    p_profile = subparsers.add_parser(
+        "profile", help="Profile FLOPs, memory footprint, and Roofline bounds."
+    )
+    p_profile.add_argument("model_path", help="Path to input model.")
+    p_profile.add_argument(
+        "--device",
+        default="a100",
+        help="Hardware device (a100, h100, 4090, m3, arm, cpu).",
+    )
+    p_profile.add_argument(
+        "--dtype",
+        default="float16",
+        choices=["float16", "float32", "int8"],
+        help="Computation precision.",
+    )
+    p_profile.add_argument(
+        "--format",
+        default="table",
+        choices=["table", "json", "markdown"],
+        help="Output format.",
+    )
+    p_profile.add_argument(
+        "-o", "--output", help="Optional output path to write profile."
+    )
 
     # Optimize
-    p_opt = subparsers.add_parser("optimize", help="Run optimization passes on model graph.")
+    p_opt = subparsers.add_parser(
+        "optimize", help="Run optimization passes on model graph."
+    )
     p_opt.add_argument("model_path", help="Path to input model.")
-    p_opt.add_argument("--passes", default="fuse_conv_bn,dce", help="Comma-separated list of passes.")
+    p_opt.add_argument(
+        "--passes", default="fuse_conv_bn,dce", help="Comma-separated list of passes."
+    )
     p_opt.add_argument("-o", "--output", help="Path to save optimized model.")
 
     # Diff
-    p_diff = subparsers.add_parser("diff", help="Diff two models for structural changes.")
+    p_diff = subparsers.add_parser(
+        "diff", help="Diff two models for structural changes."
+    )
     p_diff.add_argument("model1", help="First model path.")
     p_diff.add_argument("model2", help="Second model path.")
 
     # Export
-    p_export = subparsers.add_parser("export", help="Export graph to JSON, HTML, Mermaid, or Safetensors.")
+    p_export = subparsers.add_parser(
+        "export", help="Export graph to JSON, HTML, Mermaid, or Safetensors."
+    )
     p_export.add_argument("model_path", help="Path to input model.")
-    p_export.add_argument("--format", default="json", choices=["json", "html", "mermaid", "safetensors"])
+    p_export.add_argument(
+        "--format", default="json", choices=["json", "html", "mermaid", "safetensors"]
+    )
     p_export.add_argument("-o", "--output", help="Path to save output file.")
 
     parsed = parser.parse_args(argv)
 
     if parsed.command == "inspect":
         return inspect_command(parsed)
+    if parsed.command == "profile":
+        return profile_command(parsed)
     if parsed.command == "optimize":
         return optimize_command(parsed)
     if parsed.command == "diff":

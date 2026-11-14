@@ -176,7 +176,9 @@ class TestGraphRebuild(unittest.TestCase):
 
             # Test strict mode error checking
             with self.assertRaises(ValueError):
-                rebuilt.replace_weights({"conv1.weight": np.zeros((8, 3, 3, 3))}, strict=True)
+                rebuilt.replace_weights(
+                    {"conv1.weight": np.zeros((8, 3, 3, 3))}, strict=True
+                )
 
             with self.assertRaises(ValueError):
                 rebuilt.replace_weights(
@@ -240,4 +242,3 @@ class TestGraphRebuild(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

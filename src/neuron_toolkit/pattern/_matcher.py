@@ -18,19 +18,21 @@ import numpy as np
 from neuron_toolkit._utils import ShapeInfo
 from neuron_toolkit.pattern.dsl import _ANY_OF, _CONST_PAT, _WILDCARD
 
-COMMUTATIVE_OPS: frozenset[str] = frozenset({
-    "Add",
-    "Mul",
-    "And",
-    "Or",
-    "Xor",
-    "Equal",
-    "Min",
-    "Max",
-    "BitwiseAnd",
-    "BitwiseOr",
-    "BitwiseXor",
-})
+COMMUTATIVE_OPS: frozenset[str] = frozenset(
+    {
+        "Add",
+        "Mul",
+        "And",
+        "Or",
+        "Xor",
+        "Equal",
+        "Min",
+        "Max",
+        "BitwiseAnd",
+        "BitwiseOr",
+        "BitwiseXor",
+    }
+)
 
 if TYPE_CHECKING:
     from neuron_toolkit.pattern.detector import PatternDetector
@@ -65,7 +67,9 @@ class MatchContext:
 
     def restore(
         self,
-        snap: tuple[dict[str, object], list[object], set[int], dict[int, int], set[str]],
+        snap: tuple[
+            dict[str, object], list[object], set[int], dict[int, int], set[str]
+        ],
     ) -> None:
         """Restore state from a snapshot."""
         self.bindings, self.trail, self.trail_ids, self.memo, self.visited = snap
@@ -168,7 +172,9 @@ class MatchingMixin:
             return self._finalize_match(node, pattern, ctx)
 
         parents = self._get_parent_nodes(node, ctx)
-        is_commutative = getattr(pattern, "is_commutative", False) or node_op_type in COMMUTATIVE_OPS
+        is_commutative = (
+            getattr(pattern, "is_commutative", False) or node_op_type in COMMUTATIVE_OPS
+        )
         if is_commutative:
             ok = self._match_commutative(node, parents, pattern, ctx)
         else:
@@ -318,7 +324,9 @@ class MatchingMixin:
                     ctx.restore(snap)
 
             if adj.sum() >= v_len:
-                match_indices = maximum_bipartite_matching(csr_matrix(adj), perm_type="column")
+                match_indices = maximum_bipartite_matching(
+                    csr_matrix(adj), perm_type="column"
+                )
                 if np.count_nonzero(match_indices != -1) >= v_len:
                     ctx.visited.add(name)
                     for parent_idx, pat_idx in enumerate(match_indices):

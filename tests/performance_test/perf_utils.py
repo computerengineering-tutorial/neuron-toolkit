@@ -42,7 +42,9 @@ class PerformanceTracker:
         print(f" PERF METRIC | Operation : {self.op_name}")
         if self.scale_info:
             print(f"             | Scale     : {self.scale_info}")
-        print(f"             | Time      : {self.duration_sec * 1000:.2f} ms ({self.duration_sec:.4f} s)")
+        print(
+            f"             | Time      : {self.duration_sec * 1000:.2f} ms ({self.duration_sec:.4f} s)"
+        )
         print(f"             | Peak Mem  : {self.peak_memory_mb:.3f} MB")
         print(f"             | Net Alloc : {self.current_memory_mb:.3f} MB")
         print(f"{'=' * 75}\n")
@@ -50,16 +52,21 @@ class PerformanceTracker:
 
 def profile_perf(op_name: str, scale_info: str = ""):
     """Decorator to measure time and memory of a benchmark function."""
+
     def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
         @functools.wraps(func)
         def wrapper(*args: Any, **kwargs: Any) -> Any:
             with PerformanceTracker(op_name=op_name, scale_info=scale_info):
                 return func(*args, **kwargs)
+
         return wrapper
+
     return decorator
 
 
-def create_large_onnx_model(num_blocks: int = 1000, in_channels: int = 16, spatial: int = 14) -> onnx.ModelProto:
+def create_large_onnx_model(
+    num_blocks: int = 1000, in_channels: int = 16, spatial: int = 14
+) -> onnx.ModelProto:
     """Build a heavy ONNX modelProto in-memory containing repetitive deep layers.
 
     Each block consists of:
@@ -92,51 +99,63 @@ def create_large_onnx_model(num_blocks: int = 1000, in_channels: int = 16, spati
         mean = rng.normal(size=(in_channels,)).astype(np.float32)
         var = rng.uniform(0.5, 1.5, (in_channels,)).astype(np.float32)
 
-        initializers.extend([
-            numpy_helper.from_array(w, w_name),
-            numpy_helper.from_array(scale, bn_scale),
-            numpy_helper.from_array(bias, bn_bias),
-            numpy_helper.from_array(mean, bn_mean),
-            numpy_helper.from_array(var, bn_var),
-        ])
+        initializers.extend(
+            [
+                numpy_helper.from_array(w, w_name),
+                numpy_helper.from_array(scale, bn_scale),
+                numpy_helper.from_array(bias, bn_bias),
+                numpy_helper.from_array(mean, bn_mean),
+                numpy_helper.from_array(var, bn_var),
+            ]
+        )
 
         # 1. Conv
-        nodes.append(helper.make_node(
-            "Conv",
-            inputs=[prev_tensor, w_name],
-            outputs=[conv_out],
-            name=f"conv_{i}",
-            kernel_shape=[3, 3],
-            pads=[1, 1, 1, 1],
-        ))
+        nodes.append(
+            helper.make_node(
+                "Conv",
+                inputs=[prev_tensor, w_name],
+                outputs=[conv_out],
+                name=f"conv_{i}",
+                kernel_shape=[3, 3],
+                pads=[1, 1, 1, 1],
+            )
+        )
 
         # 2. BatchNormalization
-        nodes.append(helper.make_node(
-            "BatchNormalization",
-            inputs=[conv_out, bn_scale, bn_bias, bn_mean, bn_var],
-            outputs=[bn_out],
-            name=f"bn_{i}",
-        ))
+        nodes.append(
+            helper.make_node(
+                "BatchNormalization",
+                inputs=[conv_out, bn_scale, bn_bias, bn_mean, bn_var],
+                outputs=[bn_out],
+                name=f"bn_{i}",
+            )
+        )
 
         # 3. Add (Residual connection with prev_tensor)
-        nodes.append(helper.make_node(
-            "Add",
-            inputs=[bn_out, prev_tensor],
-            outputs=[add_out],
-            name=f"add_{i}",
-        ))
+        nodes.append(
+            helper.make_node(
+                "Add",
+                inputs=[bn_out, prev_tensor],
+                outputs=[add_out],
+                name=f"add_{i}",
+            )
+        )
 
         # 4. Relu
-        nodes.append(helper.make_node(
-            "Relu",
-            inputs=[add_out],
-            outputs=[relu_out],
-            name=f"relu_{i}",
-        ))
+        nodes.append(
+            helper.make_node(
+                "Relu",
+                inputs=[add_out],
+                outputs=[relu_out],
+                name=f"relu_{i}",
+            )
+        )
 
         prev_tensor = relu_out
 
-    outputs.append(helper.make_tensor_value_info(prev_tensor, TensorProto.FLOAT, x_shape))
+    outputs.append(
+        helper.make_tensor_value_info(prev_tensor, TensorProto.FLOAT, x_shape)
+    )
 
     graph = helper.make_graph(
         nodes,
@@ -277,7 +296,12 @@ def create_large_tflite_model_bytes(num_layers: int = 500) -> bytes:
     import tflite
 
     tensors = [
-        {"name": "input_0", "shape": [1, 64, 64, 3], "dtype": tflite.TensorType.FLOAT32, "buffer": 0}
+        {
+            "name": "input_0",
+            "shape": [1, 64, 64, 3],
+            "dtype": tflite.TensorType.FLOAT32,
+            "buffer": 0,
+        }
     ]
     ops = []
 
@@ -289,8 +313,15 @@ def create_large_tflite_model_bytes(num_layers: int = 500) -> bytes:
     ]
 
     for i in range(num_layers):
-        out_name = f"tensor_{i+1}"
-        tensors.append({"name": out_name, "shape": [1, 64, 64, 3], "dtype": tflite.TensorType.FLOAT32, "buffer": 0})
+        out_name = f"tensor_{i + 1}"
+        tensors.append(
+            {
+                "name": out_name,
+                "shape": [1, 64, 64, 3],
+                "dtype": tflite.TensorType.FLOAT32,
+                "buffer": 0,
+            }
+        )
         op_code_idx = i % 3
         ops.append({"index": op_code_idx, "inputs": [i], "outputs": [i + 1]})
 

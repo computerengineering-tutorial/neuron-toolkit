@@ -11,16 +11,26 @@ from neuron_toolkit.passes.standard import (
     FuseGELU,
     FuseLayerNorm,
 )
+from neuron_toolkit.passes.transformer import (
+    FuseAttention,
+    FuseRMSNorm,
+    FuseRotaryEmbedding,
+    FuseSwiGLU,
+)
 
 __all__ = [
     "BasePass",
     "CommonSubexpressionElimination",
     "ConstantFolding",
     "DeadCodeElimination",
+    "FuseAttention",
     "FuseConvActivation",
     "FuseConvBN",
     "FuseGELU",
     "FuseLayerNorm",
+    "FuseRMSNorm",
+    "FuseRotaryEmbedding",
+    "FuseSwiGLU",
     "PassManager",
     "PassStats",
 ]

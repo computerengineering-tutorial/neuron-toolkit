@@ -18,16 +18,38 @@ def create_conv_bn_model() -> onnx.ModelProto:
     in_val = helper.make_tensor_value_info("X", TensorProto.FLOAT, [1, 3, 10, 10])
     out_val = helper.make_tensor_value_info("Y", TensorProto.FLOAT, [1, 3, 10, 10])
 
-    w_conv = helper.make_tensor("W_conv", TensorProto.FLOAT, [3, 3, 3, 3], np.ones((3, 3, 3, 3), dtype=np.float32).flatten())
-    b_conv = helper.make_tensor("B_conv", TensorProto.FLOAT, [3], np.zeros(3, dtype=np.float32))
+    w_conv = helper.make_tensor(
+        "W_conv",
+        TensorProto.FLOAT,
+        [3, 3, 3, 3],
+        np.ones((3, 3, 3, 3), dtype=np.float32).flatten(),
+    )
+    b_conv = helper.make_tensor(
+        "B_conv", TensorProto.FLOAT, [3], np.zeros(3, dtype=np.float32)
+    )
 
-    scale = helper.make_tensor("scale", TensorProto.FLOAT, [3], np.ones(3, dtype=np.float32))
-    b_bn = helper.make_tensor("B_bn", TensorProto.FLOAT, [3], np.zeros(3, dtype=np.float32))
-    mean = helper.make_tensor("mean", TensorProto.FLOAT, [3], np.zeros(3, dtype=np.float32))
-    var = helper.make_tensor("var", TensorProto.FLOAT, [3], np.ones(3, dtype=np.float32))
+    scale = helper.make_tensor(
+        "scale", TensorProto.FLOAT, [3], np.ones(3, dtype=np.float32)
+    )
+    b_bn = helper.make_tensor(
+        "B_bn", TensorProto.FLOAT, [3], np.zeros(3, dtype=np.float32)
+    )
+    mean = helper.make_tensor(
+        "mean", TensorProto.FLOAT, [3], np.zeros(3, dtype=np.float32)
+    )
+    var = helper.make_tensor(
+        "var", TensorProto.FLOAT, [3], np.ones(3, dtype=np.float32)
+    )
 
-    conv_node = helper.make_node("Conv", ["X", "W_conv", "B_conv"], ["conv_out"], name="conv0", pads=[1, 1, 1, 1])
-    bn_node = helper.make_node("BatchNormalization", ["conv_out", "scale", "B_bn", "mean", "var"], ["bn_out"], name="bn0")
+    conv_node = helper.make_node(
+        "Conv", ["X", "W_conv", "B_conv"], ["conv_out"], name="conv0", pads=[1, 1, 1, 1]
+    )
+    bn_node = helper.make_node(
+        "BatchNormalization",
+        ["conv_out", "scale", "B_bn", "mean", "var"],
+        ["bn_out"],
+        name="bn0",
+    )
     relu_node = helper.make_node("Relu", ["bn_out"], ["Y"], name="relu0")
 
     graph = helper.make_graph(
@@ -45,8 +67,18 @@ def create_model_with_dead_and_const_nodes() -> onnx.ModelProto:
     x = helper.make_tensor_value_info("X", TensorProto.FLOAT, [2, 2])
     y = helper.make_tensor_value_info("Y", TensorProto.FLOAT, [2, 2])
 
-    c1 = helper.make_tensor("C1", TensorProto.FLOAT, [2, 2], np.array([[1.0, 2.0], [3.0, 4.0]], dtype=np.float32).flatten())
-    c2 = helper.make_tensor("C2", TensorProto.FLOAT, [2, 2], np.array([[2.0, 2.0], [2.0, 2.0]], dtype=np.float32).flatten())
+    c1 = helper.make_tensor(
+        "C1",
+        TensorProto.FLOAT,
+        [2, 2],
+        np.array([[1.0, 2.0], [3.0, 4.0]], dtype=np.float32).flatten(),
+    )
+    c2 = helper.make_tensor(
+        "C2",
+        TensorProto.FLOAT,
+        [2, 2],
+        np.array([[2.0, 2.0], [2.0, 2.0]], dtype=np.float32).flatten(),
+    )
 
     # Constant folding candidate: C1 + C2 -> C_sum
     add_const = helper.make_node("Add", ["C1", "C2"], ["C_sum"], name="const_add")

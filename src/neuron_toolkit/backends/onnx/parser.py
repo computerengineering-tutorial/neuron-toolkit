@@ -49,9 +49,7 @@ class LazyTensorMap(dict[str, "np.ndarray"]):
         self._initializers.pop(key, None)
 
     def __contains__(self, key: object) -> bool:
-        return (
-            key in self._keys or key in self._cache or super().__contains__(key)
-        )
+        return key in self._keys or key in self._cache or super().__contains__(key)
 
     def get(self, key: str, default: Any = None) -> Any:
         """Get tensor by key with optional default."""

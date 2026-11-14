@@ -197,7 +197,9 @@ class ONNXRewriter(BaseRewriter):
         if len(sorted_indices) == n_count:
             final_nodes = [cast(NodeProto, all_nodes[idx]) for idx in sorted_indices]
         else:
-            log.warning("Cycle detected during rewrite! Falling back to unsorted nodes.")
+            log.warning(
+                "Cycle detected during rewrite! Falling back to unsorted nodes."
+            )
             final_nodes = all_nodes
 
         new_graph = helper.make_graph(

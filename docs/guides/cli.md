@@ -12,7 +12,8 @@ Inspect graph topology, input/output tensors, and operator distributions:
 neuron inspect path/to/model.onnx
 ```
 
-### Example Output:
+### Example Output
+
 ```text
 === NeuronGraph: path/to/model.onnx ===
 Total Nodes: 68
@@ -43,7 +44,8 @@ neuron optimize model.onnx --passes fuse_conv_bn,dce --output optimized.onnx
 neuron optimize model.onnx --passes const_fold,cse,gelu,layernorm,conv_act,dce -o opt.onnx
 ```
 
-### Supported Pass Identifiers:
+### Supported Pass Identifiers
+
 | Pass Identifier | Class | Description |
 | :--- | :--- | :--- |
 | `fuse_conv_bn`, `conv_bn` | `FuseConvBN` | Folds BatchNormalization parameters into preceding Conv |
@@ -53,10 +55,33 @@ neuron optimize model.onnx --passes const_fold,cse,gelu,layernorm,conv_act,dce -
 | `gelu`, `fuse_gelu` | `FuseGELU` | Fuses multi-op Erf/Tanh GELU subgraphs into `Gelu` |
 | `layernorm`, `fuse_layernorm` | `FuseLayerNorm` | Fuses 7-op normalization subgraphs into `LayerNormalization` |
 | `conv_act`, `fuse_conv_act` | `FuseConvActivation` | Fuses Conv + Relu/LeakyRelu/Clip into `FusedConv` |
+| `fuse_rmsnorm`, `rmsnorm` | `FuseRMSNorm` | Fuses multi-op RMSNorm subgraphs into unified `RMSNorm` |
+| `fuse_swiglu`, `swiglu` | `FuseSwiGLU` | Fuses SiLU/Sigmoid gating branches and projections into `SwiGLU` |
+| `fuse_attention`, `attention`, `sdpa` | `FuseAttention` | Fuses scaled dot-product attention subgraphs into `ScaledDotProductAttention` |
+| `fuse_rope`, `rope` | `FuseRotaryEmbedding` | Fuses RoPE slicing, negation, and rotation into `RotaryEmbedding` |
 
 ---
 
-## 3. Diffing Two Models (`neuron diff`)
+## 3. Profiling Hardware Complexity & Roofline (`neuron profile`)
+
+Analyze FLOPs, MACs, parameter counts, memory timeline, and Roofline latency limits directly from your CLI:
+
+```bash
+# Print formatted terminal summary for NVIDIA A100:
+neuron profile model.onnx --device a100 --dtype float16
+
+# Profile for Apple M3 Max and export results as JSON:
+neuron profile model.onnx --device m3 --format json -o profile.json
+
+# Export a GitHub-flavored Markdown report for documentation:
+neuron profile model.onnx --device h100 --format markdown -o profile.md
+```
+
+Supported `--device` profiles: `a100`, `h100`, `4090`, `m3`, `arm`, `cpu`.
+
+---
+
+## 4. Diffing Two Models (`neuron diff`)
 
 Compare two versions of a model to identify structural mutations, node reductions, and operator shifts:
 
@@ -64,7 +89,8 @@ Compare two versions of a model to identify structural mutations, node reduction
 neuron diff base_model.onnx optimized_model.onnx
 ```
 
-### Example Output:
+### Example Output
+
 ```text
 Diff: base_model.onnx -> optimized_model.onnx
   Node count: 68 -> 36 (-32)
@@ -77,7 +103,7 @@ Op differences:
 
 ---
 
-## 4. Exporting Formats (`neuron export`)
+## 5. Exporting Formats (`neuron export`)
 
 Convert graphs to Netron JSON, interactive HTML visualizers, Mermaid diagrams, or Safetensors weights:
 

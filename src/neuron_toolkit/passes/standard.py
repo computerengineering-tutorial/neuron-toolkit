@@ -135,7 +135,11 @@ class CommonSubexpressionElimination(BasePass):
             inputs = tuple(getattr(node, "input", []))
             outputs = getattr(node, "output", [])
 
-            if not inputs or not outputs or op_type in {"RandomNormal", "RandomUniform", "Dropout"}:
+            if (
+                not inputs
+                or not outputs
+                or op_type in {"RandomNormal", "RandomUniform", "Dropout"}
+            ):
                 continue
 
             key = (op_type, inputs)
@@ -147,7 +151,12 @@ class CommonSubexpressionElimination(BasePass):
                 if primary_outs and secondary_out:
                     primary_out = primary_outs[0]
                     # Replace secondary with Identity forwarding primary_out
-                    rewriter.replace([node], "Identity", inputs=[primary_out], outputs=[secondary_out])
+                    rewriter.replace(
+                        [node],
+                        "Identity",
+                        inputs=[primary_out],
+                        outputs=[secondary_out],
+                    )
                     eliminated += 1
             else:
                 seen[key] = node
@@ -166,7 +175,11 @@ class FuseGELU(BasePass):
         rewriter = graph.rewriter()
         fused = 0
         nodes = list(graph.nodes)
-        node_map = {getattr(n, "output", [None])[0]: n for n in nodes if getattr(n, "output", [])}
+        node_map = {
+            getattr(n, "output", [None])[0]: n
+            for n in nodes
+            if getattr(n, "output", [])
+        }
 
         for node in nodes:
             if getattr(node, "op_type", "") != "Mul":
@@ -221,7 +234,9 @@ class FuseGELU(BasePass):
             if other_node and getattr(other_node, "op_type", "") == "Mul":
                 om_inps = getattr(other_node, "input", [])
                 for oi in om_inps:
-                    if oi == x_candidate or (x_candidate is None and oi not in graph.tensor_map):
+                    if oi == x_candidate or (
+                        x_candidate is None and oi not in graph.tensor_map
+                    ):
                         x_candidate = oi
                         break
 
@@ -256,7 +271,11 @@ class FuseLayerNorm(BasePass):
         rewriter = graph.rewriter()
         fused = 0
         nodes = list(graph.nodes)
-        node_map = {getattr(n, "output", [None])[0]: n for n in nodes if getattr(n, "output", [])}
+        node_map = {
+            getattr(n, "output", [None])[0]: n
+            for n in nodes
+            if getattr(n, "output", [])
+        }
 
         for node in nodes:
             if getattr(node, "op_type", "") != "Div":
@@ -272,7 +291,10 @@ class FuseLayerNorm(BasePass):
 
             if not num_node or not den_node:
                 continue
-            if getattr(num_node, "op_type", "") != "Sub" or getattr(den_node, "op_type", "") != "Sqrt":
+            if (
+                getattr(num_node, "op_type", "") != "Sub"
+                or getattr(den_node, "op_type", "") != "Sqrt"
+            ):
                 continue
 
             sub_node = num_node
@@ -319,7 +341,10 @@ class FuseLayerNorm(BasePass):
                 mul_out = getattr(scale_node, "output", [None])[0]
 
                 mul_consumers = [n for n in nodes if mul_out in getattr(n, "input", [])]
-                if len(mul_consumers) == 1 and getattr(mul_consumers[0], "op_type", "") == "Add":
+                if (
+                    len(mul_consumers) == 1
+                    and getattr(mul_consumers[0], "op_type", "") == "Add"
+                ):
                     bias_node = mul_consumers[0]
                     add_inps = getattr(bias_node, "input", [])
                     bias_tensor = add_inps[1] if add_inps[0] == mul_out else add_inps[0]
@@ -327,7 +352,14 @@ class FuseLayerNorm(BasePass):
                 else:
                     final_out = mul_out
 
-            subgraph_nodes = [node, sub_node, mean_node, sqrt_node, add_eps_node, var_mean_node]
+            subgraph_nodes = [
+                node,
+                sub_node,
+                mean_node,
+                sqrt_node,
+                add_eps_node,
+                var_mean_node,
+            ]
             if scale_node:
                 subgraph_nodes.append(scale_node)
             if bias_node:
@@ -393,7 +425,9 @@ class FuseConvActivation(BasePass):
                 continue
 
             conv_inputs = getattr(node, "input", [])
-            act_attrs = getattr(graph._backend, "get_node_attrs", lambda _n: {})(consumer)
+            act_attrs = getattr(graph._backend, "get_node_attrs", lambda _n: {})(
+                consumer
+            )
             conv_attrs = getattr(graph._backend, "get_node_attrs", lambda _n: {})(node)
 
             combined_attrs = dict(conv_attrs)

@@ -67,6 +67,7 @@ def test_perf_trace_subgraph_boundaries_scale():
 
 def test_perf_compare_outputs_pytorch_verification():
     """Benchmark compare_outputs numerical verification (PyTorch vs ONNXRuntime)."""
+
     # Simple PyTorch model for verification benchmark
     class ReluModule(nn.Module):
         def forward(self, x):

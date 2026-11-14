@@ -11,8 +11,11 @@ The primary class representing a loaded computational model (ONNX or TFLite).
 ### Constructors & Factories
 
 ::: python
+
 #### `NeuronGraph(source: object, **kwargs: Any) -> NeuronGraph`
+
 Initializes a `NeuronGraph` instance. Auto-detects input type:
+
 - `str`: File path to a `.onnx`, `.tflite`, or JSON string.
 - `bytes`: Model buffer (detects `TFL3` magic header for TFLite).
 - `dict`: Pre-loaded JSON graph structure dictionary.
@@ -20,9 +23,11 @@ Initializes a `NeuronGraph` instance. Auto-detects input type:
 - `tflite.Model`: In-memory parsed TFLite model.
 
 #### `NeuronGraph.load(path: str, **kwargs: Any) -> NeuronGraph`
+
 Loads a model from a file path based on its extension (`.onnx`, `.tflite`, `.bin`, `.json`).
 
 #### `NeuronGraph.from_json(json_source: str | dict[str, Any], weights: str | dict[str, Any] | None = None, seed: int | None = None, **kwargs: Any) -> NeuronGraph`
+
 Reconstructs a `NeuronGraph` from a JSON topology file or string, optionally initializing weights from a `.safetensors` file or reproducible random seed.
 :::
 
@@ -33,7 +38,7 @@ Reconstructs a `NeuronGraph` from a JSON topology file or string, optionally ini
 - **`outputs -> list[str]`**: List of all graph output tensor names.
 - **`tensor_map -> dict[str, np.ndarray]`**: Dictionary mapping initializer/weight names to NumPy arrays.
 - **`shape_info -> dict[str, tuple[int | None, str | None]]`**: Shape dimension ranks and dtype strings for all annotated graph tensors.
-- **`passes -> GraphPasses`**: Namespace exposing pre-packaged graph optimization passes (`passes.const_fold()`, `passes.cse()`, `passes.dce()`, `passes.fuse_conv_act()`, `passes.fuse_conv_bn()`, `passes.fuse_gelu()`, `passes.fuse_layer_norm()`).
+- **`passes -> GraphPasses`**: Namespace exposing pre-packaged graph optimization passes (`passes.const_fold()`, `passes.cse()`, `passes.dce()`, `passes.fuse_conv_act()`, `passes.fuse_conv_bn()`, `passes.fuse_gelu()`, `passes.fuse_layer_norm()`, `passes.fuse_rmsnorm()`, `passes.fuse_swiglu()`, `passes.fuse_attention()`, `passes.fuse_rope()`).
 
 ### Methods
 
@@ -44,6 +49,8 @@ Reconstructs a `NeuronGraph` from a JSON topology file or string, optionally ini
 - **`rewriter() -> NeuronRewriter`**: Spawns a transaction-staged graph rewriter bound to this model.
 - **`to_ir() -> IRGraph`**: Converts this graph into a framework-agnostic `IRGraph`.
 - **`optimize(passes: list[BasePass] | PassManager | None = None) -> tuple[NeuronGraph, PassStats]`**: Applies optimization passes.
+- **`equality_saturation(rules: list[EGraphRule] | None = None, cost_model: CostModel | None = None, max_iterations: int = 10, node_limit: int = 5000) -> tuple[IRGraph, dict[str, Any]]`**: Runs equality saturation over an E-Graph and extracts the optimal program DAG.
+- **`profile(device: str | HardwareTarget = "a100", dtype: str = "float16") -> ProfilerReport`**: Computes FLOPs, MACs, active working set memory, and Roofline model bottleneck latency predictions.
 - **`apply_rules(rules: list[RewriteRule] | RewriteRule, max_iterations: int = 10) -> NeuronGraph`**: Declaratively applies transformation rules.
 - **`to_mermaid(max_nodes: int = 150) -> str`**: Emits GitHub-flavored Mermaid flowchart string.
 - **`to_html(output_path: str | None = None) -> str`**: Exports an interactive standalone HTML visualization page.
@@ -66,6 +73,7 @@ Reconstructs a `NeuronGraph` from a JSON topology file or string, optionally ini
 Fluent query builder for filtering and traversing model graphs.
 
 ### Filtering Methods
+
 - **`filter(predicate: Callable[[object], bool]) -> NeuronQuery`**: Filters nodes using a custom function.
 - **`op(op_type: str) -> NeuronQuery`**: Filters nodes by operator type.
 - **`name(name: str, *, exact: bool = False) -> NeuronQuery`**: Filters nodes by name (substring or exact match).
@@ -76,6 +84,7 @@ Fluent query builder for filtering and traversing model graphs.
 - **`find_by_tensor(name: str) -> NeuronQuery`**: Filters nodes that produce or consume a given tensor.
 
 ### Traversal Methods
+
 - **`children() -> NeuronQuery`**: Selects immediate downstream consumer nodes.
 - **`parents() -> NeuronQuery`**: Selects immediate upstream producer nodes.
 - **`ancestors(max_depth: int | None = None) -> NeuronQuery`**: Selects all upstream ancestor nodes (defaults to unbounded traversal).
@@ -84,6 +93,7 @@ Fluent query builder for filtering and traversing model graphs.
 - **`output_nodes -> NeuronQuery`**: Selects nodes producing external graph outputs.
 
 ### Topological & Set Operations
+
 - **`topological_sort() -> NeuronQuery`**: Sorts current nodes in global topological order.
 - **`is_topologically_sorted() -> bool`**: Returns `True` if current nodes satisfy topological ordering.
 - **`union(other: NeuronQuery) -> NeuronQuery`** (or `q1 | q2`): Union of node sets.
@@ -91,6 +101,7 @@ Fluent query builder for filtering and traversing model graphs.
 - **`difference(other: NeuronQuery) -> NeuronQuery`** (or `q1 - q2`): Set difference of nodes.
 
 ### Result Accessors
+
 - **`first() -> object | None`**: Returns the first node in the selection.
 - **`last() -> object | None`**: Returns the last node in the selection.
 - **`count() -> int`**: Returns the total number of selected nodes (supports `len(q)`).
@@ -108,6 +119,7 @@ Fluent query builder for filtering and traversing model graphs.
 Declarative DSL for defining subgraph pattern motifs.
 
 ### Factory Constructors
+
 - **`Pattern.op(op_type: str, *input_patterns: Pattern | object) -> Pattern`**: Matches an operator and its inputs.
 - **`Pattern.commutative(op_type: str, *input_patterns: Pattern | object) -> Pattern`**: Matches a commutative binary operator regardless of input operand order.
 - **`Pattern.any() -> Pattern`**: Wildcard pattern matching any node.
@@ -115,6 +127,7 @@ Declarative DSL for defining subgraph pattern motifs.
 - **`Pattern.any_of(*alternatives: Pattern) -> Pattern`**: Matches any of the given pattern alternatives.
 
 ### Chaining & Constraints
+
 - **`capture(name: str) -> Pattern`**: Binds matched node to a named variable in `MatchResult.bindings`.
 - **`where(**constraints: object) -> Pattern`**: Constrains node attributes to specified values.
 - **`with_output_rank(rank: int) -> Pattern`**: Constrains output tensor rank.
@@ -122,6 +135,7 @@ Declarative DSL for defining subgraph pattern motifs.
 - **`then(op_type: str | Pattern) -> Pattern`**: Forward chains this pattern as input to another operator.
 
 ### Pre-Packaged Activation Mixins (`ActivationMixin`)
+
 - `Pattern.relu(x)`: Rectified Linear Unit
 - `Pattern.sigmoid(x)`: Sigmoid activation
 - `Pattern.tanh(x)`: Hyperbolic tangent
@@ -149,6 +163,7 @@ Declarative DSL for defining subgraph pattern motifs.
 Contains the results of a successful pattern match.
 
 ### Fields
+
 - **`start: object`**: The root/terminal node of the matched subgraph.
 - **`end: object`**: The entry boundary node of the matched subgraph.
 - **`nodes: list[object]`**: List of all nodes belonging to the matched pattern.
@@ -162,6 +177,7 @@ Contains the results of a successful pattern match.
 Transactional engine for graph surgery and AST rewriting.
 
 ### Methods
+
 - **`replace(nodes: Sequence[object], new_op: str, inputs: list[str], outputs: list[str], name: str | None = None, **attrs: object) -> NeuronRewriter`**: Stages the replacement of `nodes` with a new operator.
 - **`replace_from_result(result: MatchResult, new_op: str, inputs: list[str] | None = None, outputs: list[str] | None = None, name: str | None = None, **attrs: object) -> NeuronRewriter`**: Stages the replacement of a matched subgraph.
 - **`delete(nodes: Sequence[object]) -> NeuronRewriter`**: Stages the deletion of nodes.
@@ -188,11 +204,14 @@ Transactional engine for graph surgery and AST rewriting.
 ## 7. `neuron_toolkit.passes`
 
 ### `PassManager(passes: list[BasePass] | None = None)`
+
 Manages and executes an optimization pipeline. Supports indexing results by pass name or integer index (`stats["FuseConvBN"]` or `stats[0]`).
+
 - **`add_pass(opt_pass: BasePass) -> PassManager`**: Registers a pass.
 - **`run(graph: NeuronGraph) -> tuple[NeuronGraph, PassStats]`**: Applies all passes sequentially.
 
-### Standard Passes
+### Standard & Transformer Passes
+
 - **`FuseConvBN()`**: Folds BatchNormalization scale/bias/mean/var into Conv weight/bias tensors.
 - **`DeadCodeElimination()`**: Prunes unconsumed nodes not contributing to graph outputs.
 - **`ConstantFolding()`**: Statically computes operations whose inputs are constant initializers.
@@ -200,12 +219,50 @@ Manages and executes an optimization pipeline. Supports indexing results by pass
 - **`FuseGELU()`**: Folds multi-op GELU subgraphs (Erf-based or Tanh-approximation) into unified `Gelu` operator.
 - **`FuseLayerNorm()`**: Folds 7-op normalization subgraphs (ReduceMean, Sub, Pow, Div, Add, Mul) into `LayerNormalization`.
 - **`FuseConvActivation()`**: Combines `Conv` followed by `Relu`, `LeakyRelu`, or `Clip` into `FusedConv`.
+- **`FuseRMSNorm()`**: Fuses decomposed RMSNorm subgraphs (`Pow/Mul` $\to$ `ReduceMean` $\to$ `Add` $\to$ `Sqrt` $\to$ `Div` $\to$ `Mul`) into unified `RMSNorm`.
+- **`FuseSwiGLU()`**: Fuses SiLU/Sigmoid gating branches and linear projections into `SwiGLU` / `GeGLU`.
+- **`FuseAttention()`**: Fuses Scaled Dot-Product Attention ($QK^T \to \text{scale} \to \text{mask} \to \text{softmax} \to V$) into `ScaledDotProductAttention`.
+- **`FuseRotaryEmbedding()`**: Fuses RoPE slicing, negation, concatenation, and $\sin/\cos$ rotations into `RotaryEmbedding`.
 
 ---
 
-## 8. `neuron_toolkit.pattern.RewriteRule`
+## 8. `neuron_toolkit.egraph` (Equality Saturation Engine)
+
+- **`EGraph()`**: Core Equivalence Graph structure.
+  - Properties & Methods:
+    - `add(enode: ENode) -> EClassId`: Hash-consed operator insertion.
+    - `union(id1: EClassId, id2: EClassId) -> EClassId`: Unions two equivalence classes.
+    - `rebuild() -> int`: Runs incremental congruence closure.
+    - `find(id: EClassId) -> EClassId`: Finds canonical representative.
+    - `total_nodes() -> int`: Returns total count of ENodes across all classes.
+    - `from_ir(ir: IRGraph) -> tuple[EGraph, dict[str, EClassId]]`: Ingests an IRGraph.
+- **`ENode(op: str, children: tuple[EClassId, ...], attrs: tuple[tuple[str, Any], ...])`**: Immutable operator node.
+- **`EClass(id: EClassId, nodes: set[ENode], parents: list, data: Any)`**: Equivalence class grouping equivalent ENodes.
+- **`UnionFind`**: Disjoint-set forest with path compression and rank-based union.
+- **`saturate(egraph: EGraph, rules: list[EGraphRule] | None = None, max_iterations: int = 12, node_limit: int = 5000) -> dict[str, Any]`**: Executes equality saturation loop until fixed-point or resource limit.
+- **`Extractor(egraph: EGraph, cost_model: CostModel | None = None)`**: Dynamic programming DAG extractor.
+  - `find_best(class_id: EClassId) -> tuple[float, ENode]`: Computes minimum cost and optimal node.
+  - `extract_to_ir(root_class_ids: list[EClassId], graph_name: str) -> IRGraph`: Reconstructs optimal DAG.
+- **Cost Models**: `NodeCountCostModel(op_weights=None)`, `ComputeCostModel()`.
+- **Rewrite Rules**: `CommutativeRule`, `IdentityRule`, `ConstantFoldRule`, `SiluFusionRule`, `default_rules()`.
+
+---
+
+## 9. `neuron_toolkit.profiler` (Hardware Cost Modeling & Memory Planning)
+
+- **`FLOPsProfiler.profile(graph: NeuronGraph, default_dtype: str = "float32") -> FLOPsSummary`**: Computes analytical FLOPs, MACs, parameter counts, and bytes transferred.
+- **`MemoryTimelineSimulator.simulate(graph: NeuronGraph, default_dtype: str = "float32") -> MemoryTimelineSummary`**: Traces tensor birth and death steps, evaluating naive memory vs active working set peak memory and simulated buffer reuse potential.
+- **`RooflineAnalysis.analyze(summary: FLOPsSummary, device: str | HardwareTarget = "a100", dtype: str = "float16") -> RooflineAnalysis`**: Calculates Arithmetic Intensity ($AI$), hardware ridge points, compute vs memory-bound classification, and predicted execution latency.
+- **`profile_graph(graph: NeuronGraph, device: str | HardwareTarget = "a100", dtype: str = "float16") -> ProfilerReport`**: Convenience entrypoint.
+- **`ProfilerReport`**: Unified report exposing `.summary()`, `.to_dict()`, and `.to_markdown()`.
+- **Hardware Targets**: `NVIDIA_A100_SXM4_80GB`, `NVIDIA_H100_SXM5`, `NVIDIA_RTX_4090`, `APPLE_M3_MAX`, `ARM_CORTEX_A78`, `GENERIC_CPU`, and `HARDWARE_REGISTRY`.
+
+---
+
+## 10. `neuron_toolkit.pattern.RewriteRule`
 
 Pairs a `Pattern` with a transformation callback or replacement operator.
+
 ```python
 RewriteRule(
     pattern: Pattern,
@@ -216,7 +273,7 @@ RewriteRule(
 
 ---
 
-## 9. `neuron_toolkit.ir` (Unified Intermediate Representation)
+## 11. `neuron_toolkit.ir` (Unified Intermediate Representation)
 
 - **`IRGraph(name: str = "main_graph")`**: Framework-agnostic computational DAG.
   - Properties: `producers -> dict[str, IRNode]`, `consumers -> dict[str, list[IRNode]]`.
@@ -227,18 +284,19 @@ RewriteRule(
 
 ---
 
-## 10. `neuron_toolkit.viz`
+## 12. `neuron_toolkit.viz`
 
 - **`to_mermaid(graph: NeuronGraph, max_nodes: int = 150) -> str`**: Emits GitHub-flavored Mermaid flowchart diagram.
 - **`to_html(graph: NeuronGraph, output_path: str | None = None) -> str`**: Emits standalone, zero-dependency interactive HTML visualizer.
 
 ---
 
-## 11. `neuron_toolkit.eval.GraphVerifier`
+## 13. `neuron_toolkit.eval.GraphVerifier`
 
 Differential numerical verification engine comparing sliced computational subgraphs against PyTorch reference layers or functions.
 
 ### Methods
+
 - **`__init__(graph: NeuronGraph)`**: Initializes verifier bound to target graph.
 - **`compare_outputs(start_points: list[str | object] | str | object, end_points: list[str | object] | str | object, pytorch_module: Any, inputs_dict: dict[str, Any], rtol: float = 1e-05, atol: float = 1e-08) -> dict[str, Any]`**:
   Executes the sliced subgraph and PyTorch module on provided input tensors and computes numerical divergence metrics:
@@ -254,7 +312,7 @@ Differential numerical verification engine comparing sliced computational subgra
 
 ---
 
-## 12. Exceptions (`neuron_toolkit.exceptions`)
+## 14. Exceptions (`neuron_toolkit.exceptions`)
 
 - **`NeuronToolkitError`**: Base class for all library exceptions.
 - **`GraphParseError`**: Raised on invalid or corrupt model files.

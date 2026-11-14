@@ -28,9 +28,12 @@ class _GraphShim:
         backend: object | None = None,
     ) -> None:
         self.nodes = nodes
-        self.tensor_map = dict(tensor_map) if isinstance(tensor_map, Mapping) else tensor_map
+        self.tensor_map = (
+            dict(tensor_map) if isinstance(tensor_map, Mapping) else tensor_map
+        )
         self.shape_info = shape_info
         self.backend = backend
+
 
 def trace_subgraph_boundaries(
     nodes: Sequence[object],
@@ -151,9 +154,7 @@ def trace_subgraph_boundaries(
 
     # Subgraph inputs are tensors consumed but not produced within the subgraph (and not in tensor_map)
     new_inputs = [
-        t
-        for t in subgraph_tensors
-        if t not in producers and t not in tensor_map
+        t for t in subgraph_tensors if t not in producers and t not in tensor_map
     ]
 
     # Subgraph outputs

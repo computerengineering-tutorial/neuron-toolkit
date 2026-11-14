@@ -71,10 +71,17 @@ class ONNXAdapter:
             ir.add_tensor(tensor)
 
         # Value info
-        for vi in list(graph_proto.value_info) + list(graph_proto.input) + list(graph_proto.output):
+        for vi in (
+            list(graph_proto.value_info)
+            + list(graph_proto.input)
+            + list(graph_proto.output)
+        ):
             if vi.name not in ir.tensors:
                 shape = (
-                    [d.dim_value if d.HasField("dim_value") else d.dim_param for d in vi.type.tensor_type.shape.dim]
+                    [
+                        d.dim_value if d.HasField("dim_value") else d.dim_param
+                        for d in vi.type.tensor_type.shape.dim
+                    ]
                     if vi.type.tensor_type.HasField("shape")
                     else []
                 )
@@ -82,7 +89,9 @@ class ONNXAdapter:
                     IRTensor(
                         name=vi.name,
                         shape=tuple(shape),
-                        dtype=onnx.TensorProto.DataType.Name(vi.type.tensor_type.elem_type).lower(),
+                        dtype=onnx.TensorProto.DataType.Name(
+                            vi.type.tensor_type.elem_type
+                        ).lower(),
                         is_initializer=False,
                     )
                 )
@@ -132,7 +141,9 @@ class TFLiteAdapter:
         tensor_names = getattr(parser, "_tensor_to_idx", {}).keys()
         for name in tensor_names:
             rank, dtype = parser.shape_info.get(name, (0, "float32"))
-            data = parser.tensor_map.get(name) if hasattr(parser, "tensor_map") else None
+            data = (
+                parser.tensor_map.get(name) if hasattr(parser, "tensor_map") else None
+            )
             shape = tuple(data.shape) if data is not None else tuple([1] * rank)
             ir.add_tensor(
                 IRTensor(

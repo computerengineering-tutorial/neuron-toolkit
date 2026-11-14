@@ -52,6 +52,7 @@ graph.to_html("model_visualization.html")
 ```
 
 The exported page includes:
+
 - Total node, input, and output metric badges.
 - Zoomable, pannable graph topology canvas powered by client-side Mermaid.js rendering.
 - Zero local dependencies.

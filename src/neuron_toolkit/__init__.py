@@ -5,6 +5,7 @@ Supports ONNX and TFLite backends.
 """
 
 from ._types import TensorMap
+from .egraph import EClass, EGraph, ENode, Extractor, saturate
 from .eval import GraphVerifier
 from .exceptions import (
     BackendNotAvailableError,
@@ -31,14 +32,19 @@ from .passes import (
     CommonSubexpressionElimination,
     ConstantFolding,
     DeadCodeElimination,
+    FuseAttention,
     FuseConvActivation,
     FuseConvBN,
     FuseGELU,
     FuseLayerNorm,
+    FuseRMSNorm,
+    FuseRotaryEmbedding,
+    FuseSwiGLU,
     PassManager,
     PassStats,
 )
 from .pattern import MatchResult, Pattern, PatternDetector, RewriteRule
+from .profiler import ProfilerReport, profile_graph
 from .query import NeuronQuery
 from .rewriter import NeuronRewriter
 from .viz import to_html, to_mermaid
@@ -53,10 +59,18 @@ __all__ = [
     "CommonSubexpressionElimination",
     "ConstantFolding",
     "DeadCodeElimination",
+    "EClass",
+    "EGraph",
+    "ENode",
+    "Extractor",
+    "FuseAttention",
     "FuseConvActivation",
     "FuseConvBN",
     "FuseGELU",
     "FuseLayerNorm",
+    "FuseRMSNorm",
+    "FuseRotaryEmbedding",
+    "FuseSwiGLU",
     "GraphParseError",
     "GraphVerifier",
     "IRGraph",
@@ -72,6 +86,7 @@ __all__ = [
     "Pattern",
     "PatternDetector",
     "PatternMatchError",
+    "ProfilerReport",
     "RewriteError",
     "RewriteRule",
     "TensorMap",
@@ -85,6 +100,8 @@ __all__ = [
     "from_json",
     "load_graph_from_json",
     "load_safetensors",
+    "profile_graph",
+    "saturate",
     "save_safetensors",
     "to_html",
     "to_json",

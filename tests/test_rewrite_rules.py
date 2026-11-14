@@ -16,7 +16,9 @@ def create_silu_candidate_model() -> onnx.ModelProto:
     sigmoid_node = helper.make_node("Sigmoid", ["X"], ["sig_out"], name="sig0")
     mul_node = helper.make_node("Mul", ["X", "sig_out"], ["Y"], name="mul0")
 
-    graph = helper.make_graph([relu_node, sigmoid_node, mul_node], "silu_graph", [in_val], [y_val])
+    graph = helper.make_graph(
+        [relu_node, sigmoid_node, mul_node], "silu_graph", [in_val], [y_val]
+    )
     return helper.make_model(graph, producer_name="test")
 
 

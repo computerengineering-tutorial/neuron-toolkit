@@ -13,12 +13,14 @@ from neuron_toolkit.graph import NeuronGraph
 def test_hypothesis_linear_chain_invariants(num_nodes: int):
     """Test reachability and descendant invariants on linear chains of varying length."""
     inputs = [helper.make_tensor_value_info("X_0", TensorProto.FLOAT, [1, 2])]
-    outputs = [helper.make_tensor_value_info(f"X_{num_nodes}", TensorProto.FLOAT, [1, 2])]
+    outputs = [
+        helper.make_tensor_value_info(f"X_{num_nodes}", TensorProto.FLOAT, [1, 2])
+    ]
 
     nodes = []
     for i in range(num_nodes):
         nodes.append(
-            helper.make_node("Relu", [f"X_{i}"], [f"X_{i+1}"], name=f"relu_{i}")
+            helper.make_node("Relu", [f"X_{i}"], [f"X_{i + 1}"], name=f"relu_{i}")
         )
 
     graph_proto = helper.make_graph(nodes, f"hypo_chain_{num_nodes}", inputs, outputs)

@@ -70,7 +70,9 @@ def make_resnet_bottleneck_block(
 
     # 3. 1x1 Conv + BN
     w3 = _add_init("w3", [out_channels, mid_channels, 1, 1])
-    nodes.append(helper.make_node("Conv", ["relu2_out", w3], ["conv3_out"], name="conv3"))
+    nodes.append(
+        helper.make_node("Conv", ["relu2_out", w3], ["conv3_out"], name="conv3")
+    )
     s3 = _add_init("s3", [out_channels])
     b3 = _add_init("b3", [out_channels])
     m3 = _add_init("m3", [out_channels])
@@ -113,13 +115,23 @@ def make_resnet_bottleneck_block(
         shortcut_out = "shortcut_out"
 
     # 5. Add + final ReLU
-    nodes.append(helper.make_node("Add", ["bn3_out", shortcut_out], ["add_out"], name="res_add"))
+    nodes.append(
+        helper.make_node("Add", ["bn3_out", shortcut_out], ["add_out"], name="res_add")
+    )
     nodes.append(helper.make_node("Relu", ["add_out"], ["Y"], name="relu3"))
 
-    inputs = [helper.make_tensor_value_info("X", TensorProto.FLOAT, [1, in_channels, 56, 56])]
-    outputs = [helper.make_tensor_value_info("Y", TensorProto.FLOAT, [1, out_channels, 56 // stride, 56 // stride])]
+    inputs = [
+        helper.make_tensor_value_info("X", TensorProto.FLOAT, [1, in_channels, 56, 56])
+    ]
+    outputs = [
+        helper.make_tensor_value_info(
+            "Y", TensorProto.FLOAT, [1, out_channels, 56 // stride, 56 // stride]
+        )
+    ]
 
-    graph = helper.make_graph(nodes, "ResNetBottleneck", inputs, outputs, initializer=initializers)
+    graph = helper.make_graph(
+        nodes, "ResNetBottleneck", inputs, outputs, initializer=initializers
+    )
     return helper.make_model(graph, opset_imports=[helper.make_opsetid("", 17)])
 
 
@@ -155,12 +167,25 @@ def make_mobilenet_block(
     nodes.append(
         helper.make_node(
             "BatchNormalization",
-            ["exp_conv_out", _add_init("s_exp", [expanded]), _add_init("b_exp", [expanded]), _add_init("m_exp", [expanded]), _add_init("v_exp", [expanded], positive=True)],
+            [
+                "exp_conv_out",
+                _add_init("s_exp", [expanded]),
+                _add_init("b_exp", [expanded]),
+                _add_init("m_exp", [expanded]),
+                _add_init("v_exp", [expanded], positive=True),
+            ],
             ["exp_bn_out"],
             name="bn_exp",
         )
     )
-    nodes.append(helper.make_node("Clip", ["exp_bn_out", "clip_min", "clip_max"], ["exp_relu6_out"], name="relu6_exp"))
+    nodes.append(
+        helper.make_node(
+            "Clip",
+            ["exp_bn_out", "clip_min", "clip_max"],
+            ["exp_relu6_out"],
+            name="relu6_exp",
+        )
+    )
 
     # 2. 3x3 Depthwise Conv + BN + Clip(0, 6)
     w_dw = _add_init("w_dw", [expanded, 1, 3, 3])
@@ -178,20 +203,43 @@ def make_mobilenet_block(
     nodes.append(
         helper.make_node(
             "BatchNormalization",
-            ["dw_conv_out", _add_init("s_dw", [expanded]), _add_init("b_dw", [expanded]), _add_init("m_dw", [expanded]), _add_init("v_dw", [expanded], positive=True)],
+            [
+                "dw_conv_out",
+                _add_init("s_dw", [expanded]),
+                _add_init("b_dw", [expanded]),
+                _add_init("m_dw", [expanded]),
+                _add_init("v_dw", [expanded], positive=True),
+            ],
             ["dw_bn_out"],
             name="bn_dw",
         )
     )
-    nodes.append(helper.make_node("Clip", ["dw_bn_out", "clip_min", "clip_max"], ["dw_relu6_out"], name="relu6_dw"))
+    nodes.append(
+        helper.make_node(
+            "Clip",
+            ["dw_bn_out", "clip_min", "clip_max"],
+            ["dw_relu6_out"],
+            name="relu6_dw",
+        )
+    )
 
     # 3. 1x1 Linear Projection + BN (no non-linearity)
     w_proj = _add_init("w_proj", [out_channels, expanded, 1, 1])
-    nodes.append(helper.make_node("Conv", ["dw_relu6_out", w_proj], ["proj_conv_out"], name="conv_proj"))
+    nodes.append(
+        helper.make_node(
+            "Conv", ["dw_relu6_out", w_proj], ["proj_conv_out"], name="conv_proj"
+        )
+    )
     nodes.append(
         helper.make_node(
             "BatchNormalization",
-            ["proj_conv_out", _add_init("s_proj", [out_channels]), _add_init("b_proj", [out_channels]), _add_init("m_proj", [out_channels]), _add_init("v_proj", [out_channels], positive=True)],
+            [
+                "proj_conv_out",
+                _add_init("s_proj", [out_channels]),
+                _add_init("b_proj", [out_channels]),
+                _add_init("m_proj", [out_channels]),
+                _add_init("v_proj", [out_channels], positive=True),
+            ],
             ["proj_bn_out"],
             name="bn_proj",
         )
@@ -199,12 +247,22 @@ def make_mobilenet_block(
 
     # 4. Residual Add if in_channels == out_channels
     if in_channels == out_channels:
-        nodes.append(helper.make_node("Add", ["X", "proj_bn_out"], ["Y"], name="res_add"))
+        nodes.append(
+            helper.make_node("Add", ["X", "proj_bn_out"], ["Y"], name="res_add")
+        )
     else:
-        nodes.append(helper.make_node("Identity", ["proj_bn_out"], ["Y"], name="identity_out"))
+        nodes.append(
+            helper.make_node("Identity", ["proj_bn_out"], ["Y"], name="identity_out")
+        )
 
-    inputs = [helper.make_tensor_value_info("X", TensorProto.FLOAT, [1, in_channels, 28, 28])]
-    outputs = [helper.make_tensor_value_info("Y", TensorProto.FLOAT, [1, out_channels, 28, 28])]
+    inputs = [
+        helper.make_tensor_value_info("X", TensorProto.FLOAT, [1, in_channels, 28, 28])
+    ]
+    outputs = [
+        helper.make_tensor_value_info("Y", TensorProto.FLOAT, [1, out_channels, 28, 28])
+    ]
 
-    graph = helper.make_graph(nodes, "MobileNetV2Block", inputs, outputs, initializer=initializers)
+    graph = helper.make_graph(
+        nodes, "MobileNetV2Block", inputs, outputs, initializer=initializers
+    )
     return helper.make_model(graph, opset_imports=[helper.make_opsetid("", 17)])

@@ -155,9 +155,7 @@ class TestGraphJsonExport(unittest.TestCase):
 
         # Verify weights stats are attached to the node
         assert len(conv_node["weights"]) == 2
-        w_stat = next(
-            w for w in conv_node["weights"] if w["name"] == "conv1.weight"
-        )
+        w_stat = next(w for w in conv_node["weights"] if w["name"] == "conv1.weight")
         assert w_stat["shape"] == [16, 3, 3, 3]
         self.assertAlmostEqual(w_stat["stats"]["mean"], 0.5, places=5)
 
@@ -166,9 +164,7 @@ class TestGraphJsonExport(unittest.TestCase):
         assert len(connections) > 0
 
         # Check edge from graph input to conv1
-        input_edge = next(
-            e for e in connections if e["tensor_name"] == "input_0"
-        )
+        input_edge = next(e for e in connections if e["tensor_name"] == "input_0")
         assert input_edge["source"] == "__input__:input_0"
         assert input_edge["target"] == conv_node["id"]
         assert not input_edge["is_weight"]
@@ -286,7 +282,7 @@ class TestGraphJsonExport(unittest.TestCase):
                 op_type="MatMul",
                 name=f"matmul_{i}",
                 input=[f"t_{i}", f"weight_{i}"],
-                output=[f"t_{i+1}"],
+                output=[f"t_{i + 1}"],
                 attrs={"transB": 1},
             )
             for i in range(50)
@@ -401,4 +397,3 @@ class TestGraphJsonExport(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

@@ -26,7 +26,11 @@ def test_perf_rewriter_bulk_replace_nodes():
         rewriter = graph.replace(pat, "PRelu")
         rewritten_graph = rewriter.build()
 
-    new_nodes = rewritten_graph.nodes if hasattr(rewritten_graph, "nodes") else rewritten_graph.graph.node
+    new_nodes = (
+        rewritten_graph.nodes
+        if hasattr(rewritten_graph, "nodes")
+        else rewritten_graph.graph.node
+    )
     op_types = [getattr(n, "op_type", None) for n in new_nodes]
 
     assert "PRelu" in op_types
