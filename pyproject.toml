@@ -1,0 +1,113 @@
+[project]
+name = "neuron-toolkit"
+version = "0.1.0"
+description = "A unified ONNX, TFLITE parsing and pattern-matching library."
+readme = "README.md"
+authors = [{ name = "Sheth Jenil", email = "shethjeniljigneshbhai@gmail.com" }]
+
+dependencies = ["onnx", "numpy", "pydantic", "networkx"]
+
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+
+[tool.ruff]
+line-length = 88
+target-version = "py310"
+fix = true
+show-fixes = true
+
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # isort
+    "D",    # pydocstyle
+    "B",    # flake8-bugbear
+    "C4",   # flake8-comprehensions
+    "UP",   # pyupgrade
+    "ARG",  # flake8-unused-arguments
+    "PTH",  # pathlib usage
+    "SIM",  # simplify
+    "RUF",  # Ruff-specific rules
+    "N",    # pep8-naming
+    "S",    # bandit
+    "ANN",  # type annotations
+    "BLE",  # blind except
+    "FBT",  # boolean trap
+    "DTZ",  # datetime timezone
+    "T10",  # debugger
+    "EM",   # error messages
+    "ISC",  # implicit string concat
+    "ICN",  # import conventions
+    "PT",   # pytest style
+    "RET",  # return statements
+    "SLF",  # private member access
+    "TID",  # tidy imports
+    "PGH",  # pygrep-hooks
+    "PL",   # pylint
+    "TRY",  # tryceratops
+    "PERF", # performance
+    "FURB", # refurb
+    "LOG",  # logging
+]
+
+ignore = [
+    "D100",    # Missing docstring in public module
+    "D104",    # Missing docstring in public package
+    "D105",    # Missing docstring in magic method
+    "D103",
+    "PLR2004",
+    "N802",
+    "PLC0415",
+    "PLR0915",
+    "E501",
+    "BLE001",
+    "PLR0912",
+    "N806",
+    "D102",
+    "SLF001",
+    "D107",    # Missing docstring in __init__
+    "D203",    # Conflicts with D211
+    "D213",    # Conflicts with D212
+    "PLR0913", # Too many arguments
+    "ANN401",  # Dynamically typed expressions (typing.Any) are disallowed
+]
+
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+
+[tool.ruff.lint.isort]
+combine-as-imports = true
+known-first-party = ["neuron_toolkit"]
+
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = [
+    "S101", # assert
+    "ANN",  # annotations
+]
+
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = "test_*.py"
+pythonpath = ["src"]
+
+addopts = """
+--strict-markers
+--cov=src
+--cov-report=term-missing
+-ra
+"""
