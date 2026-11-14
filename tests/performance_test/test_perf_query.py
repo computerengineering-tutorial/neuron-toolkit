@@ -17,10 +17,10 @@ def test_perf_query_by_op_type_scale():
     graph = NeuronGraph(model_proto)
 
     with PerformanceTracker(
-        op_name="GraphQuery find_by_op_type",
+        op_name="GraphQuery op",
         scale_info=f"{num_blocks * 4} nodes in graph",
     ) as perf:
-        conv_query = graph.query().find_by_op_type("Conv")
+        conv_query = graph.query().op("Conv")
         conv_count = conv_query.count()
 
     assert conv_count == num_blocks
@@ -38,9 +38,9 @@ def test_perf_query_set_operations_scale():
         op_name="GraphQuery Set Operations (Union & Intersect)",
         scale_info=f"Union and Intersection across {num_blocks * 4} graph nodes",
     ) as perf:
-        q_conv = q.find_by_op_type("Conv")
-        q_bn = q.find_by_op_type("BatchNormalization")
-        q_add = q.find_by_op_type("Add")
+        q_conv = q.op("Conv")
+        q_bn = q.op("BatchNormalization")
+        q_add = q.op("Add")
 
         q_union = q_conv | q_bn | q_add
         union_count = q_union.count()
@@ -60,7 +60,7 @@ def test_perf_query_descendants_traversal_deep():
     graph = NeuronGraph(model_proto)
     q = graph.query()
 
-    root_conv = q.find_by_name("conv_0", exact=True)
+    root_conv = q.name("conv_0", exact=True)
 
     with PerformanceTracker(
         op_name="GraphQuery Ancestor/Descendant Deep Traversal",

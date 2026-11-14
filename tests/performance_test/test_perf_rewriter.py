@@ -40,7 +40,7 @@ def test_perf_rewriter_delete_nodes_scale():
     graph = NeuronGraph(model_proto)
 
     q = graph.query()
-    bn_nodes = q.find_by_op_type("BatchNormalization").nodes
+    bn_nodes = q.op("BatchNormalization").nodes
 
     with PerformanceTracker(
         op_name="GraphRewriter Delete Nodes",

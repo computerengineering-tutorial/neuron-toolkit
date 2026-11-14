@@ -96,11 +96,13 @@ def trace_subgraph_boundaries(
         msg = "Could not resolve any valid start or end points in the graph."
         raise ValueError(msg)
 
+    from collections import deque
+
     # 1. BFS Descendants from S
     descendants: set[object] = set(S)
-    queue = list(S)
+    queue = deque(S)
     while queue:
-        curr = queue.pop()
+        curr = queue.popleft()
         for nxt in forward_adj.get(curr, []):
             if nxt not in descendants:
                 descendants.add(nxt)
@@ -108,9 +110,9 @@ def trace_subgraph_boundaries(
 
     # 2. BFS Ancestors from E
     ancestors: set[object] = set(E)
-    queue = list(E)
+    queue = deque(E)
     while queue:
-        curr = queue.pop()
+        curr = queue.popleft()
         for prev in reverse_adj.get(curr, []):
             if prev not in ancestors:
                 ancestors.add(prev)

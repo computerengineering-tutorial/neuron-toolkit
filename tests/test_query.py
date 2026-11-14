@@ -6,12 +6,12 @@ def test_query_filters(complex_model):
     q = parser.find()
 
     # op_type
-    assert q.find_by_op_type("Relu").count() == 1
-    assert q.find_by_op_type("Add").count() == 1
+    assert q.op("Relu").count() == 1
+    assert q.op("Add").count() == 1
 
     # name
-    assert q.find_by_name("n1", exact=True).count() == 1
-    assert q.find_by_name("n").count() == 6
+    assert q.name("n1", exact=True).count() == 1
+    assert q.name("n").count() == 6
 
     # tensor
     assert (
@@ -19,15 +19,15 @@ def test_query_filters(complex_model):
     )  # Produces by Relu, consumed by Add
 
     # attribute (Relu doesn't have attributes, let's use a model with attributes if needed, but we can test missing)
-    assert q.find_by_attribute("non_existent").count() == 0
+    assert q.attr("non_existent").count() == 0
 
 
 def test_query_traversal(complex_model):
     parser = ONNXParser(complex_model)
     q = parser.find()
 
-    relu_node = q.find_by_name("n1", exact=True)
-    add_node = q.find_by_name("n2", exact=True)
+    relu_node = q.name("n1", exact=True)
+    add_node = q.name("n2", exact=True)
 
     # children
     assert relu_node.children().single_node.name == "n2"
@@ -41,7 +41,7 @@ def test_query_traversal(complex_model):
     assert {n.name for n in desc} == {"n2", "n3", "n4", "n5"}
 
     # ancestors
-    anc = q.find_by_name("n4", exact=True).ancestors()
+    anc = q.name("n4", exact=True).ancestors()
     assert anc.count() == 4  # Mul, Add, Relu, Identity
     assert {n.name for n in anc} == {"n0", "n1", "n2", "n3"}
 
@@ -50,8 +50,8 @@ def test_query_set_ops(complex_model):
     parser = ONNXParser(complex_model)
     q = parser.find()
 
-    q1 = q.find_by_op_type("Relu")
-    q2 = q.find_by_op_type("Add")
+    q1 = q.op("Relu")
+    q2 = q.op("Add")
 
     union = q1 | q2
     assert union.count() == 2

@@ -32,7 +32,7 @@ def test_tflite_backend_mock(monkeypatch):
     # Since our TFLite parser is a real implementation now, we mock _load_model
     from neuron_toolkit.backends.tflite.parser import TFLiteParser
 
-    monkeypatch.setattr(TFLiteParser, "_load_model", lambda self: None)
+    monkeypatch.setattr(TFLiteParser, "_load_model", lambda _self: None)
 
     # Create a dummy parser
     parser = TFLiteParser("dummy.tflite")
@@ -65,7 +65,7 @@ def test_tflite_backend_mock(monkeypatch):
 def test_backend_agnostic_pattern_matching(monkeypatch):
     from neuron_toolkit.backends.tflite.parser import TFLiteParser
 
-    monkeypatch.setattr(TFLiteParser, "_load_model", lambda self: None)
+    monkeypatch.setattr(TFLiteParser, "_load_model", lambda _self: None)
 
     # TFLite mock nodes
     n1 = TFLiteNode("Relu", "r1", ["x"], ["y"])

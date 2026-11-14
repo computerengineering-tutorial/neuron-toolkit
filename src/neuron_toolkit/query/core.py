@@ -189,16 +189,19 @@ class NeuronQuery:
         return self._clone([n for n in self.nodes if predicate(n)])
 
     def op(self, op_type: str) -> NeuronQuery:
-        """Alias for find_by_op_type."""
-        return self.find_by_op_type(op_type)
-
-    def by_op(self, op_type: str) -> NeuronQuery:
-        """Alias for find_by_op_type."""
-        return self.find_by_op_type(op_type)
+        """Filter nodes by their op_type."""
+        return self.filter(lambda n: getattr(n, "op_type", None) == op_type)
 
     def name(self, name: str, *, exact: bool = False) -> NeuronQuery:
-        """Alias for find_by_name."""
-        return self.find_by_name(name, exact=exact)
+        """Filter nodes by name (substring match by default)."""
+        low = name.lower()
+        return self.filter(
+            lambda n: (
+                getattr(n, "name", "") == name
+                if exact
+                else low in getattr(n, "name", "").lower()
+            )
+        )
 
     def rank(self, rank: int) -> NeuronQuery:
         """Filter nodes by their output tensor rank."""
@@ -226,23 +229,22 @@ class NeuronQuery:
         return self.filter(_match)
 
     def attr(self, name: str, value: object = None) -> NeuronQuery:
-        """Alias for find_by_attribute."""
-        return self.find_by_attribute(name, value)
+        """Find nodes by attribute name and optionally value."""
 
-    def find_by_op_type(self, op_type: str) -> NeuronQuery:
-        """Filter nodes by their op_type."""
-        return self.filter(lambda n: getattr(n, "op_type", None) == op_type)
+        def _match(n: object) -> bool:
+            attrs = _get_node_attrs(n, cast(Any, self._backend))
+            if name not in attrs:
+                return False
+            if value is None:
+                return True
+            v = attrs[name]
+            if callable(value):
+                return cast(Callable[[Any], bool], value)(v)
+            if isinstance(v, np.ndarray) or isinstance(value, np.ndarray):
+                return np.array_equal(cast(Any, v), cast(Any, value))
+            return v == value
 
-    def find_by_name(self, name: str, *, exact: bool = False) -> NeuronQuery:
-        """Filter nodes by name (substring match by default)."""
-        low = name.lower()
-        return self.filter(
-            lambda n: (
-                getattr(n, "name", "") == name
-                if exact
-                else low in getattr(n, "name", "").lower()
-            )
-        )
+        return self.filter(_match)
 
     def find_by_tensor(self, name: str) -> NeuronQuery:
         """Filter nodes that consume or produce a specific tensor."""
@@ -260,24 +262,6 @@ class NeuronQuery:
                 p == name if exact else low in p.lower() for p in self._params(n)
             )
         )
-
-    def find_by_attribute(self, name: str, value: object = None) -> NeuronQuery:
-        """Find nodes by attribute name and optionally value."""
-
-        def _match(n: object) -> bool:
-            attrs = _get_node_attrs(n, cast(Any, self._backend))
-            if name not in attrs:
-                return False
-            if value is None:
-                return True
-            v = attrs[name]
-            if callable(value):
-                return cast(Callable[[Any], bool], value)(v)
-            if isinstance(v, np.ndarray) or isinstance(value, np.ndarray):
-                return np.array_equal(cast(Any, v), cast(Any, value))
-            return v == value
-
-        return self.filter(_match)
 
     # --- Traversal ---
 
@@ -326,11 +310,13 @@ class NeuronQuery:
             # Optimized multi-source traversal
             rev = g.reverse(copy=False) if method == "ancestors" else g
             sources = [getattr(n, "name", "") for n in self.nodes]
-            # Use multi-source BFS
+            from collections import deque
+
+            # Use multi-source BFS with deque for O(1) pops
             visited = set()
-            queue = [(s, 0) for s in sources]
+            queue = deque((s, 0) for s in sources)
             while queue:
-                u, d = queue.pop(0)
+                u, d = queue.popleft()
                 if u not in visited:
                     visited.add(u)
                     if d < max_depth:
@@ -345,25 +331,19 @@ class NeuronQuery:
         """Return direct children of selected nodes."""
         return self._traverse("successors")
 
-    def outputs(self) -> NeuronQuery:
-        """Alias for children()."""
-        return self.children()
-
     def parents(self) -> NeuronQuery:
         """Return direct parents of selected nodes."""
         return self._traverse("predecessors")
 
-    def inputs(self) -> NeuronQuery:
-        """Alias for parents()."""
-        return self.parents()
+    def ancestors(self, max_depth: int | None = None) -> NeuronQuery:
+        """Return all ancestors within *max_depth* (defaults to unbounded traversal)."""
+        depth = max_depth if max_depth is not None else 100_000
+        return self._traverse("ancestors", depth)
 
-    def ancestors(self, max_depth: int = 100) -> NeuronQuery:
-        """Return all ancestors within *max_depth*."""
-        return self._traverse("ancestors", max_depth)
-
-    def descendants(self, max_depth: int = 100) -> NeuronQuery:
-        """Return all descendants within *max_depth*."""
-        return self._traverse("descendants", max_depth)
+    def descendants(self, max_depth: int | None = None) -> NeuronQuery:
+        """Return all descendants within *max_depth* (defaults to unbounded traversal)."""
+        depth = max_depth if max_depth is not None else 100_000
+        return self._traverse("descendants", depth)
 
     # --- Entry / Exit ---
 
@@ -407,8 +387,8 @@ class NeuronQuery:
             if (p := self._params(n))
         }
 
-    def matches(self, pattern: Pattern) -> NeuronQuery:
-        """Return nodes that are the start of a match for *pattern*."""
+    def where(self, pattern: Pattern) -> NeuronQuery:
+        """Filter nodes that are the start of a match for *pattern*."""
         from neuron_toolkit.pattern import PatternDetector
 
         shim = _GraphShim(self.all_nodes, self.tensor_map, self.shape_info)
@@ -460,9 +440,6 @@ class NeuronQuery:
         """Alias for match_results — find all pattern matches."""
         return self.match_results(pattern)
 
-    def where(self, pattern: Pattern) -> NeuronQuery:
-        """Filter nodes that are the start of a match for *pattern*."""
-        return self.matches(pattern)
 
     def replace(
         self,
@@ -575,6 +552,14 @@ class NeuronQuery:
             msg = f"Expected 1 tensor, got {list(p.keys())}"
             raise ValueError(msg)
         return next(iter(p.values()))
+
+    def all(self) -> list[object]:
+        """Return all selected nodes as a list."""
+        return list(self.nodes)
+
+    def to_list(self) -> list[object]:
+        """Alias for all(). Return all selected nodes as a list."""
+        return list(self.nodes)
 
     def first(self) -> object | None:
         """Return the first node or None."""

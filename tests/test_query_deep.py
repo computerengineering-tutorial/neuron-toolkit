@@ -31,19 +31,19 @@ def test_query_navigation(branching_model):
     parser = ONNXParser(branching_model)
     q = parser.find()
 
-    # n2 (Mul) inputs
+    # n2 (Mul) parents
     n2 = q.name("n2")
-    inputs = n2.inputs()
+    inputs = n2.parents()
     # n2 inputs are [add1_out, C]. C is an initializer.
-    # NeuronQuery.inputs() usually returns producers of the inputs.
+    # NeuronQuery.parents() returns producers of the inputs.
     assert len(inputs) == 1
     node = inputs.first()
     assert node is not None
     assert node.name == "n1"
 
-    # n0 (Relu) outputs
+    # n0 (Relu) children
     n0 = q.name("n0")
-    outputs = n0.outputs()
+    outputs = n0.children()
     # n0 (relu_out) is input to n1 and n3
     assert len(outputs) == 2
     names = {n.name for n in outputs}

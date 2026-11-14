@@ -72,9 +72,6 @@ class BaseParser(ABC):
 
         export_safetensors(self, path, metadata=metadata)
 
-    def export_safetensors(self, path: str, metadata: dict[str, str] | None = None) -> None:
-        """Save model weight and parameter tensors into a .safetensors file (alias)."""
-        self.save_safetensors(path, metadata=metadata)
 
     def replace_weights(
         self,

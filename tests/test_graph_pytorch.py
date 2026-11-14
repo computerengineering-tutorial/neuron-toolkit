@@ -8,9 +8,9 @@ import pytest
 torch = pytest.importorskip("torch")
 pytest.importorskip("onnx")
 
-from onnx import TensorProto, helper  # noqa: E402
+from onnx import TensorProto, helper
 
-from neuron_toolkit import NeuronGraph  # noqa: E402
+from neuron_toolkit import NeuronGraph
 
 
 def _two_input_model(path) -> None:

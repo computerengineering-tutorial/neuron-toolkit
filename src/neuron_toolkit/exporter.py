@@ -8,6 +8,7 @@ analyses (sum, mean, min, max, std, sparsity, shape, dtype).
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 from collections.abc import Mapping, Sequence
@@ -894,11 +895,10 @@ def build_onnx_model_from_json(
     )
 
     # 8. Opset Imports
-    opset_imports = []
-    for opset in metadata.get("opset_import", []):
-        opset_imports.append(
-            helper.make_opsetid(opset.get("domain", ""), opset.get("version", 17))
-        )
+    opset_imports = [
+        helper.make_opsetid(opset.get("domain", ""), opset.get("version", 17))
+        for opset in metadata.get("opset_import", [])
+    ]
     if not opset_imports:
         opset_imports = [helper.make_opsetid("", 17)]
 
@@ -914,12 +914,255 @@ def build_onnx_model_from_json(
     if metadata.get("ir_version") is not None:
         model_kwargs["ir_version"] = metadata["ir_version"]
 
-    model_proto = helper.make_model(
+    return helper.make_model(
         graph_proto,
         **model_kwargs,
     )
 
-    return model_proto
+
+def build_tflite_model_from_json(
+    json_dict_or_str: dict[str, Any] | str,
+    weights: dict[str, np.ndarray] | str | None = None,
+    seed: int | None = None,
+) -> bytes:
+    """Rebuild a runnable TFLite flatbuffer binary from a JSON graph representation.
+
+    Parameters:
+        json_dict_or_str: Python dictionary or JSON string/filepath from `to_json()` / `to_dict()`.
+        weights: Optional dictionary of NumPy arrays, or path to a .safetensors file.
+                 If None, constant weights will be randomly generated.
+        seed: Optional integer seed for reproducible random weight initialization.
+
+    Returns:
+        bytes: Binary content of the reconstructed .tflite model.
+    """
+    from pathlib import Path
+
+    import flatbuffers
+    import tflite
+
+    if isinstance(json_dict_or_str, str):
+        if json_dict_or_str.strip().startswith("{"):
+            graph_dict = json.loads(json_dict_or_str)
+        else:
+            graph_dict = json.loads(Path(json_dict_or_str).read_text(encoding="utf-8"))
+    else:
+        graph_dict = json_dict_or_str
+
+    weights_dict: dict[str, np.ndarray] = {}
+    if isinstance(weights, str):
+        weights_dict = load_safetensors(weights)
+    elif isinstance(weights, dict):
+        weights_dict = {k: np.asarray(v) for k, v in weights.items()}
+
+    dtype_map = {
+        "float32": tflite.TensorType.FLOAT32,
+        "float16": tflite.TensorType.FLOAT16,
+        "int32": tflite.TensorType.INT32,
+        "uint8": tflite.TensorType.UINT8,
+        "int64": tflite.TensorType.INT64,
+        "string": tflite.TensorType.STRING,
+        "bool": tflite.TensorType.BOOL,
+        "int16": tflite.TensorType.INT16,
+        "int8": tflite.TensorType.INT8,
+    }
+
+    tensor_names: list[str] = []
+    tensor_meta: dict[str, dict[str, Any]] = {}
+
+    for conn in graph_dict.get("connections", []):
+        tname = conn.get("tensor_name")
+        if tname and tname not in tensor_meta:
+            raw_shape = conn.get("shape") or [1]
+            clean_shape = [
+                int(x) if isinstance(x, (int, float)) and x is not None else 1
+                for x in raw_shape
+            ]
+            tensor_meta[tname] = {
+                "shape": clean_shape,
+                "dtype": conn.get("dtype") or "float32",
+                "is_weight": conn.get("is_weight", False),
+            }
+            tensor_names.append(tname)
+
+    for inp in graph_dict.get("inputs", []):
+        iname = inp["name"] if isinstance(inp, dict) else inp
+        if iname not in tensor_meta:
+            tensor_meta[iname] = {"shape": [1], "dtype": "float32", "is_weight": False}
+            tensor_names.append(iname)
+
+    for out in graph_dict.get("outputs", []):
+        oname = out["name"] if isinstance(out, dict) else out
+        if oname not in tensor_meta:
+            tensor_meta[oname] = {"shape": [1], "dtype": "float32", "is_weight": False}
+            tensor_names.append(oname)
+
+    tensor_to_idx = {name: i for i, name in enumerate(tensor_names)}
+
+    buffers: list[bytes] = [b""]
+    tensor_buffer_idx: dict[str, int] = {}
+    rng = np.random.default_rng(seed)
+
+    for tname in tensor_names:
+        meta = tensor_meta[tname]
+        if meta["is_weight"] or tname in weights_dict:
+            if tname in weights_dict:
+                arr = weights_dict[tname]
+            else:
+                arr = _random_tensor_for_dtype(meta["shape"], meta["dtype"], rng)
+            buf_bytes = arr.tobytes()
+            buf_idx = len(buffers)
+            buffers.append(buf_bytes)
+            tensor_buffer_idx[tname] = buf_idx
+        else:
+            tensor_buffer_idx[tname] = 0
+
+    builder = flatbuffers.Builder(4096)
+
+    buffer_offsets = []
+    for b in buffers:
+        if b:
+            data_vec = builder.CreateByteVector(b)
+            tflite.BufferStart(builder)
+            tflite.BufferAddData(builder, data_vec)
+            buffer_offsets.append(tflite.BufferEnd(builder))
+        else:
+            tflite.BufferStart(builder)
+            buffer_offsets.append(tflite.BufferEnd(builder))
+
+    tensor_offsets = []
+    for tname in tensor_names:
+        meta = tensor_meta[tname]
+        name_str = builder.CreateString(tname)
+        shape = meta["shape"]
+        tflite.TensorStartShapeVector(builder, len(shape))
+        for s in reversed(shape):
+            builder.PrependInt32(int(s))
+        shape_vec = builder.EndVector()
+
+        ttype = dtype_map.get(meta["dtype"], tflite.TensorType.FLOAT32)
+        buf_idx = tensor_buffer_idx[tname]
+
+        tflite.TensorStart(builder)
+        tflite.TensorAddName(builder, name_str)
+        tflite.TensorAddShape(builder, shape_vec)
+        tflite.TensorAddType(builder, ttype)
+        tflite.TensorAddBuffer(builder, buf_idx)
+        tensor_offsets.append(tflite.TensorEnd(builder))
+
+    tflite.SubGraphStartTensorsVector(builder, len(tensor_offsets))
+    for off in reversed(tensor_offsets):
+        builder.PrependUOffsetTRelative(off)
+    tensors_vec = builder.EndVector()
+
+    nodes = graph_dict.get("nodes", [])
+    unique_op_types: list[str] = []
+    op_type_to_code_idx: dict[str, int] = {}
+    for node in nodes:
+        op_type = node.get("op_type", "ADD").upper()
+        if op_type not in op_type_to_code_idx:
+            op_type_to_code_idx[op_type] = len(unique_op_types)
+            unique_op_types.append(op_type)
+
+    operator_offsets = []
+    for node in nodes:
+        op_type = node.get("op_type", "ADD").upper()
+        code_idx = op_type_to_code_idx[op_type]
+
+        node_inputs = [
+            tensor_to_idx[inp]
+            for inp in node.get("inputs", [])
+            if inp in tensor_to_idx
+        ]
+        node_outputs = [
+            tensor_to_idx[out]
+            for out in node.get("outputs", [])
+            if out in tensor_to_idx
+        ]
+
+        tflite.OperatorStartInputsVector(builder, len(node_inputs))
+        for in_idx in reversed(node_inputs):
+            builder.PrependInt32(in_idx)
+        in_vec = builder.EndVector()
+
+        tflite.OperatorStartOutputsVector(builder, len(node_outputs))
+        for out_idx in reversed(node_outputs):
+            builder.PrependInt32(out_idx)
+        out_vec = builder.EndVector()
+
+        tflite.OperatorStart(builder)
+        tflite.OperatorAddOpcodeIndex(builder, code_idx)
+        tflite.OperatorAddInputs(builder, in_vec)
+        tflite.OperatorAddOutputs(builder, out_vec)
+        operator_offsets.append(tflite.OperatorEnd(builder))
+
+    tflite.SubGraphStartOperatorsVector(builder, len(operator_offsets))
+    for off in reversed(operator_offsets):
+        builder.PrependUOffsetTRelative(off)
+    operators_vec = builder.EndVector()
+
+    input_indices = [
+        tensor_to_idx[inp["name"] if isinstance(inp, dict) else inp]
+        for inp in graph_dict.get("inputs", [])
+        if (inp["name"] if isinstance(inp, dict) else inp) in tensor_to_idx
+    ]
+    output_indices = [
+        tensor_to_idx[out["name"] if isinstance(out, dict) else out]
+        for out in graph_dict.get("outputs", [])
+        if (out["name"] if isinstance(out, dict) else out) in tensor_to_idx
+    ]
+
+    tflite.SubGraphStartInputsVector(builder, len(input_indices))
+    for idx in reversed(input_indices):
+        builder.PrependInt32(idx)
+    subgraph_in_vec = builder.EndVector()
+
+    tflite.SubGraphStartOutputsVector(builder, len(output_indices))
+    for idx in reversed(output_indices):
+        builder.PrependInt32(idx)
+    subgraph_out_vec = builder.EndVector()
+
+    tflite.SubGraphStart(builder)
+    tflite.SubGraphAddTensors(builder, tensors_vec)
+    tflite.SubGraphAddInputs(builder, subgraph_in_vec)
+    tflite.SubGraphAddOutputs(builder, subgraph_out_vec)
+    tflite.SubGraphAddOperators(builder, operators_vec)
+    subgraph = tflite.SubGraphEnd(builder)
+
+    tflite.ModelStartSubgraphsVector(builder, 1)
+    builder.PrependUOffsetTRelative(subgraph)
+    subgraphs_vec = builder.EndVector()
+
+    opcode_offsets = []
+    for op_name in unique_op_types:
+        code_val = getattr(tflite.BuiltinOperator, op_name, 0)
+        tflite.OperatorCodeStart(builder)
+        tflite.OperatorCodeAddDeprecatedBuiltinCode(builder, min(code_val, 127))
+        tflite.OperatorCodeAddBuiltinCode(builder, code_val)
+        opcode_offsets.append(tflite.OperatorCodeEnd(builder))
+
+    tflite.ModelStartOperatorCodesVector(builder, len(opcode_offsets))
+    for off in reversed(opcode_offsets):
+        builder.PrependUOffsetTRelative(off)
+    opcodes_vec = builder.EndVector()
+
+    tflite.ModelStartBuffersVector(builder, len(buffer_offsets))
+    for off in reversed(buffer_offsets):
+        builder.PrependUOffsetTRelative(off)
+    buffers_vec = builder.EndVector()
+
+    desc_str = builder.CreateString("rebuilt_by_neuron_toolkit")
+
+    tflite.ModelStart(builder)
+    tflite.ModelAddVersion(builder, 3)
+    tflite.ModelAddOperatorCodes(builder, opcodes_vec)
+    tflite.ModelAddSubgraphs(builder, subgraphs_vec)
+    tflite.ModelAddDescription(builder, desc_str)
+    tflite.ModelAddBuffers(builder, buffers_vec)
+    model = tflite.ModelEnd(builder)
+
+    builder.Finish(model, file_identifier=b"TFL3")
+    return bytes(builder.Output())
 
 
 def load_graph_from_json(
@@ -940,7 +1183,29 @@ def load_graph_from_json(
     Returns:
         NeuronGraph instance containing the fully reconstructed model graph.
     """
+    from pathlib import Path
+
     from neuron_toolkit.graph import NeuronGraph
+
+    model_type = None
+    if isinstance(json_source, dict):
+        model_type = json_source.get("model_type") or json_source.get("metadata", {}).get("model_type")
+    elif isinstance(json_source, str) and json_source.strip().startswith("{"):
+        with contextlib.suppress(Exception):
+            parsed = json.loads(json_source)
+            model_type = parsed.get("model_type") or parsed.get("metadata", {}).get("model_type")
+    elif isinstance(json_source, str):
+        with contextlib.suppress(Exception):
+            parsed = json.loads(Path(json_source).read_text(encoding="utf-8"))
+            model_type = parsed.get("model_type") or parsed.get("metadata", {}).get("model_type")
+
+    if model_type == "tflite":
+        tflite_bytes = build_tflite_model_from_json(
+            json_source,
+            weights=weights_source,
+            seed=seed,
+        )
+        return NeuronGraph(tflite_bytes, **kwargs)
 
     model_proto = build_onnx_model_from_json(
         json_source,

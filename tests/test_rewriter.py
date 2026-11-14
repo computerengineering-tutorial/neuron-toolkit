@@ -2,11 +2,11 @@ from neuron_toolkit.parser import ONNXParser
 from neuron_toolkit.pattern import Pattern
 
 
-def test_rewriter_replace(simple_model, tmp_path):
+def test_rewriter_replace(simple_model):
     parser = ONNXParser(simple_model)
 
     # Replace Add with Sub
-    add_node = parser.find().find_by_op_type("Add").single_node
+    add_node = parser.find().op("Add").single_node
 
     rw = parser.rewriter()
     rw.replace(
@@ -50,7 +50,7 @@ def test_rewriter_delete(complex_model):
     parser = ONNXParser(complex_model)
 
     # Delete Tanh node
-    tanh_node = parser.find().find_by_op_type("Tanh").single_node
+    tanh_node = parser.find().op("Tanh").single_node
 
     rw = parser.rewriter()
     rw.delete([tanh_node])
@@ -63,7 +63,7 @@ def test_rewriter_delete(complex_model):
 def test_rewriter_insert_before(simple_model):
     parser = ONNXParser(simple_model)
 
-    add_node = parser.find().find_by_op_type("Add").single_node
+    add_node = parser.find().op("Add").single_node
 
     rw = parser.rewriter()
     rw.insert_before(add_node, "Identity", inputs=["A"], outputs=["A_ident"])

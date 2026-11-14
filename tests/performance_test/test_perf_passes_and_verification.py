@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
-import torch
+
+torch = pytest.importorskip("torch")
 from torch import nn
 
 from neuron_toolkit import NeuronGraph
@@ -32,7 +33,7 @@ def test_perf_fuse_conv_bn_pass():
         fused_model = fused_rewriter.build()
 
     new_graph = NeuronGraph(fused_model)
-    bn_nodes = new_graph.query().find_by_op_type("BatchNormalization").count()
+    bn_nodes = new_graph.query().op("BatchNormalization").count()
 
     assert bn_nodes == 0
     assert perf.duration_sec > 0.001

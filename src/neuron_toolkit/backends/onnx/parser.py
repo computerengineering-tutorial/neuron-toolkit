@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from collections import Counter
-from collections.abc import ItemsView, Iterator, KeysView, Sequence
+from collections.abc import ItemsView, Iterator, KeysView, Mapping, Sequence
 from typing import TYPE_CHECKING, Any, cast
 
 import onnx
@@ -25,25 +25,32 @@ log = logging.getLogger("neuron_toolkit.backends.onnx")
 
 
 class LazyTensorMap(dict[str, "np.ndarray"]):
-    """Lazy-loading map for ONNX initializers."""
+    """Lazy-loading map for ONNX initializers with memory eviction."""
 
     def __init__(self, initializers: Sequence[onnx.TensorProto]) -> None:
         super().__init__()
         self._initializers = {t.name: t for t in initializers}
+        self._keys: set[str] = set(self._initializers.keys())
         self._cache: dict[str, np.ndarray] = {}
 
     def __getitem__(self, key: str) -> np.ndarray:
         if key in self._cache:
             return self._cache[key]
         if key in self._initializers:
-            arr = numpy_helper.to_array(self._initializers[key])
+            proto = self._initializers.pop(key)
+            arr = numpy_helper.to_array(proto)
             self._cache[key] = arr
             return arr
         return super().__getitem__(key)
 
+    def __setitem__(self, key: str, value: np.ndarray) -> None:
+        self._cache[key] = value
+        self._keys.add(key)
+        self._initializers.pop(key, None)
+
     def __contains__(self, key: object) -> bool:
         return (
-            key in self._initializers or key in self._cache or super().__contains__(key)
+            key in self._keys or key in self._cache or super().__contains__(key)
         )
 
     def get(self, key: str, default: Any = None) -> Any:
@@ -54,16 +61,16 @@ class LazyTensorMap(dict[str, "np.ndarray"]):
             return default
 
     def __len__(self) -> int:
-        return len(self._initializers)
+        return len(self._keys)
 
     def __iter__(self) -> Iterator[str]:
-        return iter(self._initializers)
+        return iter(self._keys)
 
     def keys(self) -> KeysView[str]:
-        return self._initializers.keys()
+        return self._keys  # type: ignore[return-value]
 
     def items(self) -> ItemsView[str, np.ndarray]:
-        return {k: self[k] for k in self._initializers}.items()
+        return {k: self[k] for k in self._keys}.items()
 
 
 class ONNXParser(BaseParser):
@@ -244,19 +251,13 @@ class ONNXParser(BaseParser):
             self.nodes, self.tensor_map, start_points, end_points, self.graph_outputs
         )
 
-        # 2. Extract using onnx.utils.extract_model via a temporary file
-        temp_dir = tempfile.mkdtemp(prefix="neuron_toolkit_slice_")
+        from pathlib import Path
 
-        with tempfile.NamedTemporaryFile(
-            suffix=".onnx", dir=temp_dir, delete=False
-        ) as f_in:
-            in_path = f_in.name
-        with tempfile.NamedTemporaryFile(
-            suffix=".onnx", dir=temp_dir, delete=False
-        ) as f_out:
-            out_path = f_out.name
+        # 2. Extract using onnx.utils.extract_model via a temporary directory
+        with tempfile.TemporaryDirectory(prefix="neuron_toolkit_slice_") as temp_dir:
+            in_path = str(Path(temp_dir) / "in.onnx")
+            out_path = str(Path(temp_dir) / "out.onnx")
 
-        try:
             onnx.save(self.model, in_path)
             onnx.utils.extract_model(
                 input_path=in_path,
@@ -272,10 +273,3 @@ class ONNXParser(BaseParser):
                 onnx.save(extracted_model, output_path)
 
             return ONNXParser(extracted_model)
-        finally:
-            from pathlib import Path
-
-            for p in (in_path, out_path):
-                path_obj = Path(p)
-                if path_obj.exists():
-                    path_obj.unlink()

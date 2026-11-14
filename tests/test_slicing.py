@@ -4,7 +4,8 @@ import flatbuffers
 import numpy as np
 import pytest
 import tflite
-import torch
+
+torch = pytest.importorskip("torch")
 from torch import nn
 
 from neuron_toolkit.graph import NeuronGraph
@@ -313,10 +314,10 @@ def test_onnx_pytorch_comparison(complex_model):
 
     # Implement matching PyTorch model
     class PyTorchReluAddMul(nn.Module):
-        def __init__(self, B, C):
+        def __init__(self, b_val, c_val):
             super().__init__()
-            self.B = torch.tensor(B)
-            self.C = torch.tensor(C)
+            self.B = torch.tensor(b_val)
+            self.C = torch.tensor(c_val)
 
         def forward(self, x):
             return (torch.relu(x) + self.B) * self.C
@@ -341,10 +342,13 @@ def test_onnx_pytorch_comparison(complex_model):
 
 def test_pytorch_comparison(complex_tflite_model):
     """Test verification against PyTorch."""
-    from neuron_toolkit.graph import _is_tflite_runnable
+    from neuron_toolkit.eval.verifier import (
+        _get_tflite_interpreter_cls,
+        _is_tflite_runnable,
+    )
 
-    if not _is_tflite_runnable():
-        pytest.skip("LiteRT interpreter not runnable on this CPU.")
+    assert _is_tflite_runnable(), "LiteRT/TFLite interpreter must be available and runnable"
+    assert _get_tflite_interpreter_cls() is not None
 
     graph = NeuronGraph(complex_tflite_model)
 
@@ -386,3 +390,75 @@ def test_pytorch_comparison(complex_tflite_model):
     rep_dec = run_layer.similarity_report
     assert key in rep_dec
     assert rep_dec[key]["all_close"] is True
+
+
+def test_pytorch_comparison_divergence_detection(complex_tflite_model):
+    """Verify that compare_outputs accurately detects when outputs diverge."""
+    graph = NeuronGraph(complex_tflite_model)
+
+    # Implement an intentionally different function (negative abs + 10.0)
+    class PyTorchWrong(nn.Module):
+        def forward(self, x):
+            return -torch.abs(x) + 10.0
+
+    model_py = PyTorchWrong()
+    sample_input = {"input": np.random.randn(1, 10).astype(np.float32)}
+
+    report = graph.compare_outputs(
+        start_points="input",
+        end_points="abs_out",
+        pytorch_module=model_py,
+        inputs_dict=sample_input,
+    )
+
+    key = "abs_out" if "abs_out" in report else "output_0"
+    assert report[key]["all_close"] is False
+    assert report[key]["mae"] > 0.0
+
+
+def test_pytorch_comparison_dict_outputs(complex_model):
+    """Verify comparison when PyTorch returns dictionary outputs."""
+    graph = NeuronGraph(complex_model)
+
+    weights = graph.get_weights()
+    B_np = weights["B"]
+    C_np = weights["C"]
+
+    class DictPyTorchModel(nn.Module):
+        def __init__(self, b_val, c_val):
+            super().__init__()
+            self.B = torch.tensor(b_val)
+            self.C = torch.tensor(c_val)
+
+        def forward(self, x):
+            out = (torch.relu(x) + self.B) * self.C
+            return {"mul_out": out}
+
+    model_py = DictPyTorchModel(B_np, C_np)
+    sample_input = {"A_id": np.random.randn(1, 10).astype(np.float32)}
+
+    report = graph.compare_outputs(
+        start_points="A_id",
+        end_points="mul_out",
+        pytorch_module=model_py,
+        inputs_dict=sample_input,
+    )
+    assert "mul_out" in report
+    assert report["mul_out"]["all_close"] is True
+
+
+def test_verifier_decorator_handles_failure(complex_model):
+    """Verify decorator gracefully records exceptions in similarity_report."""
+    graph = NeuronGraph(complex_model)
+
+    # Intentionally give nonexistent start/end points
+    @graph.verify_against_pytorch(start_points="nonexistent_start", end_points="nonexistent_end")
+    def dummy_func(x):
+        return x
+
+    sample_tensor = torch.randn(1, 5)
+    _ = dummy_func(sample_tensor)
+
+    assert hasattr(dummy_func, "similarity_report")
+    assert "error" in dummy_func.similarity_report
+

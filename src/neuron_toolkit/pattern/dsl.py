@@ -42,6 +42,7 @@ class Pattern(ActivationMixin):
         _constraints: dict[str, object] | None = None,
         _rank: int | None = None,
         _dtype: str | None = None,
+        _commutative: bool = False,
     ) -> None:
         """Initialize a Pattern node."""
         self.op_type = op_type
@@ -52,6 +53,26 @@ class Pattern(ActivationMixin):
         self._constraints = _constraints or {}
         self._rank = _rank
         self._dtype = _dtype
+        self._commutative = _commutative
+
+    @property
+    def is_commutative(self) -> bool:
+        """Whether this pattern node treats its inputs as commutative."""
+        return self._commutative
+
+    def commutative(self, is_comm: bool = True) -> Pattern:
+        """Mark this pattern node as commutative."""
+        return Pattern(
+            self.op_type,
+            list(self.inputs),
+            self.value,
+            _alternatives=list(self._alternatives),
+            _capture=self._capture,
+            _constraints=dict(self._constraints),
+            _rank=self._rank,
+            _dtype=self._dtype,
+            _commutative=is_comm,
+        )
 
     @property
     def alternatives(self) -> list[Pattern]:
@@ -117,6 +138,7 @@ class Pattern(ActivationMixin):
             _constraints=dict(self._constraints),
             _rank=self._rank,
             _dtype=self._dtype,
+            _commutative=self._commutative,
         )
 
     def where(self, **constraints: object) -> Pattern:
@@ -131,6 +153,7 @@ class Pattern(ActivationMixin):
             _constraints=merged,
             _rank=self._rank,
             _dtype=self._dtype,
+            _commutative=self._commutative,
         )
 
     def with_output_rank(self, rank: int) -> Pattern:
@@ -144,6 +167,7 @@ class Pattern(ActivationMixin):
             _constraints=dict(self._constraints),
             _rank=rank,
             _dtype=self._dtype,
+            _commutative=self._commutative,
         )
 
     def with_dtype(self, dtype: str) -> Pattern:
@@ -157,6 +181,7 @@ class Pattern(ActivationMixin):
             _constraints=dict(self._constraints),
             _rank=self._rank,
             _dtype=dtype,
+            _commutative=self._commutative,
         )
 
     # --- Fusion Engine Integration ---
@@ -183,8 +208,8 @@ class Pattern(ActivationMixin):
         from neuron_toolkit.graph import NeuronGraph
 
         if isinstance(target, NeuronGraph):
-            return target.query().matches(self)
-        return target.matches(self)
+            return target.query().where(self)
+        return target.where(self)
 
     # Arithmetic DSL
     def __add__(self, other: object) -> Pattern:

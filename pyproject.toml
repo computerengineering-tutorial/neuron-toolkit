@@ -1,21 +1,52 @@
 [project]
 name = "neuron-toolkit"
-version = "0.1.0"
-description = "A unified ONNX, TFLITE parsing and pattern-matching library."
+version = "0.2.0"
+description = "A unified ONNX, TFLite parsing, querying, pattern-matching, and transformation library."
 readme = "README.md"
+requires-python = ">=3.11"
 authors = [{ name = "Sheth Jenil", email = "shethjeniljigneshbhai@gmail.com" }]
 
-dependencies = ["onnx", "numpy", "pydantic", "networkx"]
+dependencies = [
+    "onnx>=1.14.0",
+    "numpy>=1.24.0",
+    "pydantic>=2.0.0",
+    "networkx>=3.0",
+    "flatbuffers>=23.5.26",
+    "tflite>=2.14.0",
+]
 
+[project.optional-dependencies]
+onnx = [
+    "onnx>=1.14.0",
+]
+tflite = [
+    "flatbuffers>=23.5.26",
+    "tflite>=2.14.0",
+    "ai-edge-litert>=2.0.0",
+]
+eval = [
+    "torch>=2.0.0",
+    "onnxruntime>=1.15.0",
+    "ai-edge-litert>=2.0.0",
+]
+all = [
+    "neuron-toolkit[onnx,tflite,eval]",
+]
+
+[project.scripts]
+neuron = "neuron_toolkit.cli:main"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+[[tool.uv.index]]
+url = "https://download.pytorch.org/whl/cpu"
+
 
 [tool.ruff]
 line-length = 88
-target-version = "py310"
+target-version = "py311"
 fix = true
 show-fixes = true
 
@@ -81,6 +112,8 @@ ignore = [
     "D213",    # Conflicts with D212
     "PLR0913", # Too many arguments
     "ANN401",  # Dynamically typed expressions (typing.Any) are disallowed
+    "FBT001",  # Boolean-typed positional argument in function definition
+    "FBT002",  # Boolean default positional argument in function definition
 ]
 
 
@@ -97,6 +130,13 @@ known-first-party = ["neuron_toolkit"]
 "tests/*" = [
     "S101", # assert
     "ANN",  # annotations
+    "PTH",  # pathlib in tests
+    "PT",   # pytest style in legacy tests
+    "E402", # importorskip module-level imports
+    "B",    # bugbear in tests
+    "S",    # bandit in tests
+    "PERF", # perf in tests
+    "D",    # docstrings in tests
 ]
 
 
@@ -111,3 +151,12 @@ addopts = """
 --cov-report=term-missing
 -ra
 """
+
+[dependency-groups]
+dev = [
+    "hypothesis>=6.170.15",
+    "pytest>=9.2.0",
+    "pytest-benchmark>=5.3.1",
+    "pytest-cov>=7.1.0",
+    "torch>=2.15.0",
+]

@@ -1,6 +1,5 @@
 """Tests for rebuilding graph from JSON + Safetensors and in-place weight replacement."""
 
-import json
 import os
 import tempfile
 import unittest
@@ -10,11 +9,6 @@ import numpy as np
 
 import neuron_toolkit
 from neuron_toolkit._utils import _GraphShim
-from neuron_toolkit.exporter import (
-    build_onnx_model_from_json,
-    export_graph_dict,
-    load_graph_from_json,
-)
 from neuron_toolkit.graph import NeuronGraph
 
 

@@ -5,8 +5,8 @@ Unified entry point for graph analysis, querying, and transformation.
 
 from __future__ import annotations
 
-import contextlib
 import logging
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, cast
 
 from neuron_toolkit._utils import _GraphShim
@@ -20,26 +20,7 @@ if TYPE_CHECKING:
 log = logging.getLogger("neuron_toolkit.graph")
 
 
-def _is_tflite_runnable() -> bool:
-    """Check if LiteRT can be loaded and run without crashing."""
-    import subprocess
-    import sys
 
-    try:
-        res = subprocess.run(
-            [
-                sys.executable,
-                "-c",
-                "from ai_edge_litert.interpreter import Interpreter",
-            ],
-            capture_output=True,
-            timeout=5,
-            check=False,
-        )
-    except Exception:
-        return False
-    else:
-        return res.returncode == 0
 
 
 class NeuronGraph:
@@ -150,6 +131,24 @@ class NeuronGraph:
         """Return shape and dtype information for each tensor."""
         return getattr(self._backend, "shape_info", {})
 
+    @property
+    def inputs(self) -> list[str]:
+        """Return the list of graph input tensor names."""
+        if hasattr(self._backend, "inputs"):
+            return list(self._backend.inputs)
+        if hasattr(self._backend, "graph_inputs"):
+            return list(self._backend.graph_inputs)
+        return []
+
+    @property
+    def outputs(self) -> list[str]:
+        """Return the list of graph output tensor names."""
+        if hasattr(self._backend, "outputs"):
+            return list(self._backend.outputs)
+        if hasattr(self._backend, "graph_outputs"):
+            return list(self._backend.graph_outputs)
+        return []
+
     def query(self) -> NeuronQuery:
         """Alias for find() — return a query over all nodes."""
         return self._backend.find()
@@ -183,6 +182,78 @@ class NeuronGraph:
             rewriter.replace_from_result(m, new_op, name=name, **attrs)
         return rewriter
 
+    def to_ir(self) -> Any:
+        """Convert this graph to a framework-agnostic IRGraph."""
+        from neuron_toolkit.ir import (
+            IRGraph,
+            IRNode,
+            IRTensor,
+            ONNXAdapter,
+            TFLiteAdapter,
+        )
+
+        if hasattr(self._backend, "model"):
+            return ONNXAdapter().import_to_ir(self._backend.model)
+        if hasattr(self._backend, "tflite_bytes"):
+            return TFLiteAdapter().import_to_ir(self._backend.tflite_bytes)
+
+        ir = IRGraph(name="graph")
+        ir.inputs = list(self.inputs)
+        ir.outputs = list(self.outputs)
+        for name, data in self.tensor_map.items():
+            shape = tuple(data.shape) if hasattr(data, "shape") else ()
+            dtype = str(data.dtype) if hasattr(data, "dtype") else "float32"
+            ir.add_tensor(
+                IRTensor(
+                    name=name,
+                    shape=shape,
+                    dtype=dtype,
+                    data=data,
+                    is_initializer=True,
+                )
+            )
+        for node in self.nodes:
+            attrs = (
+                self._backend.get_node_attrs(node)
+                if hasattr(self._backend, "get_node_attrs")
+                else {}
+            )
+            ir.add_node(
+                IRNode(
+                    op_type=getattr(node, "op_type", ""),
+                    name=getattr(node, "name", ""),
+                    inputs=list(getattr(node, "input", [])),
+                    outputs=list(getattr(node, "output", [])),
+                    attributes=attrs,
+                )
+            )
+        return ir
+
+    def optimize(
+        self, passes: list[Any] | Any | None = None
+    ) -> tuple[NeuronGraph, Any]:
+        """Apply a sequence of optimization passes or PassManager to the graph."""
+        from neuron_toolkit.passes import (
+            BasePass,
+            DeadCodeElimination,
+            FuseConvBN,
+            PassManager,
+        )
+
+        if passes is None:
+            pm = PassManager([FuseConvBN(), DeadCodeElimination()])
+        elif isinstance(passes, PassManager):
+            pm = passes
+        elif isinstance(passes, list):
+            pm = PassManager(passes)
+        elif isinstance(passes, BasePass):
+            pm = PassManager([passes])
+        else:
+            msg = f"Expected PassManager or list of BasePass, got {type(passes)}"
+            raise TypeError(msg)
+
+        return pm.run(self)
+
     def rewriter(self) -> NeuronRewriter:
         """Return a GraphRewriter bound to this model."""
         from neuron_toolkit.rewriter import NeuronRewriter
@@ -193,6 +264,33 @@ class NeuronGraph:
         return _GraphShim(
             self.nodes, self.tensor_map, self.shape_info, backend=self._backend
         )
+
+    def apply_rules(
+        self, rules: Any, max_iterations: int = 10
+    ) -> NeuronGraph:
+        """Apply declarative RewriteRules iteratively until fixed point or max_iterations."""
+        from neuron_toolkit.pattern.rules import RewriteRule
+
+        rule_list = [rules] if isinstance(rules, RewriteRule) else list(rules)
+        current_graph = self
+
+        for _ in range(max_iterations):
+            rewriter = current_graph.rewriter()
+            matched_any = False
+
+            for rule in rule_list:
+                matches = current_graph.findall(rule.pattern)
+                if matches:
+                    matched_any = True
+                    for m in matches:
+                        rule.apply(m, rewriter)
+
+            if not matched_any:
+                break
+
+            current_graph = rewriter.build_graph()
+
+        return current_graph
 
     def slice(
         self,
@@ -233,6 +331,18 @@ class NeuronGraph:
             msg = "Unsupported backend type for saving."
             raise ValueError(msg)
 
+    def to_mermaid(self, max_nodes: int = 150) -> str:
+        """Generate a Mermaid flowchart diagram representation."""
+        from neuron_toolkit.viz import to_mermaid
+
+        return to_mermaid(self, max_nodes=max_nodes)
+
+    def to_html(self, output_path: str | None = None) -> str:
+        """Export this graph as a standalone interactive HTML visualizer page."""
+        from neuron_toolkit.viz import to_html
+
+        return to_html(self, output_path=output_path)
+
     def get_weights(self) -> dict[str, Any]:
         """Return a dictionary of all parameter/initializer weight tensors in the graph."""
         return dict(self.tensor_map)
@@ -249,23 +359,11 @@ class NeuronGraph:
 
         return export_graph_json(self, path=path, indent=indent)
 
-    def export_graph_json(self, path: str | None = None, indent: int = 2) -> str | None:
-        """Export the model graph structure to JSON format (alias for to_json)."""
-        return self.to_json(path=path, indent=indent)
-
-    def to_graph_json(self, path: str | None = None, indent: int = 2) -> str | None:
-        """Export the model graph structure to JSON format (alias for to_json)."""
-        return self.to_json(path=path, indent=indent)
-
     def save_safetensors(self, path: str, metadata: dict[str, str] | None = None) -> None:
         """Save model weight and parameter tensors into a .safetensors file."""
         from neuron_toolkit.exporter import export_safetensors
 
         export_safetensors(self, path, metadata=metadata)
-
-    def export_safetensors(self, path: str, metadata: dict[str, str] | None = None) -> None:
-        """Save model weight and parameter tensors into a .safetensors file (alias)."""
-        self.save_safetensors(path, metadata=metadata)
 
     def load_safetensors(
         self,
@@ -317,226 +415,16 @@ class NeuronGraph:
         atol: float = 1e-8,
     ) -> dict[str, Any]:
         """Execute the sliced model and PyTorch module on inputs and compare outputs."""
-        import numpy as np
-        import torch
+        from neuron_toolkit.eval import GraphVerifier
 
-        # 1. Run the PyTorch module
-        with torch.no_grad():
-            torch_inputs = []
-            if len(inputs_dict) == 1:
-                val = next(iter(inputs_dict.values()))
-                torch_inputs.append(torch.from_numpy(np.asarray(val)))
-            else:
-                import inspect
-
-                callable_module = getattr(pytorch_module, "forward", pytorch_module)
-                params = list(inspect.signature(callable_module).parameters.keys())
-                unused = dict(inputs_dict)
-                # Pair arguments by name whenever possible…
-                torch_inputs.extend(
-                    torch.from_numpy(np.asarray(unused.pop(param)))
-                    for param in params
-                    if param in unused
-                )
-                # …and fill any remaining parameters with the leftover values
-                # in insertion order so positionally-passed tensors line up.
-                while len(torch_inputs) < len(params) and unused:
-                    key = next(iter(unused))
-                    val = unused.pop(key)
-                    torch_inputs.append(torch.from_numpy(np.asarray(val)))
-
-            pytorch_outputs = pytorch_module(*torch_inputs)
-
-        # Normalize PyTorch outputs to numpy arrays
-        if isinstance(pytorch_outputs, torch.Tensor):
-            pytorch_outputs_np = [pytorch_outputs.cpu().numpy()]
-        elif isinstance(pytorch_outputs, tuple):
-            pytorch_outputs_np = [
-                t.cpu().numpy() for t in pytorch_outputs if isinstance(t, torch.Tensor)
-            ]
-        elif isinstance(pytorch_outputs, dict):
-            pytorch_outputs_np = {
-                k: v.cpu().numpy()
-                for k, v in pytorch_outputs.items()
-                if isinstance(v, torch.Tensor)
-            }
-        else:
-            pytorch_outputs_np = [pytorch_outputs]
-
-        # 2. Run the sliced model
-        sliced_graph = self.slice(start_points, end_points)
-        if hasattr(sliced_graph._backend, "model"):  # ONNX
-            import onnxruntime as ort
-
-            model_bytes = sliced_graph._backend.model.SerializeToString()
-            session = ort.InferenceSession(model_bytes)
-
-            run_inputs = {}
-            session_inputs = [i.name for i in session.get_inputs()]
-            used_keys: set[str] = set()
-            for name in session_inputs:
-                if name in inputs_dict:
-                    run_inputs[name] = inputs_dict[name]
-                    used_keys.add(name)
-                    continue
-                matched = False
-                for k, v in inputs_dict.items():
-                    if k in used_keys:
-                        continue
-                    if k in name or name in k:
-                        run_inputs[name] = v
-                        matched = True
-                        used_keys.add(k)
-                        break
-                if not matched and len(inputs_dict) == 1:
-                    run_inputs[name] = next(iter(inputs_dict.values()))
-                elif not matched and len(inputs_dict) == len(session_inputs):
-                    # Positional fallback: match up remaining inputs by order.
-                    for k, v in inputs_dict.items():
-                        if k not in used_keys:
-                            run_inputs[name] = v
-                            used_keys.add(k)
-                            matched = True
-                            break
-
-            output_names = [o.name for o in session.get_outputs()]
-            outputs_list = session.run(output_names, run_inputs)
-            model_outputs = dict(zip(output_names, outputs_list, strict=False))
-        else:  # TFLite
-            if not _is_tflite_runnable():
-                msg = (
-                    "LiteRT interpreter is not usable on this CPU "
-                    "due to instruction set mismatch (AVX/AVX2 support missing)."
-                )
-                raise RuntimeError(msg)
-            from ai_edge_litert.interpreter import Interpreter
-
-            model_bytes = sliced_graph._backend.source
-            if not isinstance(model_bytes, bytes):
-                msg = "Sliced TFLite model source must be bytes."
-                raise ValueError(msg)
-
-            interpreter = Interpreter(model_content=model_bytes)
-            interpreter.allocate_tensors()
-
-            input_details = interpreter.get_input_details()
-            output_details = interpreter.get_output_details()
-
-            tflite_used_keys: set[str] = set()
-            for detail in input_details:
-                name = detail["name"]
-                if name in inputs_dict:
-                    interpreter.set_tensor(detail["index"], inputs_dict[name])
-                    tflite_used_keys.add(name)
-                    continue
-                matched = False
-                for k, v in inputs_dict.items():
-                    if k in tflite_used_keys:
-                        continue
-                    if k in name or name in k:
-                        interpreter.set_tensor(detail["index"], v)
-                        matched = True
-                        tflite_used_keys.add(k)
-                        break
-                if not matched and len(inputs_dict) == 1:
-                    interpreter.set_tensor(
-                        detail["index"], next(iter(inputs_dict.values()))
-                    )
-                elif not matched and len(inputs_dict) == len(input_details):
-                    # Positional fallback: match up remaining inputs by order.
-                    for k, v in inputs_dict.items():
-                        if k not in tflite_used_keys:
-                            interpreter.set_tensor(detail["index"], v)
-                            tflite_used_keys.add(k)
-                            matched = True
-                            break
-
-            interpreter.invoke()
-
-            model_outputs = {}
-            for detail in output_details:
-                model_outputs[detail["name"]] = interpreter.get_tensor(detail["index"])
-
-        # 3. Match and compare
-        # TFLite/ONNX slicing may reorder graph outputs, so re-align the model
-        # outputs to the caller-declared endpoint order before pairing.
-        declared_endpoints = (
-            [end_points]
-            if isinstance(end_points, str)
-            else (
-                list(end_points)
-                if isinstance(end_points, (list, tuple))
-                else [end_points]
-            )
+        return GraphVerifier(self).compare_outputs(
+            start_points=start_points,
+            end_points=end_points,
+            pytorch_module=pytorch_module,
+            inputs_dict=inputs_dict,
+            rtol=rtol,
+            atol=atol,
         )
-        if declared_endpoints and all(isinstance(e, str) for e in declared_endpoints):
-            model_outs_list = [
-                model_outputs[e] for e in declared_endpoints if e in model_outputs
-            ]
-        else:
-            model_outs_list = list(model_outputs.values())
-        matches = []
-        if isinstance(pytorch_outputs_np, dict):
-            for k, py_val in pytorch_outputs_np.items():
-                model_val = None
-                for mk, mv in model_outputs.items():
-                    if k in mk or mk in k:
-                        model_val = mv
-                        break
-                if model_val is None and len(model_outputs) == 1:
-                    model_val = next(iter(model_outputs.values()))
-
-                if model_val is not None:
-                    matches.append((k, py_val, model_val))
-        else:
-            matched_endpoint = False
-            if len(pytorch_outputs_np) == 1:
-                end_pts_list = (
-                    [end_points] if not isinstance(end_points, list) else end_points
-                )
-                for ep in end_pts_list:
-                    if isinstance(ep, str) and ep in model_outputs:
-                        matches.append((ep, pytorch_outputs_np[0], model_outputs[ep]))
-                        matched_endpoint = True
-                        break
-
-            if not matched_endpoint:
-                model_names = list(model_outputs.keys())
-                for i, py_val in enumerate(pytorch_outputs_np):
-                    if i < len(model_outs_list):
-                        name = model_names[i] if i < len(model_names) else f"output_{i}"
-                        matches.append((name, py_val, model_outs_list[i]))
-
-        report = {}
-        for name, py_val, raw_model_val in matches:
-            curr_model_val = raw_model_val
-            if py_val.shape != curr_model_val.shape:
-                with contextlib.suppress(ValueError):
-                    curr_model_val = curr_model_val.reshape(py_val.shape)
-
-            mae = np.mean(np.abs(py_val - curr_model_val))
-            mse = np.mean((py_val - curr_model_val) ** 2)
-
-            py_flat = py_val.flatten()
-            model_flat = curr_model_val.flatten()
-            norm_py = np.linalg.norm(py_flat)
-            norm_model = np.linalg.norm(model_flat)
-            if norm_py > 0 and norm_model > 0:
-                cos_sim = np.dot(py_flat, model_flat) / (norm_py * norm_model)
-            else:
-                cos_sim = 1.0 if norm_py == norm_model else 0.0
-
-            all_close = np.allclose(py_val, curr_model_val, rtol=rtol, atol=atol)
-
-            report[name] = {
-                "mae": float(mae),
-                "mse": float(mse),
-                "cosine_similarity": float(cos_sim),
-                "all_close": bool(all_close),
-                "shape_match": py_val.shape == curr_model_val.shape,
-            }
-
-        return report
 
     def verify_against_pytorch(
         self,
@@ -546,58 +434,14 @@ class NeuronGraph:
         atol: float = 1e-8,
     ) -> Any:
         """Decorator to verify PyTorch layer/function outputs against the model's sliced subgraph."""
+        from neuron_toolkit.eval import GraphVerifier
 
-        def decorator(func: Any) -> Any:
-            from functools import wraps
-
-            import numpy as np
-            import torch
-
-            @wraps(func)
-            def wrapper(*args: Any, **kwargs: Any) -> Any:
-                py_out = func(*args, **kwargs)
-                inputs_dict = {}
-                func_args = args
-                if (
-                    len(args) > 0
-                    and hasattr(args[0], "__class__")
-                    and isinstance(args[0], torch.nn.Module)
-                ):
-                    func_args = args[1:]
-
-                for idx, arg in enumerate(func_args):
-                    if isinstance(arg, torch.nn.Module):
-                        continue
-                    if isinstance(arg, torch.Tensor):
-                        inputs_dict[f"input_{idx}"] = arg.cpu().detach().numpy()
-                    elif isinstance(arg, np.ndarray):
-                        inputs_dict[f"input_{idx}"] = arg
-
-                for k, v in kwargs.items():
-                    if isinstance(v, torch.Tensor):
-                        inputs_dict[k] = v.cpu().detach().numpy()
-                    elif isinstance(v, np.ndarray):
-                        inputs_dict[k] = v
-
-                try:
-                    report = self.compare_outputs(
-                        start_points=start_points,
-                        end_points=end_points,
-                        pytorch_module=func,
-                        inputs_dict=inputs_dict,
-                        rtol=rtol,
-                        atol=atol,
-                    )
-                    wrapper.similarity_report = report
-                except Exception as e:
-                    log.warning("PyTorch verification comparison failed: %s", e)
-                    wrapper.similarity_report = {"error": str(e)}
-
-                return py_out
-
-            return wrapper
-
-        return decorator
+        return GraphVerifier(self).verify_against_pytorch(
+            start_points=start_points,
+            end_points=end_points,
+            rtol=rtol,
+            atol=atol,
+        )
 
     @property
     def passes(self) -> GraphPasses:
@@ -703,3 +547,45 @@ class GraphPasses:
                 **backend.get_node_attrs(conv_node),
             )
         return rewriter
+
+    def cse(self) -> NeuronGraph:
+        """Apply CommonSubexpressionElimination pass."""
+        from neuron_toolkit.passes import CommonSubexpressionElimination
+
+        new_g, _ = CommonSubexpressionElimination().run(self.graph)
+        return new_g
+
+    def fuse_gelu(self) -> NeuronGraph:
+        """Apply FuseGELU pass."""
+        from neuron_toolkit.passes import FuseGELU
+
+        new_g, _ = FuseGELU().run(self.graph)
+        return new_g
+
+    def fuse_layer_norm(self) -> NeuronGraph:
+        """Apply FuseLayerNorm pass."""
+        from neuron_toolkit.passes import FuseLayerNorm
+
+        new_g, _ = FuseLayerNorm().run(self.graph)
+        return new_g
+
+    def fuse_conv_act(self) -> NeuronGraph:
+        """Apply FuseConvActivation pass."""
+        from neuron_toolkit.passes import FuseConvActivation
+
+        new_g, _ = FuseConvActivation().run(self.graph)
+        return new_g
+
+    def dce(self) -> NeuronGraph:
+        """Apply DeadCodeElimination pass."""
+        from neuron_toolkit.passes import DeadCodeElimination
+
+        new_g, _ = DeadCodeElimination().run(self.graph)
+        return new_g
+
+    def const_fold(self) -> NeuronGraph:
+        """Apply ConstantFolding pass."""
+        from neuron_toolkit.passes import ConstantFolding
+
+        new_g, _ = ConstantFolding().run(self.graph)
+        return new_g

@@ -205,13 +205,12 @@ class TestGraphJsonExport(unittest.TestCase):
         assert parsed["format"] == "neuron_toolkit_graph_v1"
         assert len(parsed["nodes"]) == 3
 
-        # Test method aliases on NeuronGraph
+        # Test canonical methods on NeuronGraph
         assert graph.to_dict()["format"] == "neuron_toolkit_graph_v1"
-        assert graph.to_graph_json() == json_str
-        assert graph.export_graph_json() == json_str
+        assert graph.to_json() == json_str
 
         # Test top-level package function
-        assert neuron_toolkit.to_graph_json(graph) == json_str
+        assert neuron_toolkit.to_json(graph) == json_str
         assert neuron_toolkit.export_graph_json(graph) == json_str
 
         # Export to file
@@ -219,7 +218,7 @@ class TestGraphJsonExport(unittest.TestCase):
             tmp_path = tmp.name
 
         try:
-            res = graph.export_graph_json(path=tmp_path)
+            res = graph.to_json(path=tmp_path)
             assert res is None
             assert os.path.exists(tmp_path)
 

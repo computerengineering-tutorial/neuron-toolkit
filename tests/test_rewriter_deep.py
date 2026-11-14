@@ -32,7 +32,7 @@ def test_rewriter_replace(simple_model, tmp_path):
     assert new_model.graph.node[1].name == "fused_node"
 
 
-def test_rewriter_replace_from_result(simple_model, tmp_path):
+def test_rewriter_replace_from_result(simple_model):
     parser = ONNXParser(simple_model)
 
     # Pattern: Mul(Add)

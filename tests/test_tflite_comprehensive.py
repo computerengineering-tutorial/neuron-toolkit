@@ -303,13 +303,13 @@ def test_tflite_traversal(complex_tflite_path):
     sub_node = q.op("SUB")
     mul_node = q.op("MUL")
 
-    # Direct children / outputs
+    # Direct children
     assert add_node.children().single_node.op_type == "SUB"
-    assert sub_node.outputs().single_node.op_type == "MUL"
+    assert sub_node.children().single_node.op_type == "MUL"
 
-    # Direct parents / inputs
+    # Direct parents
     assert sub_node.parents().single_node.op_type == "ADD"
-    assert mul_node.inputs().single_node.op_type == "SUB"
+    assert mul_node.parents().single_node.op_type == "SUB"
 
     # Descendants & Ancestors
     assert {n.op_type for n in add_node.descendants()} == {"SUB", "MUL"}

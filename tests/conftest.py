@@ -23,6 +23,8 @@ def build_tflite_model(
         buffers: list of raw ``bytes`` (or ``None``). buffers[0] must be empty.
         identifier: file identifier; ``b"TFL3"`` mimics real TF Lite files.
     """
+    pytest.importorskip("flatbuffers")
+    pytest.importorskip("tflite")
     import flatbuffers
     import tflite
 
@@ -140,6 +142,7 @@ def build_tflite_model(
 @pytest.fixture
 def tflite_abs_bytes():
     """TFLite bytes: input -> ABS -> output (with TFL3 magic)."""
+    pytest.importorskip("tflite")
     import tflite
 
     return build_tflite_model(
@@ -176,6 +179,7 @@ def tflite_abs_path(tmp_path, tflite_abs_bytes):
 @pytest.fixture
 def tflite_add_const_bytes():
     """TFLite bytes: input -> ADD(const_w=[1,2,3]) -> output (with TFL3 magic)."""
+    pytest.importorskip("tflite")
     import tflite
 
     return build_tflite_model(

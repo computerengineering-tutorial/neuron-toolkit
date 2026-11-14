@@ -18,6 +18,20 @@ import numpy as np
 from neuron_toolkit._utils import ShapeInfo
 from neuron_toolkit.pattern.dsl import _ANY_OF, _CONST_PAT, _WILDCARD
 
+COMMUTATIVE_OPS: frozenset[str] = frozenset({
+    "Add",
+    "Mul",
+    "And",
+    "Or",
+    "Xor",
+    "Equal",
+    "Min",
+    "Max",
+    "BitwiseAnd",
+    "BitwiseOr",
+    "BitwiseXor",
+})
+
 if TYPE_CHECKING:
     from neuron_toolkit.pattern.detector import PatternDetector
     from neuron_toolkit.pattern.dsl import Pattern
@@ -154,7 +168,8 @@ class MatchingMixin:
             return self._finalize_match(node, pattern, ctx)
 
         parents = self._get_parent_nodes(node, ctx)
-        if node_op_type in {"Add", "Mul"}:
+        is_commutative = getattr(pattern, "is_commutative", False) or node_op_type in COMMUTATIVE_OPS
+        if is_commutative:
             ok = self._match_commutative(node, parents, pattern, ctx)
         else:
             ok = self._match_ordered(node, parents, pattern, ctx)
@@ -342,11 +357,15 @@ class MatchingMixin:
     ) -> bool:
         """Record the successful match and update bindings/trail in O(1)."""
         node_id = id(node)
+        if pattern.capture_name:
+            if pattern.capture_name in ctx.bindings:
+                if ctx.bindings[pattern.capture_name] is not node:
+                    return False
+            else:
+                ctx.bindings[pattern.capture_name] = node
         if node_id not in ctx.trail_ids:
             ctx.trail_ids.add(node_id)
             ctx.trail.append(node)
-        if pattern.capture_name:
-            ctx.bindings[pattern.capture_name] = node
         ctx.memo[id(pattern)] = node_id
         return True
 

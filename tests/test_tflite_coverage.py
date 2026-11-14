@@ -7,16 +7,16 @@ and have functional parser implementations.
 
 from __future__ import annotations
 
-import importlib
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 import tflite
 
+from neuron_toolkit.backends.tflite import options
+from neuron_toolkit.backends.tflite.options import parse_tflite_builtin_options
 from neuron_toolkit.backends.tflite.utils import (
     _EMPTY_OPTIONS_CLASSES,
-    _OPT_CLASS_TO_CATEGORY,
     _get_tflite_attr,
 )
 
@@ -58,47 +58,20 @@ def test_all_tflite_options_files_exist(tflite_all_options: set[str]):
     assert not missing_files, f"Options files missing in tflite package: {missing_files}"
 
 
-def test_every_tflite_option_is_categorized_or_empty(tflite_all_options: set[str]):
-    """Every option in tflite must either be in _EMPTY_OPTIONS_CLASSES or categorized."""
-    uncategorized = []
-    for opt_name in sorted(tflite_all_options):
-        is_empty = opt_name in _EMPTY_OPTIONS_CLASSES
-        category = _OPT_CLASS_TO_CATEGORY.get(opt_name)
-
-        if not is_empty and not category:
-            uncategorized.append(opt_name)
-
-    assert not uncategorized, f"Found uncategorized options classes: {uncategorized}"
-
-
 def test_every_active_option_has_parser_function(tflite_all_options: set[str]):
-    """Every non-empty option must have a matching parse_<OptionClass> function in its category module."""
-    missing_parsers = []
+    """Every non-empty option must have a matching parser function available in options module."""
     for opt_name in sorted(tflite_all_options):
         if opt_name in _EMPTY_OPTIONS_CLASSES:
             continue
 
-        category = _OPT_CLASS_TO_CATEGORY.get(opt_name)
-        assert category, f"Class {opt_name} missing category mapping."
-
-        module_name = f"neuron_toolkit.backends.tflite.opt_{category}"
-        try:
-            mod = importlib.import_module(module_name)
-        except ImportError as e:
-            missing_parsers.append(f"{module_name} (Failed to import: {e})")
-            continue
-
-        parse_func_name = f"parse_{opt_name}"
-        if not hasattr(mod, parse_func_name):
-            missing_parsers.append(f"{parse_func_name} in {module_name}")
-
-    assert not missing_parsers, f"Missing parser functions for options: {missing_parsers}"
+        parse_func = getattr(options, f"parse_{opt_name}")
+        assert callable(parse_func), f"Missing callable parser for {opt_name}"
 
 
 def test_all_parser_functions_callable_and_safe(tflite_all_options: set[str]):
-    """Test calling every single generated parse function with mock options.
-    
-    Verifies that no parser crashes with None options or valid mock options.
+    """Test calling every single option parser with None and valid mock options.
+
+    Verifies that consolidated options extractor handles all 148 options safely.
     """
     mock_options = MagicMock()
     mock_options.Bytes = b"\x00" * 32
@@ -109,21 +82,17 @@ def test_all_parser_functions_callable_and_safe(tflite_all_options: set[str]):
         if opt_name in _EMPTY_OPTIONS_CLASSES:
             continue
 
-        category = _OPT_CLASS_TO_CATEGORY[opt_name]
-        module = importlib.import_module(f"neuron_toolkit.backends.tflite.opt_{category}")
-        parse_func = getattr(module, f"parse_{opt_name}")
-
-        # Test with None
-        none_res = parse_func(None)
-        assert none_res == {}, f"{parse_func.__name__}(None) did not return empty dict"
+        # Test direct function
+        none_res = parse_tflite_builtin_options(opt_name, None)
+        assert none_res == {}, f"parse_tflite_builtin_options({opt_name}, None) did not return empty dict"
 
         # Test with mock options
         try:
-            res = parse_func(mock_options)
+            res = parse_tflite_builtin_options(opt_name, mock_options)
             assert isinstance(res, dict)
             tested_count += 1
         except Exception as e:
-            pytest.fail(f"parse_{opt_name}(mock_options) failed with exception: {e}")
+            pytest.fail(f"parse_tflite_builtin_options({opt_name}, mock_options) failed with exception: {e}")
 
     assert tested_count > 0, "No active parser functions were tested"
 
