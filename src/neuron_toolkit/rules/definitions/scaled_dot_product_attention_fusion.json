@@ -2,7 +2,7 @@
   "rule_id": "scaled_dot_product_attention_fusion",
   "version": "1.0",
   "name": "Scaled Dot-Product Attention Fusion",
-  "description": "Fuses the 14-node attention scaling, transposition, dot-product, softmax, and value projection chain into ScaledDotProductAttention under custom.pytorch domain.",
+  "description": "Fuses the 14-node attention scaling, transposition, dot-product, softmax, and value projection chain into ScaledDotProductAttention under custom.pytorch domain or modern ONNX Attention op.",
   "source_pattern": {
     "nodes": [
       {
@@ -41,6 +41,36 @@
       "count_users(Q_scaled) == 1",
       "count_users(K_scaled) == 1"
     ]
+  },
+  "action": {
+    "type": "fuse_to_function",
+    "op_type": "ScaledDotProductAttention",
+    "domain": "custom.pytorch",
+    "inputs": ["Q", "K", "V"],
+    "outputs": ["Y"],
+    "targets": {
+      "modern_onnx": {
+        "op_type": "Attention",
+        "domain": "",
+        "min_opset": 25,
+        "inputs": ["Q", "K", "V"]
+      },
+      "ort_contrib": {
+        "op_type": "MultiHeadAttention",
+        "domain": "com.microsoft",
+        "inputs": ["Q", "K", "V"]
+      },
+      "function_proto": {
+        "op_type": "ScaledDotProductAttention",
+        "domain": "custom.pytorch",
+        "inputs": ["Q", "K", "V"]
+      },
+      "pytorch_custom": {
+        "op_type": "ScaledDotProductAttention",
+        "domain": "custom.pytorch",
+        "inputs": ["Q", "K", "V"]
+      }
+    }
   },
   "target_pattern": {
     "nodes": [

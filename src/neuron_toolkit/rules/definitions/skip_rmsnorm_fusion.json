@@ -1,0 +1,45 @@
+{
+  "rule_id": "skip_rmsnorm_fusion",
+  "name": "Residual Add + RMSNorm Fusion",
+  "description": "Fuses residual Add(x, residual) -> RMSNorm into SkipSimplifiedLayerNormalization.",
+  "pattern": {
+    "nodes": [
+      {
+        "id": "add_node",
+        "op_type": "Add",
+        "inputs": ["$x", "$residual"],
+        "outputs": ["$sum_out"]
+      },
+      {
+        "id": "norm_node",
+        "op_type": "RMSNorm",
+        "inputs": ["$sum_out", "$gamma"],
+        "outputs": ["$y"]
+      }
+    ]
+  },
+  "action": {
+    "type": "replace_op",
+    "op_type": "SkipSimplifiedLayerNormalization",
+    "domain": "com.microsoft",
+    "inputs": ["$x", "$residual", "$gamma"],
+    "outputs": ["$y"],
+    "targets": {
+      "modern_onnx": {
+        "op_type": "SkipSimplifiedLayerNormalization",
+        "domain": "com.microsoft",
+        "inputs": ["$x", "$residual", "$gamma"]
+      },
+      "function_proto": {
+        "op_type": "SkipRMSNorm",
+        "domain": "custom.pytorch",
+        "inputs": ["$x", "$residual", "$gamma"]
+      },
+      "pytorch_custom": {
+        "op_type": "SkipRMSNorm",
+        "domain": "custom.pytorch",
+        "inputs": ["$x", "$residual", "$gamma"]
+      }
+    }
+  }
+}

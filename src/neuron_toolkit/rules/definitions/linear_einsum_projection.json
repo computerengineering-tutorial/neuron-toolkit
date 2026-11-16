@@ -1,0 +1,48 @@
+{
+  "rule_id": "linear_einsum_projection",
+  "name": "Einsum Matrix Contraction to Linear",
+  "description": "Converts 2D/3D tensor contraction Einsum('...d,df->...f') into canonical Linear.",
+  "pattern": {
+    "nodes": [
+      {
+        "id": "einsum_node",
+        "op_type": "Einsum",
+        "inputs": ["$x", "$w"],
+        "outputs": ["$y"],
+        "attributes": {
+          "equation": "...d,df->...f"
+        }
+      }
+    ],
+    "conditions": [
+      {
+        "type": "is_initializer",
+        "tensor": "$w"
+      }
+    ]
+  },
+  "action": {
+    "type": "replace_op",
+    "op_type": "Linear",
+    "domain": "custom.pytorch",
+    "inputs": ["$x", "$w"],
+    "outputs": ["$y"],
+    "targets": {
+      "modern_onnx": {
+        "op_type": "Linear",
+        "domain": "custom.pytorch",
+        "inputs": ["$x", "$w"]
+      },
+      "function_proto": {
+        "op_type": "Linear",
+        "domain": "custom.pytorch",
+        "inputs": ["$x", "$w"]
+      },
+      "pytorch_custom": {
+        "op_type": "Linear",
+        "domain": "custom.pytorch",
+        "inputs": ["$x", "$w"]
+      }
+    }
+  }
+}

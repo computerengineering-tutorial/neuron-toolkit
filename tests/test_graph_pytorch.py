@@ -22,7 +22,7 @@ def _two_input_model(path) -> None:
     add = helper.make_node("Add", ["m", "A"], ["i"], name="add0")
     add2 = helper.make_node("Add", ["i", "B"], ["Z"], name="add1")
     graph = helper.make_graph([mul, add, add2], "two_inputs", [A, B], [Z])
-    model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 13)])
+    model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 13)], ir_version=8)
     path.write_bytes(model.SerializeToString())
 
 
@@ -35,7 +35,7 @@ def _two_output_model(path) -> None:
     add = helper.make_node("Add", ["A", "B"], ["S"], name="add0")
     mul = helper.make_node("Mul", ["A", "B"], ["P"], name="mul0")
     graph = helper.make_graph([add, mul], "two_outputs", [A, B], [S, P])
-    model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 13)])
+    model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 13)], ir_version=8)
     path.write_bytes(model.SerializeToString())
 
 

@@ -239,7 +239,7 @@ def simple_model(tmp_path):
         [node_id, node_add, node_mul], "test_graph", [A], [output], [B, C]
     )
 
-    model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 13)])
+    model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 13)], ir_version=8)
 
     model_path = str(tmp_path / "simple.onnx")
     onnx.save(model, model_path)
@@ -286,7 +286,7 @@ def complex_model(tmp_path):
         [B, C],
     )
 
-    model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 13)])
+    model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 13)], ir_version=8)
     model_path = str(tmp_path / "complex.onnx")
     onnx.save(model, model_path)
     return model_path
@@ -317,7 +317,7 @@ def branching_model(tmp_path):
     graph = helper.make_graph(
         [node0, node1, node2, node3], "branching", [A], [out1, out2], [B, C, D]
     )
-    model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 13)])
+    model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 13)], ir_version=8)
     path = str(tmp_path / "branching.onnx")
     onnx.save(model, path)
     return path

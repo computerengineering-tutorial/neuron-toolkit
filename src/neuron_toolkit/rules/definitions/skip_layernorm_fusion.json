@@ -1,0 +1,45 @@
+{
+  "rule_id": "skip_layernorm_fusion",
+  "name": "Residual Add + LayerNorm Fusion",
+  "description": "Fuses residual Add(x, residual) -> LayerNorm into SkipLayerNormalization.",
+  "pattern": {
+    "nodes": [
+      {
+        "id": "add_node",
+        "op_type": "Add",
+        "inputs": ["$x", "$residual"],
+        "outputs": ["$sum_out"]
+      },
+      {
+        "id": "norm_node",
+        "op_type": "LayerNormalization",
+        "inputs": ["$sum_out", "$gamma", "$beta"],
+        "outputs": ["$y"]
+      }
+    ]
+  },
+  "action": {
+    "type": "replace_op",
+    "op_type": "SkipLayerNormalization",
+    "domain": "com.microsoft",
+    "inputs": ["$x", "$residual", "$gamma", "$beta"],
+    "outputs": ["$y"],
+    "targets": {
+      "modern_onnx": {
+        "op_type": "SkipLayerNormalization",
+        "domain": "com.microsoft",
+        "inputs": ["$x", "$residual", "$gamma", "$beta"]
+      },
+      "function_proto": {
+        "op_type": "SkipLayerNormalization",
+        "domain": "custom.pytorch",
+        "inputs": ["$x", "$residual", "$gamma", "$beta"]
+      },
+      "pytorch_custom": {
+        "op_type": "SkipLayerNormalization",
+        "domain": "custom.pytorch",
+        "inputs": ["$x", "$residual", "$gamma", "$beta"]
+      }
+    }
+  }
+}

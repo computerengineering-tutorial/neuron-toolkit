@@ -1,0 +1,58 @@
+{
+  "rule_id": "hard_swish_canonicalization",
+  "name": "HardSwish Canonicalization",
+  "description": "Fuses x * Clip(x + 3, 0, 6) / 6 into standard HardSwish.",
+  "pattern": {
+    "nodes": [
+      {
+        "id": "add_node",
+        "op_type": "Add",
+        "inputs": ["$x", "$c_3"],
+        "outputs": ["$add_out"]
+      },
+      {
+        "id": "clip_node",
+        "op_type": "Clip",
+        "inputs": ["$add_out", "$c_0", "$c_6"],
+        "outputs": ["$clip_out"]
+      },
+      {
+        "id": "mul_node",
+        "op_type": "Mul",
+        "inputs": ["$x", "$clip_out"],
+        "outputs": ["$mul_out"]
+      },
+      {
+        "id": "div_node",
+        "op_type": "Div",
+        "inputs": ["$mul_out", "$c_6"],
+        "outputs": ["$y"]
+      }
+    ]
+  },
+  "action": {
+    "type": "replace_op",
+    "op_type": "HardSwish",
+    "domain": "custom.pytorch",
+    "inputs": ["$x"],
+    "outputs": ["$y"],
+    "targets": {
+      "modern_onnx": {
+        "op_type": "HardSwish",
+        "domain": "",
+        "min_opset": 14,
+        "inputs": ["$x"]
+      },
+      "function_proto": {
+        "op_type": "HardSwish",
+        "domain": "custom.pytorch",
+        "inputs": ["$x"]
+      },
+      "pytorch_custom": {
+        "op_type": "HardSwish",
+        "domain": "custom.pytorch",
+        "inputs": ["$x"]
+      }
+    }
+  }
+}

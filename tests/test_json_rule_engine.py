@@ -20,8 +20,8 @@ def test_json_rule_schema_loading():
     rules = engine.load_rules_from_dir()
     assert len(rules) >= 3
     rule_ids = {r.rule_id for r in rules}
-    assert "cast_conv_weight_folding" in rule_ids
-    assert "erf_gelu_fusion" in rule_ids
+    assert "cast_initializer_folding" in rule_ids
+    assert "erf_gelu_canonicalization" in rule_ids
     assert "continuous_math_collapse" in rule_ids
 
 

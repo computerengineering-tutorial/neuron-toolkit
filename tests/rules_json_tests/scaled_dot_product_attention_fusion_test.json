@@ -1,0 +1,28 @@
+{
+  "test_id": "scaled_dot_product_attention_fusion_test",
+  "model_path": ".helper/models/transformer_sdpa.onnx",
+  "input_shapes": {
+    "q": [
+      2,
+      4,
+      8,
+      16
+    ],
+    "k": [
+      2,
+      4,
+      8,
+      16
+    ],
+    "v": [
+      2,
+      4,
+      8,
+      16
+    ]
+  },
+  "expected_target_node": "ScaledDotProductAttention",
+  "min_expected_reduction": 0.3,
+  "rtol": 0.0001,
+  "atol": 0.0001
+}

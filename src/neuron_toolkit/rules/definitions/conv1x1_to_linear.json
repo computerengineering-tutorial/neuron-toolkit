@@ -1,0 +1,48 @@
+{
+  "rule_id": "conv1x1_to_linear",
+  "name": "Pointwise Conv1x1 to Linear Canonicalization",
+  "description": "Converts 2D point-wise convolution with kernel (1, 1) into canonical Linear.",
+  "pattern": {
+    "nodes": [
+      {
+        "id": "conv_node",
+        "op_type": "Conv",
+        "inputs": ["$x", "$w", "$b"],
+        "outputs": ["$y"],
+        "attributes": {
+          "kernel_shape": [1, 1]
+        }
+      }
+    ],
+    "conditions": [
+      {
+        "type": "is_initializer",
+        "tensor": "$w"
+      }
+    ]
+  },
+  "action": {
+    "type": "replace_op",
+    "op_type": "Linear",
+    "domain": "custom.pytorch",
+    "inputs": ["$x", "$w", "$b"],
+    "outputs": ["$y"],
+    "targets": {
+      "modern_onnx": {
+        "op_type": "Linear",
+        "domain": "custom.pytorch",
+        "inputs": ["$x", "$w", "$b"]
+      },
+      "function_proto": {
+        "op_type": "Linear",
+        "domain": "custom.pytorch",
+        "inputs": ["$x", "$w", "$b"]
+      },
+      "pytorch_custom": {
+        "op_type": "Linear",
+        "domain": "custom.pytorch",
+        "inputs": ["$x", "$w", "$b"]
+      }
+    }
+  }
+}

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import ast
 import logging
+import operator
 from collections.abc import Callable
 from typing import Any
 
@@ -11,6 +13,58 @@ import torch
 import torch.nn.functional as F
 
 log = logging.getLogger("neuron_toolkit.runtime.registry")
+
+_SAFE_MATH_OPS = {
+    ast.Add: operator.add,
+    ast.Sub: operator.sub,
+    ast.Mult: operator.mul,
+    ast.Div: operator.truediv,
+    ast.Pow: operator.pow,
+    ast.USub: operator.neg,
+    ast.UAdd: operator.pos,
+}
+
+
+def _safe_eval_math(expr_str: str, env: dict[str, Any]) -> Any:
+    """Safely evaluate mathematical expressions using AST parsing without arbitrary code execution."""
+    tree = ast.parse(expr_str, mode="eval")
+
+    def _eval_node(node: ast.AST) -> Any:
+        if isinstance(node, ast.Expression):
+            return _eval_node(node.body)
+        if isinstance(node, ast.Constant):
+            return node.value
+        if isinstance(node, ast.Name):
+            if node.id in env:
+                return env[node.id]
+            raise ValueError(f"Unknown variable in Math expr: {node.id}")
+        if isinstance(node, ast.BinOp):
+            op_type = type(node.op)
+            if op_type in _SAFE_MATH_OPS:
+                left = _eval_node(node.left)
+                right = _eval_node(node.right)
+                return _SAFE_MATH_OPS[op_type](left, right)
+            raise ValueError(f"Unsupported binary op: {op_type}")
+        if isinstance(node, ast.UnaryOp):
+            op_type = type(node.op)
+            if op_type in _SAFE_MATH_OPS:
+                operand = _eval_node(node.operand)
+                return _SAFE_MATH_OPS[op_type](operand)
+            raise ValueError(f"Unsupported unary op: {op_type}")
+        if isinstance(node, ast.Call):
+            if isinstance(node.func, ast.Name) and node.func.id in env:
+                fn = env[node.func.id]
+                args = [_eval_node(a) for a in node.args]
+                return fn(*args)
+            if isinstance(node.func, ast.Attribute) and isinstance(node.func.value, ast.Name) and node.func.value.id in env:
+                mod = env[node.func.value.id]
+                fn = getattr(mod, node.func.attr)
+                args = [_eval_node(a) for a in node.args]
+                return fn(*args)
+            raise ValueError(f"Unsupported call: {node.func}")
+        raise ValueError(f"Unsupported AST node: {type(node)}")
+
+    return _eval_node(tree)
 
 # Op handler signature: (inputs: list[torch.Tensor], attrs: dict[str, Any], initializers: dict[str, torch.Tensor]) -> torch.Tensor | list[torch.Tensor]
 OpHandler = Callable[..., Any]
@@ -68,6 +122,8 @@ class OpRegistry:
 
         @self.register("", "Div")
         def _div(inputs: list[torch.Tensor], attrs: dict[str, Any]) -> torch.Tensor:
+            if inputs[0].dtype in (torch.int64, torch.int32, torch.int16, torch.int8, torch.uint8):
+                return torch.div(inputs[0], inputs[1], rounding_mode="trunc")
             return inputs[0] / inputs[1]
 
         @self.register("", "Neg")
@@ -78,9 +134,28 @@ class OpRegistry:
         def _abs(inputs: list[torch.Tensor], attrs: dict[str, Any]) -> torch.Tensor:
             return torch.abs(inputs[0])
 
+        @self.register("", "CumSum")
+        def _cumsum(inputs: list[torch.Tensor], attrs: dict[str, Any]) -> torch.Tensor:
+            x = inputs[0]
+            axis = int(inputs[1].item()) if len(inputs) > 1 and inputs[1] is not None else int(attrs.get("axis", 0))
+            exclusive = int(attrs.get("exclusive", 0))
+            reverse = int(attrs.get("reverse", 0))
+            if reverse:
+                x = torch.flip(x, [axis])
+            res = torch.cumsum(x, dim=axis)
+            if exclusive:
+                res = res - x
+            if reverse:
+                res = torch.flip(res, [axis])
+            return res
+
         @self.register("", "Sqrt")
         def _sqrt(inputs: list[torch.Tensor], attrs: dict[str, Any]) -> torch.Tensor:
             return torch.sqrt(inputs[0])
+
+        @self.register("", "Reciprocal")
+        def _reciprocal(inputs: list[torch.Tensor], attrs: dict[str, Any]) -> torch.Tensor:
+            return torch.reciprocal(inputs[0])
 
         @self.register("", "Pow")
         def _pow(inputs: list[torch.Tensor], attrs: dict[str, Any]) -> torch.Tensor:
@@ -117,6 +192,22 @@ class OpRegistry:
         @self.register("", "Equal")
         def _equal(inputs: list[torch.Tensor], attrs: dict[str, Any]) -> torch.Tensor:
             return torch.eq(inputs[0], inputs[1])
+
+        @self.register("", "Greater")
+        def _greater(inputs: list[torch.Tensor], attrs: dict[str, Any]) -> torch.Tensor:
+            return torch.gt(inputs[0], inputs[1])
+
+        @self.register("", "Less")
+        def _less(inputs: list[torch.Tensor], attrs: dict[str, Any]) -> torch.Tensor:
+            return torch.lt(inputs[0], inputs[1])
+
+        @self.register("", "GreaterOrEqual")
+        def _greater_equal(inputs: list[torch.Tensor], attrs: dict[str, Any]) -> torch.Tensor:
+            return torch.ge(inputs[0], inputs[1])
+
+        @self.register("", "LessOrEqual")
+        def _less_equal(inputs: list[torch.Tensor], attrs: dict[str, Any]) -> torch.Tensor:
+            return torch.le(inputs[0], inputs[1])
 
         @self.register("", "Where")
         def _where(inputs: list[torch.Tensor], attrs: dict[str, Any]) -> torch.Tensor:
@@ -159,12 +250,236 @@ class OpRegistry:
                 dim = -1
             return torch.linalg.norm(inputs[0], ord=2, dim=dim, keepdim=keepdims)
 
+        @self.register("", "ReduceMean")
+        def _reduce_mean(inputs: list[torch.Tensor], attrs: dict[str, Any]) -> torch.Tensor:
+            axes = attrs.get("axes")
+            keepdims = bool(attrs.get("keepdims", 1))
+            if axes is not None:
+                dim = tuple(axes) if isinstance(axes, list) and len(axes) > 1 else (axes[0] if isinstance(axes, list) else axes)
+            elif len(inputs) > 1 and inputs[1] is not None:
+                axes_list = [int(v) for v in inputs[1].cpu().tolist()]
+                dim = tuple(axes_list) if len(axes_list) > 1 else (axes_list[0] if axes_list else None)
+            else:
+                dim = None
+            if dim is None:
+                return torch.mean(inputs[0], dim=tuple(range(inputs[0].dim())), keepdim=True) if keepdims else torch.mean(inputs[0])
+            return torch.mean(inputs[0], dim=dim, keepdim=keepdims)
+
+        @self.register("", "ReduceSum")
+        def _reduce_sum(inputs: list[torch.Tensor], attrs: dict[str, Any]) -> torch.Tensor:
+            axes = attrs.get("axes")
+            keepdims = bool(attrs.get("keepdims", 1))
+            if axes is not None:
+                dim = tuple(axes) if isinstance(axes, list) and len(axes) > 1 else (axes[0] if isinstance(axes, list) else axes)
+            elif len(inputs) > 1 and inputs[1] is not None:
+                axes_list = [int(v) for v in inputs[1].cpu().tolist()]
+                dim = tuple(axes_list) if len(axes_list) > 1 else (axes_list[0] if axes_list else None)
+            else:
+                dim = None
+            if dim is None:
+                return torch.sum(inputs[0], dim=tuple(range(inputs[0].dim())), keepdim=True) if keepdims else torch.sum(inputs[0])
+            return torch.sum(inputs[0], dim=dim, keepdim=keepdims)
+
+        @self.register("", "ReduceMax")
+        def _reduce_max(inputs: list[torch.Tensor], attrs: dict[str, Any]) -> torch.Tensor:
+            axes = attrs.get("axes")
+            keepdims = bool(attrs.get("keepdims", 1))
+            if axes is not None:
+                dim = tuple(axes) if isinstance(axes, list) and len(axes) > 1 else (axes[0] if isinstance(axes, list) else axes)
+            elif len(inputs) > 1 and inputs[1] is not None:
+                axes_list = [int(v) for v in inputs[1].cpu().tolist()]
+                dim = tuple(axes_list) if len(axes_list) > 1 else (axes_list[0] if axes_list else None)
+            else:
+                dim = None
+            if dim is None:
+                return torch.max(inputs[0]) if not keepdims else torch.max(inputs[0]).view([1] * inputs[0].dim())
+            elif isinstance(dim, tuple):
+                res = inputs[0]
+                for d in sorted(dim, reverse=True):
+                    res = torch.max(res, dim=d, keepdim=keepdims).values
+                return res
+            return torch.max(inputs[0], dim=dim, keepdim=keepdims).values
+
+        @self.register("", "ReduceMin")
+        def _reduce_min(inputs: list[torch.Tensor], attrs: dict[str, Any]) -> torch.Tensor:
+            axes = attrs.get("axes")
+            keepdims = bool(attrs.get("keepdims", 1))
+            if axes is not None:
+                dim = tuple(axes) if isinstance(axes, list) and len(axes) > 1 else (axes[0] if isinstance(axes, list) else axes)
+            elif len(inputs) > 1 and inputs[1] is not None:
+                axes_list = [int(v) for v in inputs[1].cpu().tolist()]
+                dim = tuple(axes_list) if len(axes_list) > 1 else (axes_list[0] if axes_list else None)
+            else:
+                dim = None
+            if dim is None:
+                return torch.min(inputs[0]) if not keepdims else torch.min(inputs[0]).view([1] * inputs[0].dim())
+            elif isinstance(dim, tuple):
+                res = inputs[0]
+                for d in sorted(dim, reverse=True):
+                    res = torch.min(res, dim=d, keepdim=keepdims).values
+                return res
+            return torch.min(inputs[0], dim=dim, keepdim=keepdims).values
+
+        @self.register("", "Elu")
+        def _elu(inputs: list[torch.Tensor], attrs: dict[str, Any]) -> torch.Tensor:
+            alpha = float(attrs.get("alpha", 1.0))
+            return F.elu(inputs[0], alpha=alpha)
+
+        @self.register("", "LSTM")
+        def _lstm(inputs: list[torch.Tensor], attrs: dict[str, Any]) -> Any:
+            X = inputs[0]
+            W = inputs[1]
+            R = inputs[2]
+            B = inputs[3] if len(inputs) > 3 and inputs[3] is not None and inputs[3].numel() > 0 else None
+            initial_h = inputs[5] if len(inputs) > 5 and inputs[5] is not None and inputs[5].numel() > 0 else None
+            initial_c = inputs[6] if len(inputs) > 6 and inputs[6] is not None and inputs[6].numel() > 0 else None
+
+            layout = int(attrs.get("layout", 0))
+            hidden_size = int(attrs.get("hidden_size", W.shape[1] // 4))
+            direction = attrs.get("direction", "forward")
+            if isinstance(direction, bytes):
+                direction = direction.decode("utf-8")
+
+            if layout == 1:
+                X_t = X.transpose(0, 1)
+            else:
+                X_t = X
+
+            T, B_size, _ = X_t.shape
+            num_directions = W.shape[0]
+
+            all_dir_outputs = []
+            final_h = []
+            final_c = []
+
+            for d_idx in range(num_directions):
+                w_d = W[d_idx]
+                r_d = R[d_idx]
+
+                b_w = B[d_idx, : 4 * hidden_size] if B is not None else torch.zeros(4 * hidden_size, device=X_t.device, dtype=X_t.dtype)
+                b_r = B[d_idx, 4 * hidden_size :] if B is not None else torch.zeros(4 * hidden_size, device=X_t.device, dtype=X_t.dtype)
+                bias = b_w + b_r
+
+                h_t = initial_h[d_idx] if initial_h is not None else torch.zeros(B_size, hidden_size, device=X_t.device, dtype=X_t.dtype)
+                c_t = initial_c[d_idx] if initial_c is not None else torch.zeros(B_size, hidden_size, device=X_t.device, dtype=X_t.dtype)
+
+                is_reverse = direction == "reverse" or (direction == "bidirectional" and d_idx == 1)
+                time_steps = range(T - 1, -1, -1) if is_reverse else range(T)
+
+                dir_outs = [None] * T
+                for t in time_steps:
+                    x_step = X_t[t]
+                    gates = torch.matmul(x_step, w_d.T) + torch.matmul(h_t, r_d.T) + bias.unsqueeze(0)
+                    i_gate, o_gate, f_gate, c_gate = torch.chunk(gates, 4, dim=-1)
+                    i = torch.sigmoid(i_gate)
+                    o = torch.sigmoid(o_gate)
+                    f = torch.sigmoid(f_gate)
+                    c = torch.tanh(c_gate)
+                    c_t = f * c_t + i * c
+                    h_t = o * torch.tanh(c_t)
+                    dir_outs[t] = h_t
+
+                all_dir_outputs.append(torch.stack(dir_outs, dim=0))
+                final_h.append(h_t)
+                final_c.append(c_t)
+
+            if num_directions == 1:
+                Y = all_dir_outputs[0].unsqueeze(1)
+                Y_h = final_h[0].unsqueeze(0)
+                Y_c = final_c[0].unsqueeze(0)
+            else:
+                Y = torch.stack(all_dir_outputs, dim=1)
+                Y_h = torch.stack(final_h, dim=0)
+                Y_c = torch.stack(final_c, dim=0)
+
+            if layout == 1:
+                Y = Y.permute(2, 0, 1, 3)
+
+            return [Y, Y_h, Y_c]
+
+        @self.register("", "GRU")
+        def _gru(inputs: list[torch.Tensor], attrs: dict[str, Any]) -> Any:
+            X = inputs[0]
+            W = inputs[1]
+            R = inputs[2]
+            B = inputs[3] if len(inputs) > 3 and inputs[3] is not None and inputs[3].numel() > 0 else None
+            initial_h = inputs[5] if len(inputs) > 5 and inputs[5] is not None and inputs[5].numel() > 0 else None
+
+            layout = int(attrs.get("layout", 0))
+            hidden_size = int(attrs.get("hidden_size", W.shape[1] // 3))
+            direction = attrs.get("direction", "forward")
+            linear_before_reset = int(attrs.get("linear_before_reset", 0))
+            if isinstance(direction, bytes):
+                direction = direction.decode("utf-8")
+
+            if layout == 1:
+                X_t = X.transpose(0, 1)
+            else:
+                X_t = X
+
+            T, B_size, _ = X_t.shape
+            num_directions = W.shape[0]
+
+            all_dir_outputs = []
+            final_h = []
+
+            for d_idx in range(num_directions):
+                w_d = W[d_idx]
+                r_d = R[d_idx]
+
+                b_w = B[d_idx, : 3 * hidden_size] if B is not None else torch.zeros(3 * hidden_size, device=X_t.device, dtype=X_t.dtype)
+                b_r = B[d_idx, 3 * hidden_size :] if B is not None else torch.zeros(3 * hidden_size, device=X_t.device, dtype=X_t.dtype)
+
+                h_t = initial_h[d_idx] if initial_h is not None else torch.zeros(B_size, hidden_size, device=X_t.device, dtype=X_t.dtype)
+
+                is_reverse = direction == "reverse" or (direction == "bidirectional" and d_idx == 1)
+                time_steps = range(T - 1, -1, -1) if is_reverse else range(T)
+
+                dir_outs = [None] * T
+                for t in time_steps:
+                    x_step = X_t[t]
+                    w_x = torch.matmul(x_step, w_d.T) + b_w.unsqueeze(0)
+                    w_z, w_r, w_h = torch.chunk(w_x, 3, dim=-1)
+
+                    if linear_before_reset == 1:
+                        r_h_all = torch.matmul(h_t, r_d.T) + b_r.unsqueeze(0)
+                        r_z, r_r, r_h = torch.chunk(r_h_all, 3, dim=-1)
+                        z = torch.sigmoid(w_z + r_z)
+                        r = torch.sigmoid(w_r + r_r)
+                        h = torch.tanh(w_h + r * r_h)
+                    else:
+                        r_zr = torch.matmul(h_t, r_d[: 2 * hidden_size].T) + b_r[: 2 * hidden_size].unsqueeze(0)
+                        r_z, r_r = torch.chunk(r_zr, 2, dim=-1)
+                        z = torch.sigmoid(w_z + r_z)
+                        r = torch.sigmoid(w_r + r_r)
+                        r_h = torch.matmul(r * h_t, r_d[2 * hidden_size :].T) + b_r[2 * hidden_size :].unsqueeze(0)
+                        h = torch.tanh(w_h + r_h)
+
+                    h_t = (1.0 - z) * h + z * h_t
+                    dir_outs[t] = h_t
+
+                all_dir_outputs.append(torch.stack(dir_outs, dim=0))
+                final_h.append(h_t)
+
+            if num_directions == 1:
+                Y = all_dir_outputs[0].unsqueeze(1)
+                Y_h = final_h[0].unsqueeze(0)
+            else:
+                Y = torch.stack(all_dir_outputs, dim=1)
+                Y_h = torch.stack(final_h, dim=0)
+
+            if layout == 1:
+                Y = Y.permute(2, 0, 1, 3)
+
+            return [Y, Y_h]
+
         @self.register("", "Range")
         def _range(inputs: list[torch.Tensor], attrs: dict[str, Any]) -> torch.Tensor:
+            device = inputs[0].device
             start = inputs[0].item()
             limit = inputs[1].item()
             delta = inputs[2].item() if len(inputs) > 2 and inputs[2] is not None else 1
-            return torch.arange(start, limit, delta, dtype=inputs[0].dtype)
+            return torch.arange(start, limit, delta, dtype=inputs[0].dtype, device=device)
 
         @self.register("", "Einsum")
         def _einsum(inputs: list[torch.Tensor], attrs: dict[str, Any]) -> torch.Tensor:
@@ -176,6 +491,7 @@ class OpRegistry:
         @self.register("", "ConstantOfShape")
         def _constant_of_shape(inputs: list[torch.Tensor], attrs: dict[str, Any]) -> torch.Tensor:
             shape = [int(v) for v in inputs[0].cpu().tolist()]
+            device = inputs[0].device
             val_tensor = attrs.get("value")
             if val_tensor is not None:
                 if isinstance(val_tensor, np.ndarray):
@@ -190,7 +506,7 @@ class OpRegistry:
             else:
                 fill_val = 0.0
                 dtype = torch.float32
-            return torch.full(shape, fill_val, dtype=dtype)
+            return torch.full(shape, fill_val, dtype=dtype, device=device)
 
         @self.register("", "ScatterND")
         def _scatter_nd(inputs: list[torch.Tensor], attrs: dict[str, Any]) -> torch.Tensor:
@@ -206,6 +522,12 @@ class OpRegistry:
         @self.register("", "Relu")
         def _relu(inputs: list[torch.Tensor], attrs: dict[str, Any]) -> torch.Tensor:
             return F.relu(inputs[0])
+
+        @self.register("", "LeakyRelu")
+        @self.register("custom.pytorch", "LeakyRelu")
+        def _leaky_relu(inputs: list[torch.Tensor], attrs: dict[str, Any]) -> torch.Tensor:
+            alpha = attrs.get("alpha", 0.01)
+            return F.leaky_relu(inputs[0], negative_slope=alpha)
 
         @self.register("", "Sigmoid")
         def _sigmoid(inputs: list[torch.Tensor], attrs: dict[str, Any]) -> torch.Tensor:
@@ -249,15 +571,51 @@ class OpRegistry:
             approximate = "tanh" if attrs.get("approximate") == "tanh" else "none"
             return F.gelu(inputs[0], approximate=approximate)
 
+        @self.register("custom.pytorch", "SiLU")
+        @self.register("", "SiLU")
+        @self.register("custom.pytorch", "Swish")
+        @self.register("", "Swish")
+        def _silu(inputs: list[torch.Tensor], attrs: dict[str, Any]) -> torch.Tensor:
+            return F.silu(inputs[0])
+
+        @self.register("custom.pytorch", "HardSwish")
+        @self.register("", "HardSwish")
+        def _hardswish(inputs: list[torch.Tensor], attrs: dict[str, Any]) -> torch.Tensor:
+            return F.hardswish(inputs[0])
+
+        @self.register("custom.pytorch", "HardSigmoid")
+        @self.register("", "HardSigmoid")
+        def _hardsigmoid(inputs: list[torch.Tensor], attrs: dict[str, Any]) -> torch.Tensor:
+            alpha = attrs.get("alpha", 0.2)
+            beta = attrs.get("beta", 0.5)
+            return torch.clamp(inputs[0] * alpha + beta, min=0.0, max=1.0)
+
+        @self.register("custom.pytorch", "Mish")
+        @self.register("", "Mish")
+        def _mish(inputs: list[torch.Tensor], attrs: dict[str, Any]) -> torch.Tensor:
+            return F.mish(inputs[0])
+
+        @self.register("custom.pytorch", "Relu6")
+        @self.register("", "Relu6")
+        def _relu6(inputs: list[torch.Tensor], attrs: dict[str, Any]) -> torch.Tensor:
+            return F.relu6(inputs[0])
+
+        @self.register("", "Softplus")
+        def _softplus(inputs: list[torch.Tensor], attrs: dict[str, Any]) -> torch.Tensor:
+            return F.softplus(inputs[0])
+
         @self.register("custom.pytorch", "Math")
         def _math_op(inputs: list[torch.Tensor], attrs: dict[str, Any]) -> torch.Tensor:
             expr = attrs.get("expr") or attrs.get("folded_expr")
+            device = inputs[0].device if inputs else None
             if expr and not inputs:
                 # Constant expression
-                return torch.tensor(eval(expr, {"__builtins__": {}}), dtype=torch.float32)
+                val = _safe_eval_math(expr, {"torch": torch, "np": np})
+                return torch.tensor(val, dtype=torch.float32, device=device)
             if expr and len(inputs) == 1:
                 x = inputs[0]
-                return eval(expr, {"__builtins__": {}, "x": x, "torch": torch})
+                val = _safe_eval_math(expr, {"x": x, "torch": torch, "np": np})
+                return val if isinstance(val, torch.Tensor) else torch.tensor(val, dtype=x.dtype, device=x.device)
             if inputs:
                 return inputs[0]
             msg = f"Unable to evaluate Math op with attrs={attrs}"
@@ -310,6 +668,24 @@ class OpRegistry:
                     dilation=dilations[0] if isinstance(dilations, list) else dilations,
                     groups=group,
                 )
+            elif x.dim() == 5:
+                if pads:
+                    if len(pads) == 6 and pads[0] == pads[3] and pads[1] == pads[4] and pads[2] == pads[5]:
+                        padding = (pads[0], pads[1], pads[2])
+                    else:
+                        x = F.pad(x, (pads[2], pads[5], pads[1], pads[4], pads[0], pads[3]))
+                        padding = (0, 0, 0)
+                else:
+                    padding = (0, 0, 0)
+                return F.conv3d(
+                    x,
+                    w,
+                    b,
+                    stride=tuple(strides) if isinstance(strides, list) else strides,
+                    padding=padding,
+                    dilation=tuple(dilations) if isinstance(dilations, list) else dilations,
+                    groups=group,
+                )
             msg = f"Unsupported Conv input dimension: {x.dim()}"
             raise NotImplementedError(msg)
 
@@ -321,6 +697,7 @@ class OpRegistry:
 
         @self.register("custom.pytorch", "GroupNorm")
         @self.register("", "GroupNorm")
+        @self.register("", "GroupNormalization")
         def _group_norm(inputs: list[torch.Tensor], attrs: dict[str, Any]) -> torch.Tensor:
             x, scale, b = inputs[0], inputs[1], inputs[2]
             num_groups = int(attrs.get("num_groups", 1))
@@ -340,6 +717,8 @@ class OpRegistry:
 
         @self.register("custom.pytorch", "RMSNorm")
         @self.register("", "RMSNorm")
+        @self.register("", "RMSNormalization")
+        @self.register("com.microsoft", "SimplifiedLayerNormalization")
         def _rms_norm(inputs: list[torch.Tensor], attrs: dict[str, Any]) -> torch.Tensor:
             x = inputs[0]
             gamma = inputs[1] if len(inputs) > 1 and inputs[1] is not None and inputs[1].numel() > 0 else None
@@ -350,6 +729,96 @@ class OpRegistry:
             if gamma is not None:
                 res = res * gamma
             return res
+
+        @self.register("com.microsoft", "SkipSimplifiedLayerNormalization")
+        @self.register("custom.pytorch", "SkipRMSNorm")
+        @self.register("", "SkipRMSNorm")
+        @self.register("custom.pytorch", "SkipSimplifiedLayerNormalization")
+        def _skip_rms_norm(inputs: list[torch.Tensor], attrs: dict[str, Any]) -> torch.Tensor:
+            x = inputs[0] + inputs[1]
+            gamma = inputs[2] if len(inputs) > 2 and inputs[2] is not None and inputs[2].numel() > 0 else None
+            bias = inputs[3] if len(inputs) > 3 and inputs[3] is not None and inputs[3].numel() > 0 else None
+            eps = float(attrs.get("epsilon", 1e-12))
+            norm = torch.norm(x, p=2, dim=-1, keepdim=True)
+            scale = (x.shape[-1] ** 0.5) / torch.clamp(norm, min=eps)
+            res = x * scale
+            if gamma is not None:
+                res = res * gamma
+            if bias is not None:
+                res = res + bias
+            return res
+
+        @self.register("custom.pytorch", "FeedForward")
+        @self.register("", "FeedForward")
+        def _feed_forward(inputs: list[torch.Tensor], attrs: dict[str, Any]) -> torch.Tensor:
+            x = inputs[0]
+            gamma = inputs[1] if len(inputs) > 1 and inputs[1] is not None and inputs[1].numel() > 0 else None
+            fc1_w = inputs[2]
+            fc1_b = inputs[3] if len(inputs) > 3 and inputs[3] is not None and inputs[3].numel() > 0 else None
+            fc2_w = inputs[4] if len(inputs) > 4 and inputs[4] is not None else None
+            fc2_b = inputs[5] if len(inputs) > 5 and inputs[5] is not None and inputs[5].numel() > 0 else None
+            eps = float(attrs.get("epsilon", 1e-12))
+            # 1. RMSNorm
+            norm = torch.norm(x, p=2, dim=-1, keepdim=True)
+            scale = (x.shape[-1] ** 0.5) / torch.clamp(norm, min=eps)
+            x_norm = x * scale
+            if gamma is not None:
+                x_norm = x_norm * gamma
+            # 2. Linear 1
+            h = torch.matmul(x_norm, fc1_w)
+            if fc1_b is not None:
+                h = h + fc1_b
+            # 3. Activation
+            act = attrs.get("activation", "gelu")
+            if act == "gelu":
+                h = F.gelu(h)
+            elif act == "relu":
+                h = F.relu(h)
+            elif act == "silu":
+                h = F.silu(h)
+            # 4. Linear 2
+            if fc2_w is not None:
+                out = torch.matmul(h, fc2_w)
+                if fc2_b is not None:
+                    out = out + fc2_b
+            else:
+                out = h
+            return out
+
+        @self.register("custom.pytorch", "FeedForwardSwiGLU")
+        @self.register("", "FeedForwardSwiGLU")
+        def _feed_forward_swiglu(inputs: list[torch.Tensor], attrs: dict[str, Any]) -> torch.Tensor:
+            x = inputs[0]
+            gamma = inputs[1] if len(inputs) > 1 and inputs[1] is not None and inputs[1].numel() > 0 else None
+            # Remaining inputs can be:
+            # [w_gate, w_up, w_down] or [w_gate, b_gate, w_up, b_up, w_down, b_down]
+            eps = float(attrs.get("epsilon", 1e-12))
+            norm = torch.norm(x, p=2, dim=-1, keepdim=True)
+            scale = (x.shape[-1] ** 0.5) / torch.clamp(norm, min=eps)
+            x_norm = x * scale
+            if gamma is not None:
+                x_norm = x_norm * gamma
+            rest = inputs[2:]
+            if len(rest) == 3:
+                w_gate, w_up, w_down = rest
+                b_gate, b_up, b_down = None, None, None
+            elif len(rest) >= 6:
+                w_gate, b_gate, w_up, b_up, w_down, b_down = rest[:6]
+            else:
+                w_gate, w_up, w_down = rest[0], rest[1], rest[2]
+                b_gate, b_up, b_down = None, None, None
+
+            gate = torch.matmul(x_norm, w_gate)
+            if b_gate is not None and b_gate.numel() > 0:
+                gate = gate + b_gate
+            up = torch.matmul(x_norm, w_up)
+            if b_up is not None and b_up.numel() > 0:
+                up = up + b_up
+            hidden = F.silu(gate) * up
+            out = torch.matmul(hidden, w_down)
+            if b_down is not None and b_down.numel() > 0:
+                out = out + b_down
+            return out
 
         @self.register("custom.pytorch", "RotaryEmbedding")
         @self.register("", "RotaryEmbedding")
@@ -437,6 +906,81 @@ class OpRegistry:
             B, H, S, D = x.shape
             return x.transpose(1, 2).reshape(B, S, H * D)
 
+        @self.register("custom.pytorch", "GatedAttention")
+        @self.register("", "GatedAttention")
+        def _gated_attention(inputs: list[torch.Tensor], attrs: dict[str, Any]) -> torch.Tensor:
+            x = inputs[0]
+            norm_gamma = inputs[1] if len(inputs) > 1 and inputs[1] is not None and inputs[1].numel() > 0 else None
+            qkv_w = inputs[2]
+            qkv_b = inputs[3] if len(inputs) > 3 and inputs[3] is not None and inputs[3].numel() > 0 else None
+            gates_w = inputs[4]
+            gates_b = inputs[5] if len(inputs) > 5 and inputs[5] is not None and inputs[5].numel() > 0 else None
+            theta = inputs[6]
+            out_w = inputs[7]
+            out_b = inputs[8] if len(inputs) > 8 and inputs[8] is not None and inputs[8].numel() > 0 else None
+
+            # 1. RMSNorm
+            eps = float(attrs.get("epsilon", 1e-12))
+            norm = torch.norm(x, p=2, dim=-1, keepdim=True)
+            scale = (x.shape[-1] ** 0.5) / torch.clamp(norm, min=eps)
+            x_norm = x * scale
+            if norm_gamma is not None:
+                x_norm = x_norm * norm_gamma
+
+            # 2. to_qkv
+            qkv = torch.matmul(x_norm, qkv_w)
+            if qkv_b is not None:
+                qkv = qkv + qkv_b
+
+            # 3. to_gates
+            gates = torch.matmul(x_norm, gates_w)
+            if gates_b is not None:
+                gates = gates + gates_b
+
+            # 4. SplitQKV
+            num_heads = int(attrs.get("num_heads", 4))
+            orig_shape = qkv.shape
+            B, S, total_d = orig_shape[0], orig_shape[1], orig_shape[2]
+            D = total_d // (3 * num_heads)
+            reshaped_qkv = qkv.view(B, S, 3, num_heads, D).permute(2, 0, 3, 1, 4)
+            q, k, v = reshaped_qkv[0], reshaped_qkv[1], reshaped_qkv[2]
+
+            # 5. RoPE
+            def _apply_rope(t: torch.Tensor, th: torch.Tensor) -> torch.Tensor:
+                seq_len = t.shape[-2]
+                if th.shape[-2] > seq_len:
+                    th = th[..., :seq_len, :]
+                cos = torch.cos(th)
+                sin = torch.sin(th)
+                o_shp = t.shape
+                t_r = t.reshape(*o_shp[:-1], -1, 2)
+                rot = torch.stack((-t_r[..., 1], t_r[..., 0]), dim=-1).reshape(o_shp)
+                return (t * cos) + (rot * sin)
+
+            q_rot = _apply_rope(q, theta)
+            k_rot = _apply_rope(k, theta)
+
+            # 6. SDPA
+            head_dim = q_rot.shape[-1]
+            scale_factor = 1.0 / (head_dim ** 0.5)
+            scores = torch.matmul(q_rot, k_rot.transpose(-1, -2)) * scale_factor
+            attn_weights = torch.softmax(scores, dim=-1)
+            attn_out = torch.matmul(attn_weights, v)
+
+            # 7. GatedUnit
+            if gates.dim() == 3:
+                gates = gates.transpose(1, 2).unsqueeze(-1)
+            gated_scores = attn_out * torch.sigmoid(gates)
+
+            # 8. MergeHeads
+            merged = gated_scores.transpose(1, 2).contiguous().reshape(B, S, num_heads * D)
+
+            # 9. to_out
+            out = torch.matmul(merged, out_w)
+            if out_b is not None:
+                out = out + out_b
+            return out
+
         @self.register("custom.pytorch", "AxialRearrange")
         @self.register("", "AxialRearrange")
         def _axial_rearrange(inputs: list[torch.Tensor], attrs: dict[str, Any]) -> torch.Tensor:
@@ -455,14 +999,20 @@ class OpRegistry:
                 T = BT // b
                 return x.view(b, T, F, C).permute(0, 2, 1, 3).reshape(b * F, T, C)
             elif mode == "time_to_conv":
+                target_shape = attrs.get("target_shape")
+                if target_shape:
+                    target = list(target_shape)
+                    if x.dim() >= 1 and x.shape[0] != target[0] and target[0] in (1, -1):
+                        target[0] = x.shape[0]
+                    return x.reshape(*target).permute(0, 3, 1, 2)
                 # (B*F, T, C) -> (B, C, F, T)
                 BF, T, C = x.shape
                 F = BF // b
                 return x.view(b, F, T, C).permute(0, 3, 1, 2)
             elif mode == "flatten_fc":
-                # (B, C, F, T) -> (B, T, F*C)
+                # (B, C, F, T) -> (B, T, C * F)
                 B, C, F, T = x.shape
-                return x.permute(0, 3, 2, 1).reshape(B, T, F * C)
+                return x.permute(0, 3, 1, 2).reshape(B, T, C * F)
             raise ValueError(f"Unknown AxialRearrange mode: {mode}")
 
         @self.register("custom.pytorch", "TensorRoute")
@@ -487,14 +1037,114 @@ class OpRegistry:
             return x
 
         @self.register("", "LayerNormalization")
+        @self.register("", "LayerNorm")
+        @self.register("custom.pytorch", "LayerNormalization")
+        @self.register("custom.pytorch", "LayerNorm")
         def _layer_norm(inputs: list[torch.Tensor], attrs: dict[str, Any]) -> torch.Tensor:
             x = inputs[0]
-            scale = inputs[1]
+            scale = inputs[1] if len(inputs) > 1 and inputs[1] is not None and inputs[1].numel() > 0 else None
             bias = (
                 inputs[2]
                 if len(inputs) > 2 and inputs[2] is not None and inputs[2].numel() > 0
                 else None
             )
+            axis = attrs.get("axis", -1)
+            eps = attrs.get("epsilon", 1e-5)
+            normalized_shape = (
+                list(x.shape[axis:])
+                if axis >= 0
+                else list(x.shape[len(x.shape) + axis :])
+            )
+            return F.layer_norm(x, normalized_shape, weight=scale, bias=bias, eps=eps)
+
+        # -------------------------------------------------------------
+        # Macro Block Handlers (ResMLP, SGU, Highway, SE, MHA, DeepMLP)
+        # -------------------------------------------------------------
+        @self.register("custom.pytorch", "DeepMLP_Norm_Act")
+        @self.register("", "DeepMLP_Norm_Act")
+        def _deep_mlp_norm_act(inputs: list[torch.Tensor], attrs: dict[str, Any]) -> torch.Tensor:
+            has_norm = attrs.get("has_norm", 1)
+            act_type = attrs.get("activation", "GELU")
+            if has_norm:
+                x = inputs[0]
+                gamma = inputs[1]
+                beta = inputs[2] if len(inputs) > 2 and inputs[2] is not None and inputs[2].numel() > 0 else None
+                x_norm = F.layer_norm(x, [gamma.shape[0]], weight=gamma, bias=beta)
+                w = inputs[3]
+                b = inputs[4] if len(inputs) > 4 and inputs[4] is not None and inputs[4].numel() > 0 else None
+                h = torch.matmul(x_norm, w)
+                if b is not None:
+                    h = h + b
+            else:
+                x = inputs[0]
+                w = inputs[1]
+                b = inputs[2] if len(inputs) > 2 and inputs[2] is not None and inputs[2].numel() > 0 else None
+                h = torch.matmul(x, w)
+                if b is not None:
+                    h = h + b
+            if act_type in ("Gelu", "GELU", "FastGelu"):
+                return F.gelu(h)
+            elif act_type in ("SiLU", "Swish"):
+                return F.silu(h)
+            elif act_type == "Relu":
+                return F.relu(h)
+            return h
+
+        @self.register("custom.pytorch", "SpatialGatingUnit")
+        @self.register("", "SpatialGatingUnit")
+        def _spatial_gating_unit(inputs: list[torch.Tensor], attrs: dict[str, Any]) -> torch.Tensor:
+            x = inputs[0]
+            u, v = torch.chunk(x, 2, dim=-1)
+            v_norm = F.layer_norm(v, [v.shape[-1]])
+            w = inputs[1]
+            b = inputs[2] if len(inputs) > 2 and inputs[2] is not None and inputs[2].numel() > 0 else None
+            if w.shape[-1] == v.shape[1] and w.shape[0] == v.shape[1]:
+                gate = torch.matmul(v_norm.transpose(1, 2), w).transpose(1, 2)
+            else:
+                gate = torch.matmul(v_norm, w)
+            if b is not None:
+                gate = gate + b
+            return u * gate
+
+        @self.register("custom.pytorch", "HighwayBlock")
+        @self.register("", "HighwayBlock")
+        def _highway_block(inputs: list[torch.Tensor], attrs: dict[str, Any]) -> torch.Tensor:
+            h, gate = inputs[0], inputs[1]
+            t = torch.sigmoid(gate)
+            x = inputs[2] if len(inputs) > 2 else h
+            return h * t + x * (1.0 - t)
+
+        @self.register("custom.pytorch", "SqueezeExcitation")
+        @self.register("", "SqueezeExcitation")
+        def _squeeze_excitation(inputs: list[torch.Tensor], attrs: dict[str, Any]) -> torch.Tensor:
+            x = inputs[0]
+            w1, b1 = inputs[1], inputs[2]
+            w2, b2 = inputs[3], inputs[4]
+            pooled = x.mean(dim=(-2, -1), keepdim=True)
+            fc1 = F.conv2d(pooled, w1, b1) if w1.dim() == 4 else torch.matmul(pooled.squeeze(-1).squeeze(-1), w1) + b1
+            act = F.relu(fc1)
+            fc2 = F.conv2d(act, w2, b2) if w2.dim() == 4 else torch.matmul(act, w2) + b2
+            scale = torch.sigmoid(fc2 if w1.dim() == 4 else fc2.unsqueeze(-1).unsqueeze(-1))
+            return x * scale
+
+        @self.register("custom.pytorch", "MultiHeadAttention")
+        @self.register("", "MultiHeadAttention")
+        def _mha_composite(inputs: list[torch.Tensor], attrs: dict[str, Any]) -> torch.Tensor:
+            x = inputs[0]
+            out_w = inputs[1]
+            out_b = inputs[2] if len(inputs) > 2 and inputs[2] is not None and inputs[2].numel() > 0 else None
+            out = torch.matmul(x, out_w)
+            if out_b is not None:
+                out = out + out_b
+            return out
+
+        @self.register("com.microsoft", "SkipLayerNormalization")
+        @self.register("custom.pytorch", "SkipLayerNormalization")
+        @self.register("", "SkipLayerNormalization")
+        def _skip_layer_norm(inputs: list[torch.Tensor], attrs: dict[str, Any]) -> torch.Tensor:
+            x = inputs[0] + inputs[1]
+            scale = inputs[2] if len(inputs) > 2 and inputs[2] is not None and inputs[2].numel() > 0 else None
+            bias = inputs[3] if len(inputs) > 3 and inputs[3] is not None and inputs[3].numel() > 0 else None
             axis = attrs.get("axis", -1)
             eps = attrs.get("epsilon", 1e-5)
             normalized_shape = (
@@ -635,6 +1285,12 @@ class OpRegistry:
                 x = x.unsqueeze(ax)
             return x
 
+        @self.register("", "Tile")
+        def _tile(inputs: list[torch.Tensor], attrs: dict[str, Any]) -> torch.Tensor:
+            x, repeats = inputs[0], inputs[1]
+            rep_list = [int(v) for v in repeats.cpu().tolist()]
+            return x.repeat(*rep_list)
+
         @self.register("", "Flatten")
         def _flatten(inputs: list[torch.Tensor], attrs: dict[str, Any]) -> torch.Tensor:
             axis = attrs.get("axis", 1)
@@ -645,27 +1301,41 @@ class OpRegistry:
 
         @self.register("", "Shape")
         def _shape(inputs: list[torch.Tensor], attrs: dict[str, Any]) -> torch.Tensor:
-            return torch.tensor(inputs[0].shape, dtype=torch.int64)
+            return torch.tensor(inputs[0].shape, dtype=torch.int64, device=inputs[0].device)
 
         @self.register("", "Gather")
         def _gather(inputs: list[torch.Tensor], attrs: dict[str, Any]) -> torch.Tensor:
             data, indices = inputs[0], inputs[1]
             axis = attrs.get("axis", 0)
-            return torch.index_select(data, axis, indices.view(-1)).reshape(
+            if axis < 0:
+                axis += data.dim()
+            dim_size = data.shape[axis]
+            if indices.dim() == 0:
+                idx = int(indices.item())
+                if idx < 0:
+                    idx += dim_size
+                return torch.select(data, axis, idx)
+            indices_wrapped = torch.where(indices < 0, indices + dim_size, indices)
+            return torch.index_select(data, axis, indices_wrapped.view(-1)).reshape(
                 *data.shape[:axis], *indices.shape, *data.shape[axis + 1 :]
-            ) if indices.dim() > 0 else torch.select(data, axis, int(indices.item()))
+            )
 
         @self.register("", "Cast")
         def _cast(inputs: list[torch.Tensor], attrs: dict[str, Any]) -> torch.Tensor:
             to_type = attrs.get("to", 1)
-            # ONNX TensorProto enum: 1=FLOAT, 7=INT64, 6=INT32, 10=FLOAT16, 9=BOOL, 11=DOUBLE
+            # ONNX TensorProto enum: 1=FLOAT, 2=UINT8, 3=INT8, 4=UINT16, 5=INT16, 6=INT32, 7=INT64, 9=BOOL, 10=FLOAT16, 11=DOUBLE, 16=BFLOAT16
             type_map = {
                 1: torch.float32,
+                2: torch.uint8,
+                3: torch.int8,
+                4: getattr(torch, "uint16", torch.int32),
+                5: torch.int16,
                 6: torch.int32,
                 7: torch.int64,
                 9: torch.bool,
                 10: torch.float16,
                 11: torch.float64,
+                16: torch.bfloat16,
             }
             target_torch = type_map.get(to_type, torch.float32)
             return inputs[0].to(target_torch)

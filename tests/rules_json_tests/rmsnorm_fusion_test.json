@@ -1,0 +1,15 @@
+{
+  "test_id": "rmsnorm_fusion_test",
+  "model_path": ".helper/models/norm_rmsnorm_l2.onnx",
+  "input_shapes": {
+    "input": [
+      2,
+      8,
+      32
+    ]
+  },
+  "expected_target_node": "RMSNorm",
+  "min_expected_reduction": 0.5,
+  "rtol": 0.0001,
+  "atol": 0.0001
+}

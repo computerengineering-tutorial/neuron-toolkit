@@ -1,0 +1,63 @@
+{
+  "rule_id": "rope_frequency_slice_fusion",
+  "name": "RoPE Frequency Table Slicing Fusion",
+  "description": "Rewires dynamic shape/slice frequency tables directly into RotaryEmbedding.",
+  "pattern": {
+    "nodes": [
+      {
+        "id": "cos_node",
+        "op_type": "Cos",
+        "inputs": ["$theta"],
+        "outputs": ["$cos_out"]
+      },
+      {
+        "id": "sin_node",
+        "op_type": "Sin",
+        "inputs": ["$theta"],
+        "outputs": ["$sin_out"]
+      },
+      {
+        "id": "mul_cos",
+        "op_type": "Mul",
+        "inputs": ["$x", "$cos_out"],
+        "outputs": ["$q_cos"]
+      },
+      {
+        "id": "mul_sin",
+        "op_type": "Mul",
+        "inputs": ["$rot", "$sin_out"],
+        "outputs": ["$q_sin"]
+      },
+      {
+        "id": "add_node",
+        "op_type": "Add",
+        "inputs": ["$q_cos", "$q_sin"],
+        "outputs": ["$y"]
+      }
+    ]
+  },
+  "action": {
+    "type": "fuse_to_function",
+    "op_type": "RotaryEmbedding",
+    "domain": "custom.pytorch",
+    "inputs": ["$x", "$theta"],
+    "outputs": ["$y"],
+    "targets": {
+      "modern_onnx": {
+        "op_type": "RotaryEmbedding",
+        "domain": "custom.pytorch",
+        "inputs": ["$x", "$theta"]
+      },
+      "function_proto": {
+        "op_type": "RotaryEmbedding",
+        "domain": "custom.pytorch",
+        "inputs": ["$x", "$theta"]
+      },
+      "pytorch_custom": {
+        "op_type": "RotaryEmbedding",
+        "domain": "custom.pytorch",
+        "inputs": ["$x", "$theta"]
+      }
+    }
+  }
+}

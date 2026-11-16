@@ -1,0 +1,55 @@
+{
+  "rule_id": "linear_matmul_add_fusion",
+  "name": "MatMul + Add to Linear Fusion",
+  "description": "Fuses MatMul(X, W) + Add(B) into custom.pytorch::Linear(X, W, B).",
+  "pattern": {
+    "nodes": [
+      {
+        "id": "matmul_node",
+        "op_type": "MatMul",
+        "inputs": ["$x", "$w"],
+        "outputs": ["$mm_out"]
+      },
+      {
+        "id": "add_node",
+        "op_type": "Add",
+        "inputs": ["$mm_out", "$b"],
+        "outputs": ["$y"]
+      }
+    ],
+    "conditions": [
+      {
+        "type": "is_initializer",
+        "tensor": "$w"
+      },
+      {
+        "type": "is_initializer",
+        "tensor": "$b"
+      }
+    ]
+  },
+  "action": {
+    "type": "fuse_to_function",
+    "op_type": "Linear",
+    "domain": "custom.pytorch",
+    "inputs": ["$x", "$w", "$b"],
+    "outputs": ["$y"],
+    "targets": {
+      "modern_onnx": {
+        "op_type": "Linear",
+        "domain": "custom.pytorch",
+        "inputs": ["$x", "$w", "$b"]
+      },
+      "function_proto": {
+        "op_type": "Linear",
+        "domain": "custom.pytorch",
+        "inputs": ["$x", "$w", "$b"]
+      },
+      "pytorch_custom": {
+        "op_type": "Linear",
+        "domain": "custom.pytorch",
+        "inputs": ["$x", "$w", "$b"]
+      }
+    }
+  }
+}

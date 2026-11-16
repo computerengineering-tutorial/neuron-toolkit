@@ -10,8 +10,11 @@ import sys
 import time
 from pathlib import Path
 
+# Ensure src is on sys.path for direct script execution
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+
 import onnx
-from neuron_toolkit.rules.engine import JSONRuleEngine
+from neuron_toolkit.compiler import NeuronCompiler
 from neuron_toolkit.runtime.cross_verifier import CrossVerifier
 
 
@@ -28,10 +31,9 @@ def benchmark_model(
     print(f"==================================================================")
 
     orig_model = onnx.load(str(model_path))
-    engine = JSONRuleEngine(mode=mode)
 
     t0 = time.perf_counter()
-    opt_model = engine.apply(orig_model)
+    opt_model = NeuronCompiler.compile(orig_model, mode=mode)
     opt_time_ms = (time.perf_counter() - t0) * 1000.0
 
     # Clean Model Export for Netron / Visualizer Inspection
@@ -174,8 +176,8 @@ def main() -> None:
     parser.add_argument(
         "--mode",
         default="function_proto",
-        choices=["function_proto", "plain_custom_op"],
-        help="JSONRuleEngine mode (default: function_proto)",
+        choices=["function_proto", "modern_onnx", "plain_custom_op", "pytorch_custom"],
+        help="JSONRuleEngine target mode: 'modern_onnx' (converts to modern ONNX standard opset 23 ops), 'function_proto' (dual-mode with FunctionProto attached for Netron visual hierarchy), 'pytorch_custom' (minimalist custom ops for PyTorch runtime)",
     )
     parser.add_argument(
         "--export-dir",

@@ -58,6 +58,7 @@ class RuleAction:
     outputs: list[str] = field(default_factory=list)
     attributes: dict[str, Any] = field(default_factory=dict)
     metadata: dict[str, Any] = field(default_factory=dict)
+    targets: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> RuleAction:
@@ -70,6 +71,7 @@ class RuleAction:
             outputs=list(data.get("outputs", [])),
             attributes=dict(data.get("attributes", {})),
             metadata=dict(data.get("metadata", {})),
+            targets=dict(data.get("targets", {})),
         )
 
 
@@ -85,12 +87,14 @@ class JSONRule:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> JSONRule:
+        pattern_dict = data.get("pattern") or data.get("source_pattern") or {}
+        action_dict = data.get("action") or data.get("target_pattern") or {}
         return cls(
             rule_id=data.get("rule_id", "unnamed_rule"),
             description=data.get("description", ""),
-            nodes=[NodePattern.from_dict(n) for n in data.get("pattern", {}).get("nodes", [])],
+            nodes=[NodePattern.from_dict(n) for n in pattern_dict.get("nodes", [])],
             conditions=[
-                RuleCondition.from_dict(c) for c in data.get("pattern", {}).get("conditions", [])
+                RuleCondition.from_dict(c) for c in pattern_dict.get("conditions", [])
             ],
-            action=RuleAction.from_dict(data.get("action", {})),
+            action=RuleAction.from_dict(action_dict),
         )

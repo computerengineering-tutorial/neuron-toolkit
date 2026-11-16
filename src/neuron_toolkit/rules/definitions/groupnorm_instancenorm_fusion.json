@@ -1,0 +1,68 @@
+{
+  "rule_id": "groupnorm_instancenorm_fusion",
+  "name": "GroupNorm InstanceNorm Adapter Fusion",
+  "description": "Fuses 9-node Reshape -> InstanceNormalization -> Reshape -> Mul -> Add into standard GroupNormalization.",
+  "pattern": {
+    "nodes": [
+      {
+        "id": "reshape_exp",
+        "op_type": "Reshape",
+        "inputs": ["$x", "$shape_4d"],
+        "outputs": ["$x_4d"]
+      },
+      {
+        "id": "in_node",
+        "op_type": "InstanceNormalization",
+        "inputs": ["$x_4d", "$scale_in", "$bias_in"],
+        "outputs": ["$in_out"]
+      },
+      {
+        "id": "reshape_res",
+        "op_type": "Reshape",
+        "inputs": ["$in_out", "$shape_3d"],
+        "outputs": ["$res_out"]
+      },
+      {
+        "id": "mul_node",
+        "op_type": "Mul",
+        "inputs": ["$res_out", "$gamma"],
+        "outputs": ["$mul_out"]
+      },
+      {
+        "id": "add_node",
+        "op_type": "Add",
+        "inputs": ["$mul_out", "$beta"],
+        "outputs": ["$y"]
+      }
+    ]
+  },
+  "action": {
+    "type": "replace_op",
+    "op_type": "GroupNormalization",
+    "domain": "",
+    "inputs": ["$x", "$gamma", "$beta"],
+    "outputs": ["$y"],
+    "attributes": {
+      "num_groups": 1,
+      "epsilon": 1e-5
+    },
+    "targets": {
+      "modern_onnx": {
+        "op_type": "GroupNormalization",
+        "domain": "",
+        "min_opset": 21,
+        "inputs": ["$x", "$gamma", "$beta"]
+      },
+      "function_proto": {
+        "op_type": "GroupNorm",
+        "domain": "custom.pytorch",
+        "inputs": ["$x", "$gamma", "$beta"]
+      },
+      "pytorch_custom": {
+        "op_type": "GroupNorm",
+        "domain": "custom.pytorch",
+        "inputs": ["$x", "$gamma", "$beta"]
+      }
+    }
+  }
+}

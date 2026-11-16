@@ -1,0 +1,46 @@
+{
+  "rule_id": "silu_swish_canonicalization",
+  "name": "SiLU / Swish Canonicalization",
+  "description": "Fuses x * Sigmoid(x) into SiLU (standard Opset 20+).",
+  "pattern": {
+    "nodes": [
+      {
+        "id": "sig_node",
+        "op_type": "Sigmoid",
+        "inputs": ["$x"],
+        "outputs": ["$sig_out"]
+      },
+      {
+        "id": "mul_node",
+        "op_type": "Mul",
+        "inputs": ["$x", "$sig_out"],
+        "outputs": ["$y"]
+      }
+    ]
+  },
+  "action": {
+    "type": "replace_op",
+    "op_type": "SiLU",
+    "domain": "custom.pytorch",
+    "inputs": ["$x"],
+    "outputs": ["$y"],
+    "targets": {
+      "modern_onnx": {
+        "op_type": "SiLU",
+        "domain": "",
+        "min_opset": 20,
+        "inputs": ["$x"]
+      },
+      "function_proto": {
+        "op_type": "SiLU",
+        "domain": "custom.pytorch",
+        "inputs": ["$x"]
+      },
+      "pytorch_custom": {
+        "op_type": "SiLU",
+        "domain": "custom.pytorch",
+        "inputs": ["$x"]
+      }
+    }
+  }
+}

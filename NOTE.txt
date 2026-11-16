@@ -1,0 +1,3 @@
+i think issme problem ye hogaa ki 2 same type of attn blocks alag alag activation yaa alag alag dynamics ke saath aata hai to kyaa dono ke functional graph alag alag honge jisase dono ke calculations alag alag ho sake varna dono mai diffrence hone ke aad dono block kaa same aayega
+
+realworld (LLM every 7th layer same type of attension with diff activation in middle) but i think compiler dono ko aek hi func_proto mai daal degaa aur activation func ke liye koi fieldbhi nahi hai aur hogi to bhi shayad onnx mai string if else nahi hotaa 

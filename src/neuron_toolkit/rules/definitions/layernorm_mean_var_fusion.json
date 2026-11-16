@@ -1,0 +1,92 @@
+{
+  "rule_id": "layernorm_mean_var_fusion",
+  "name": "LayerNorm Mean/Variance Fusion",
+  "description": "Fuses ReduceMean -> Sub -> Pow(2) -> ReduceMean -> Sqrt -> Div -> Mul -> Add into LayerNormalization.",
+  "pattern": {
+    "nodes": [
+      {
+        "id": "mean_node",
+        "op_type": "ReduceMean",
+        "inputs": ["$x"],
+        "outputs": ["$mean_out"]
+      },
+      {
+        "id": "sub_node",
+        "op_type": "Sub",
+        "inputs": ["$x", "$mean_out"],
+        "outputs": ["$diff_out"]
+      },
+      {
+        "id": "pow_node",
+        "op_type": "Pow",
+        "inputs": ["$diff_out", "$c_2"],
+        "outputs": ["$sq_out"]
+      },
+      {
+        "id": "var_node",
+        "op_type": "ReduceMean",
+        "inputs": ["$sq_out"],
+        "outputs": ["$var_out"]
+      },
+      {
+        "id": "add_node",
+        "op_type": "Add",
+        "inputs": ["$var_out", "$eps"],
+        "outputs": ["$eps_var"]
+      },
+      {
+        "id": "sqrt_node",
+        "op_type": "Sqrt",
+        "inputs": ["$eps_var"],
+        "outputs": ["$std_out"]
+      },
+      {
+        "id": "div_node",
+        "op_type": "Div",
+        "inputs": ["$diff_out", "$std_out"],
+        "outputs": ["$norm_out"]
+      },
+      {
+        "id": "mul_node",
+        "op_type": "Mul",
+        "inputs": ["$norm_out", "$gamma"],
+        "outputs": ["$scaled_out"]
+      },
+      {
+        "id": "add_bias_node",
+        "op_type": "Add",
+        "inputs": ["$scaled_out", "$beta"],
+        "outputs": ["$y"]
+      }
+    ]
+  },
+  "action": {
+    "type": "replace_op",
+    "op_type": "LayerNormalization",
+    "domain": "",
+    "inputs": ["$x", "$gamma", "$beta"],
+    "outputs": ["$y"],
+    "attributes": {
+      "axis": -1,
+      "epsilon": 1e-5
+    },
+    "targets": {
+      "modern_onnx": {
+        "op_type": "LayerNormalization",
+        "domain": "",
+        "min_opset": 17,
+        "inputs": ["$x", "$gamma", "$beta"]
+      },
+      "function_proto": {
+        "op_type": "LayerNormalization",
+        "domain": "",
+        "inputs": ["$x", "$gamma", "$beta"]
+      },
+      "pytorch_custom": {
+        "op_type": "LayerNormalization",
+        "domain": "custom.pytorch",
+        "inputs": ["$x", "$gamma", "$beta"]
+      }
+    }
+  }
+}

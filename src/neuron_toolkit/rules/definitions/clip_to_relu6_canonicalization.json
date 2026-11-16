@@ -1,0 +1,43 @@
+{
+  "rule_id": "clip_to_relu6_canonicalization",
+  "name": "Clip to Relu6 Canonicalization",
+  "description": "Fuses Clip(min=0, max=6) into canonical Relu6.",
+  "pattern": {
+    "nodes": [
+      {
+        "id": "clip_node",
+        "op_type": "Clip",
+        "inputs": ["$x", "$c_0", "$c_6"],
+        "outputs": ["$y"],
+        "attributes": {
+          "min": 0.0,
+          "max": 6.0
+        }
+      }
+    ]
+  },
+  "action": {
+    "type": "replace_op",
+    "op_type": "Relu6",
+    "domain": "custom.pytorch",
+    "inputs": ["$x"],
+    "outputs": ["$y"],
+    "targets": {
+      "modern_onnx": {
+        "op_type": "Relu6",
+        "domain": "custom.pytorch",
+        "inputs": ["$x"]
+      },
+      "function_proto": {
+        "op_type": "Relu6",
+        "domain": "custom.pytorch",
+        "inputs": ["$x"]
+      },
+      "pytorch_custom": {
+        "op_type": "Relu6",
+        "domain": "custom.pytorch",
+        "inputs": ["$x"]
+      }
+    }
+  }
+}

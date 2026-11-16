@@ -1,0 +1,62 @@
+{
+  "rule_id": "rmsnorm_reducel2_fusion",
+  "name": "RMSNorm ReduceL2 Fusion",
+  "description": "Fuses 9-node ReduceL2 expansion into standard RMSNormalization(axis=-1).",
+  "pattern": {
+    "nodes": [
+      {
+        "id": "reduce_node",
+        "op_type": "ReduceL2",
+        "inputs": ["$x"],
+        "outputs": ["$l2_out"]
+      },
+      {
+        "id": "clip_node",
+        "op_type": "Clip",
+        "inputs": ["$l2_out", "$eps"],
+        "outputs": ["$clipped_out"]
+      },
+      {
+        "id": "div_node",
+        "op_type": "Div",
+        "inputs": ["$x", "$clipped_out"],
+        "outputs": ["$normed_x"]
+      },
+      {
+        "id": "mul_gamma",
+        "op_type": "Mul",
+        "inputs": ["$normed_x", "$gamma"],
+        "outputs": ["$y"]
+      }
+    ]
+  },
+  "action": {
+    "type": "fuse_to_function",
+    "op_type": "RMSNorm",
+    "domain": "custom.pytorch",
+    "inputs": ["$x", "$gamma"],
+    "outputs": ["$y"],
+    "targets": {
+      "modern_onnx": {
+        "op_type": "RMSNormalization",
+        "domain": "",
+        "min_opset": 23,
+        "inputs": ["$x", "$gamma"],
+        "attributes": {
+          "axis": -1,
+          "epsilon": 1e-12
+        }
+      },
+      "function_proto": {
+        "op_type": "RMSNorm",
+        "domain": "custom.pytorch",
+        "inputs": ["$x", "$gamma"]
+      },
+      "pytorch_custom": {
+        "op_type": "RMSNorm",
+        "domain": "custom.pytorch",
+        "inputs": ["$x", "$gamma"]
+      }
+    }
+  }
+}

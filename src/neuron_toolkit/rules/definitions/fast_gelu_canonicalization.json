@@ -1,0 +1,66 @@
+{
+  "rule_id": "fast_gelu_canonicalization",
+  "name": "Fast GELU Canonicalization",
+  "description": "Fuses 0.5 * x * (1 + Tanh(0.79788 * (x + 0.044715 * x^3))) into FastGelu or Gelu(approximate='tanh').",
+  "pattern": {
+    "nodes": [
+      {
+        "id": "pow_node",
+        "op_type": "Pow",
+        "inputs": ["$x", "$c_3"],
+        "outputs": ["$pow_out"]
+      },
+      {
+        "id": "mul_coeff_node",
+        "op_type": "Mul",
+        "inputs": ["$pow_out", "$c_coeff"],
+        "outputs": ["$coeff_out"]
+      },
+      {
+        "id": "add_x_node",
+        "op_type": "Add",
+        "inputs": ["$x", "$coeff_out"],
+        "outputs": ["$inner_sum"]
+      },
+      {
+        "id": "mul_factor_node",
+        "op_type": "Mul",
+        "inputs": ["$inner_sum", "$c_factor"],
+        "outputs": ["$tanh_in"]
+      },
+      {
+        "id": "tanh_node",
+        "op_type": "Tanh",
+        "inputs": ["$tanh_in"],
+        "outputs": ["$tanh_out"]
+      }
+    ]
+  },
+  "action": {
+    "type": "replace_op",
+    "op_type": "Gelu",
+    "domain": "custom.pytorch",
+    "inputs": ["$x"],
+    "outputs": ["$y"],
+    "targets": {
+      "modern_onnx": {
+        "op_type": "Gelu",
+        "domain": "",
+        "inputs": ["$x"],
+        "attributes": {
+          "approximate": "tanh"
+        }
+      },
+      "function_proto": {
+        "op_type": "Gelu",
+        "domain": "custom.pytorch",
+        "inputs": ["$x"]
+      },
+      "pytorch_custom": {
+        "op_type": "Gelu",
+        "domain": "custom.pytorch",
+        "inputs": ["$x"]
+      }
+    }
+  }
+}

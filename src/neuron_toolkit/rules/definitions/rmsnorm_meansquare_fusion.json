@@ -1,0 +1,74 @@
+{
+  "rule_id": "rmsnorm_meansquare_fusion",
+  "name": "RMSNorm MeanSquare Fusion",
+  "description": "Fuses Pow(2) -> ReduceMean -> Add(eps) -> Sqrt -> Div -> Mul into RMSNormalization.",
+  "pattern": {
+    "nodes": [
+      {
+        "id": "pow_node",
+        "op_type": "Pow",
+        "inputs": ["$x", "$c_2"],
+        "outputs": ["$pow_out"]
+      },
+      {
+        "id": "rm_node",
+        "op_type": "ReduceMean",
+        "inputs": ["$pow_out"],
+        "outputs": ["$var_out"]
+      },
+      {
+        "id": "add_node",
+        "op_type": "Add",
+        "inputs": ["$var_out", "$eps"],
+        "outputs": ["$add_out"]
+      },
+      {
+        "id": "sqrt_node",
+        "op_type": "Sqrt",
+        "inputs": ["$add_out"],
+        "outputs": ["$std_out"]
+      },
+      {
+        "id": "div_node",
+        "op_type": "Div",
+        "inputs": ["$x", "$std_out"],
+        "outputs": ["$normed_x"]
+      },
+      {
+        "id": "mul_node",
+        "op_type": "Mul",
+        "inputs": ["$normed_x", "$gamma"],
+        "outputs": ["$y"]
+      }
+    ]
+  },
+  "action": {
+    "type": "fuse_to_function",
+    "op_type": "RMSNorm",
+    "domain": "custom.pytorch",
+    "inputs": ["$x", "$gamma"],
+    "outputs": ["$y"],
+    "targets": {
+      "modern_onnx": {
+        "op_type": "RMSNormalization",
+        "domain": "",
+        "min_opset": 23,
+        "inputs": ["$x", "$gamma"],
+        "attributes": {
+          "axis": -1,
+          "epsilon": 1e-5
+        }
+      },
+      "function_proto": {
+        "op_type": "RMSNorm",
+        "domain": "custom.pytorch",
+        "inputs": ["$x", "$gamma"]
+      },
+      "pytorch_custom": {
+        "op_type": "RMSNorm",
+        "domain": "custom.pytorch",
+        "inputs": ["$x", "$gamma"]
+      }
+    }
+  }
+}

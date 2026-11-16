@@ -1,0 +1,138 @@
+{
+  "signatures": [
+    {
+      "name": "DeepMLP_Norm_Act",
+      "category": "mlp",
+      "domain": "custom.pytorch",
+      "description": "Pre-norm followed by Linear projection and Activation function",
+      "inputs": ["x", "norm_weight", "norm_bias", "linear_weight", "linear_bias"],
+      "outputs": ["out"],
+      "sub_ops": ["LayerNorm", "Linear", "Gelu"],
+      "attributes": {
+        "activation": "GELU",
+        "has_norm": true
+      }
+    },
+    {
+      "name": "ResMLP_Block",
+      "category": "mlp",
+      "domain": "custom.pytorch",
+      "description": "Cross-token affine transform with residual addition and channel MLP",
+      "inputs": ["x", "affine_weight", "affine_bias", "mlp_w1", "mlp_b1", "mlp_w2", "mlp_b2"],
+      "outputs": ["out"],
+      "sub_ops": ["Linear", "Add", "Gelu"],
+      "attributes": {
+        "has_residual": true
+      }
+    },
+    {
+      "name": "MLPMixer_Block",
+      "category": "mlp",
+      "domain": "custom.pytorch",
+      "description": "Token-mixing MLP followed by channel-mixing MLP with residual connections",
+      "inputs": ["x", "token_w1", "token_b1", "token_w2", "token_b2", "chan_w1", "chan_b1", "chan_w2", "chan_b2"],
+      "outputs": ["out"],
+      "sub_ops": ["LayerNorm", "Linear", "Gelu", "Add"],
+      "attributes": {
+        "has_token_mixing": true,
+        "has_channel_mixing": true
+      }
+    },
+    {
+      "name": "SpatialGatingUnit",
+      "category": "mlp",
+      "domain": "custom.pytorch",
+      "description": "gMLP Spatial Gating Unit splitting channels and gating via spatial projection",
+      "inputs": ["x", "weight", "bias"],
+      "outputs": ["out"],
+      "sub_ops": ["Split", "LayerNorm", "Linear", "Mul"],
+      "attributes": {
+        "dim": -1
+      }
+    },
+    {
+      "name": "HighwayBlock",
+      "category": "mlp",
+      "domain": "custom.pytorch",
+      "description": "Highway Network block with Transform and Carry gating",
+      "inputs": ["x", "w_h", "b_h", "w_t", "b_t"],
+      "outputs": ["out"],
+      "sub_ops": ["Linear", "Sigmoid", "Mul", "Sub", "Add"],
+      "attributes": {
+        "activation": "ReLU"
+      }
+    },
+    {
+      "name": "SqueezeExcitation",
+      "category": "vision",
+      "domain": "custom.pytorch",
+      "description": "Channel-wise Squeeze-and-Excitation attention mechanism",
+      "inputs": ["x", "fc1_w", "fc1_b", "fc2_w", "fc2_b"],
+      "outputs": ["out"],
+      "sub_ops": ["GlobalAveragePool", "Linear", "Relu", "Sigmoid", "Mul"],
+      "attributes": {
+        "reduction_ratio": 4
+      }
+    },
+    {
+      "name": "InvertedResidualBlock",
+      "category": "vision",
+      "domain": "custom.pytorch",
+      "description": "MobileNetV2/V3 Inverted Residual block with depthwise separable convolution",
+      "inputs": ["x", "expand_w", "dw_w", "proj_w"],
+      "outputs": ["out"],
+      "sub_ops": ["Conv", "Relu6", "Conv", "Add"],
+      "attributes": {
+        "has_residual": true
+      }
+    },
+    {
+      "name": "ConvNeXtBlock",
+      "category": "vision",
+      "domain": "custom.pytorch",
+      "description": "Modern ConvNeXt 7x7 depthwise convolution with inverted MLP bottleneck",
+      "inputs": ["x", "dw_w", "dw_b", "norm_w", "norm_b", "pw1_w", "pw1_b", "pw2_w", "pw2_b"],
+      "outputs": ["out"],
+      "sub_ops": ["Conv", "LayerNorm", "Linear", "Gelu", "Add"],
+      "attributes": {
+        "kernel_size": 7
+      }
+    },
+    {
+      "name": "MultiHeadAttention",
+      "category": "transformer",
+      "domain": "custom.pytorch",
+      "description": "Composite Multi-Head Attention block combining QKV projection, SDPA, and Out projection",
+      "inputs": ["x", "qkv_weight", "qkv_bias", "out_weight", "out_bias"],
+      "outputs": ["out"],
+      "sub_ops": ["Linear", "SplitQKV", "ScaledDotProductAttention", "MergeHeads"],
+      "attributes": {
+        "num_heads": 4
+      }
+    },
+    {
+      "name": "DiT_Block",
+      "category": "diffusion",
+      "domain": "custom.pytorch",
+      "description": "Diffusion Transformer block with adaptive LayerNorm conditioning and zero-init gating",
+      "inputs": ["x", "c", "attn_w", "mlp_w", "ada_w"],
+      "outputs": ["out"],
+      "sub_ops": ["Linear", "LayerNorm", "ScaledDotProductAttention", "Mul", "Add"],
+      "attributes": {
+        "has_adaln": true
+      }
+    },
+    {
+      "name": "MambaSSM",
+      "category": "ssm",
+      "domain": "custom.pytorch",
+      "description": "Selective State Space Model (S6) block with dynamic discretization and 1D convolution",
+      "inputs": ["x", "in_proj_w", "conv_w", "conv_b", "delta_w", "A", "B_w", "C_w", "out_proj_w"],
+      "outputs": ["out"],
+      "sub_ops": ["Linear", "Conv", "SiLU", "Mul", "Add"],
+      "attributes": {
+        "state_dim": 16
+      }
+    }
+  ]
+}

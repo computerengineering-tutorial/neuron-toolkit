@@ -1,0 +1,52 @@
+{
+  "rule_id": "mish_activation_canonicalization",
+  "name": "Mish Activation Canonicalization",
+  "description": "Fuses x * Tanh(Softplus(x)) into Mish.",
+  "pattern": {
+    "nodes": [
+      {
+        "id": "sp_node",
+        "op_type": "Softplus",
+        "inputs": ["$x"],
+        "outputs": ["$sp_out"]
+      },
+      {
+        "id": "tanh_node",
+        "op_type": "Tanh",
+        "inputs": ["$sp_out"],
+        "outputs": ["$tanh_out"]
+      },
+      {
+        "id": "mul_node",
+        "op_type": "Mul",
+        "inputs": ["$x", "$tanh_out"],
+        "outputs": ["$y"]
+      }
+    ]
+  },
+  "action": {
+    "type": "replace_op",
+    "op_type": "Mish",
+    "domain": "custom.pytorch",
+    "inputs": ["$x"],
+    "outputs": ["$y"],
+    "targets": {
+      "modern_onnx": {
+        "op_type": "Mish",
+        "domain": "",
+        "min_opset": 18,
+        "inputs": ["$x"]
+      },
+      "function_proto": {
+        "op_type": "Mish",
+        "domain": "custom.pytorch",
+        "inputs": ["$x"]
+      },
+      "pytorch_custom": {
+        "op_type": "Mish",
+        "domain": "custom.pytorch",
+        "inputs": ["$x"]
+      }
+    }
+  }
+}

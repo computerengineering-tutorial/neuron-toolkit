@@ -1,0 +1,15 @@
+{
+  "test_id": "silu_swish_canonicalization_test",
+  "model_path": ".helper/models/activation_silu.onnx",
+  "input_shapes": {
+    "input": [
+      2,
+      16,
+      32
+    ]
+  },
+  "expected_target_node": "SiLU",
+  "min_expected_reduction": 0.5,
+  "rtol": 0.0001,
+  "atol": 0.0001
+}
