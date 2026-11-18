@@ -81,7 +81,9 @@ def compute_subgraph_fingerprint(
             elif attr.floats:
                 attrs[attr.name] = [round(x, 6) for x in attr.floats]
             elif attr.strings:
-                attrs[attr.name] = [s.decode("utf-8", errors="ignore") for s in attr.strings]
+                attrs[attr.name] = [
+                    s.decode("utf-8", errors="ignore") for s in attr.strings
+                ]
         if attrs:
             node_dict["attrs"] = attrs
 

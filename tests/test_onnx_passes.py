@@ -67,7 +67,9 @@ def _conv_bn_model(
         **bn_attrs,
     )
     graph = helper.make_graph([conv, bn], "conv_bn", [X], [Y], inits)
-    model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 13)], ir_version=8)
+    model = helper.make_model(
+        graph, opset_imports=[helper.make_opsetid("", 13)], ir_version=8
+    )
     path.write_bytes(model.SerializeToString())
     return x_shape
 

@@ -16,13 +16,13 @@ Exports across ONNX Opsets 14, 17, 18, 20.
 from __future__ import annotations
 
 import math
-from pathlib import Path
 import warnings
+from pathlib import Path
 
 import onnx
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
+from torch import nn
 
 warnings.filterwarnings("ignore")
 
@@ -99,9 +99,17 @@ class PostLN_TransformerBlock(nn.Module):
 # 3. Vision Transformer (ViT) Block with Patch Embedding
 # =============================================================================
 class ViT_Block(nn.Module):
-    def __init__(self, img_channels: int = 3, patch_size: int = 4, d_model: int = 64, num_heads: int = 4) -> None:
+    def __init__(
+        self,
+        img_channels: int = 3,
+        patch_size: int = 4,
+        d_model: int = 64,
+        num_heads: int = 4,
+    ) -> None:
         super().__init__()
-        self.patch_embed = nn.Conv2d(img_channels, d_model, kernel_size=patch_size, stride=patch_size)
+        self.patch_embed = nn.Conv2d(
+            img_channels, d_model, kernel_size=patch_size, stride=patch_size
+        )
         self.cls_token = nn.Parameter(torch.zeros(1, 1, d_model))
         self.norm1 = nn.LayerNorm(d_model)
         self.attn = SelfAttention(d_model, num_heads)
@@ -129,7 +137,9 @@ class ViT_Block(nn.Module):
 class MultiHeadLatentAttention_MLA(nn.Module):
     """DeepSeek style low-rank KV latent compression and up-projection."""
 
-    def __init__(self, d_model: int = 64, num_heads: int = 4, d_latent: int = 16) -> None:
+    def __init__(
+        self, d_model: int = 64, num_heads: int = 4, d_latent: int = 16
+    ) -> None:
         super().__init__()
         self.d_model = d_model
         self.num_heads = num_heads
@@ -153,8 +163,16 @@ class MultiHeadLatentAttention_MLA(nn.Module):
         c_kv = self.kv_down_proj(x)  # (B, S, d_latent)
 
         # Decompressed K and V
-        k = self.kv_up_proj_k(c_kv).view(B, S, self.num_heads, self.head_dim).transpose(1, 2)
-        v = self.kv_up_proj_v(c_kv).view(B, S, self.num_heads, self.head_dim).transpose(1, 2)
+        k = (
+            self.kv_up_proj_k(c_kv)
+            .view(B, S, self.num_heads, self.head_dim)
+            .transpose(1, 2)
+        )
+        v = (
+            self.kv_up_proj_v(c_kv)
+            .view(B, S, self.num_heads, self.head_dim)
+            .transpose(1, 2)
+        )
 
         scores = torch.matmul(q / math.sqrt(self.head_dim), k.transpose(-1, -2))
         probs = torch.softmax(scores, dim=-1)
@@ -168,21 +186,25 @@ class MultiHeadLatentAttention_MLA(nn.Module):
 class SparseMoE_Block(nn.Module):
     """Mixture of Experts with top-2 softmax gating over 4 feed-forward experts."""
 
-    def __init__(self, d_model: int = 64, d_ffn: int = 128, num_experts: int = 4, top_k: int = 2) -> None:
+    def __init__(
+        self, d_model: int = 64, d_ffn: int = 128, num_experts: int = 4, top_k: int = 2
+    ) -> None:
         super().__init__()
         self.num_experts = num_experts
         self.top_k = top_k
         self.norm = nn.LayerNorm(d_model)
         self.gate = nn.Linear(d_model, num_experts, bias=False)
 
-        self.experts = nn.ModuleList([
-            nn.Sequential(
-                nn.Linear(d_model, d_ffn),
-                nn.GELU(),
-                nn.Linear(d_ffn, d_model),
-            )
-            for _ in range(num_experts)
-        ])
+        self.experts = nn.ModuleList(
+            [
+                nn.Sequential(
+                    nn.Linear(d_model, d_ffn),
+                    nn.GELU(),
+                    nn.Linear(d_ffn, d_model),
+                )
+                for _ in range(num_experts)
+            ]
+        )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         residual = x
@@ -230,7 +252,9 @@ class LinearAttention_Performer(nn.Module):
         num = torch.matmul(q_phi, kv)  # (B, H, S, D_h)
 
         # Normalization denominator
-        den = torch.matmul(q_phi, k_phi.sum(dim=-2, keepdim=True).transpose(-1, -2)).clamp(min=1e-6)
+        den = torch.matmul(
+            q_phi, k_phi.sum(dim=-2, keepdim=True).transpose(-1, -2)
+        ).clamp(min=1e-6)
         out = (num / den).transpose(1, 2).contiguous().view(B, S, D)
         return self.out_proj(out)
 
@@ -245,7 +269,7 @@ class SimpleRMSNorm(nn.Module):
         self.weight = nn.Parameter(torch.ones(dim))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        rms = torch.sqrt(torch.mean(x ** 2, dim=-1, keepdim=True) + self.eps)
+        rms = torch.sqrt(torch.mean(x**2, dim=-1, keepdim=True) + self.eps)
         return (x / rms) * self.weight
 
 
@@ -294,7 +318,9 @@ def export_model(
             m_proto = onnx.load(str(out_path))
             onnx.checker.check_model(m_proto)
             size_kb = out_path.stat().st_size / 1024.0
-            print(f"  [OK] Exported {out_path.name:<45} (opset={opset}, nodes={len(m_proto.graph.node):<3}, {size_kb:.1f} KB)")
+            print(
+                f"  [OK] Exported {out_path.name:<45} (opset={opset}, nodes={len(m_proto.graph.node):<3}, {size_kb:.1f} KB)"
+            )
             exported.append(str(out_path))
         except Exception as e:
             print(f"  [FAIL] Failed to export {out_path.name} (opset={opset}): {e}")
@@ -310,25 +336,59 @@ def main() -> None:
     dummy_img = torch.randn(1, 3, 16, 16)
 
     print("\n1. PreLN_TransformerBlock")
-    export_model(PreLN_TransformerBlock(64, 4, 128), (dummy_x,), ["x"], ["out"], "transformer_pre_ln")
+    export_model(
+        PreLN_TransformerBlock(64, 4, 128),
+        (dummy_x,),
+        ["x"],
+        ["out"],
+        "transformer_pre_ln",
+    )
 
     print("\n2. PostLN_TransformerBlock")
-    export_model(PostLN_TransformerBlock(64, 4, 128), (dummy_x,), ["x"], ["out"], "transformer_post_ln")
+    export_model(
+        PostLN_TransformerBlock(64, 4, 128),
+        (dummy_x,),
+        ["x"],
+        ["out"],
+        "transformer_post_ln",
+    )
 
     print("\n3. ViT_Block")
-    export_model(ViT_Block(3, 4, 64, 4), (dummy_img,), ["img"], ["out"], "vit_patch_block")
+    export_model(
+        ViT_Block(3, 4, 64, 4), (dummy_img,), ["img"], ["out"], "vit_patch_block"
+    )
 
     print("\n4. MultiHeadLatentAttention_MLA")
-    export_model(MultiHeadLatentAttention_MLA(64, 4, 16), (dummy_x,), ["x"], ["out"], "transformer_mla")
+    export_model(
+        MultiHeadLatentAttention_MLA(64, 4, 16),
+        (dummy_x,),
+        ["x"],
+        ["out"],
+        "transformer_mla",
+    )
 
     print("\n5. SparseMoE_Block")
-    export_model(SparseMoE_Block(64, 128, 4, 2), (dummy_x,), ["x"], ["out"], "transformer_moe")
+    export_model(
+        SparseMoE_Block(64, 128, 4, 2), (dummy_x,), ["x"], ["out"], "transformer_moe"
+    )
 
     print("\n6. LinearAttention_Performer")
-    export_model(LinearAttention_Performer(64, 4), (dummy_x,), ["x"], ["out"], "transformer_performer")
+    export_model(
+        LinearAttention_Performer(64, 4),
+        (dummy_x,),
+        ["x"],
+        ["out"],
+        "transformer_performer",
+    )
 
     print("\n7. SwiGLU_RMSNorm_TransformerBlock")
-    export_model(SwiGLU_RMSNorm_TransformerBlock(64, 4, 128), (dummy_x,), ["x"], ["out"], "transformer_swiglu_rms")
+    export_model(
+        SwiGLU_RMSNorm_TransformerBlock(64, 4, 128),
+        (dummy_x,),
+        ["x"],
+        ["out"],
+        "transformer_swiglu_rms",
+    )
 
     print("\n==================================================================")
     print(f"Advanced Transformer ONNX suite complete in: {OUT_DIR.resolve()}")

@@ -13,9 +13,7 @@ import json
 from pathlib import Path
 
 import torch
-import torch.nn as nn
-import onnx
-from onnx import helper, TensorProto, numpy_helper
+from torch import nn
 
 
 class RMSNormL2Module(nn.Module):

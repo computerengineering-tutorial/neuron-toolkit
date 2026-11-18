@@ -10,10 +10,7 @@ Zero hardcoded node-name heuristics: relies strictly on DAG topological reachabi
 
 from __future__ import annotations
 
-import collections
-import copy
 import logging
-from typing import Any
 
 import numpy as np
 import onnx
@@ -46,7 +43,9 @@ class StaticFolder(Pass):
     def run(self, model: onnx.ModelProto, context: CompilerContext) -> onnx.ModelProto:
         nodes_before = len(model.graph.node)
 
-        if context.should_run("static_folder") or context.should_run("constant_folding"):
+        if context.should_run("static_folder") or context.should_run(
+            "constant_folding"
+        ):
             model = self.apply_identity_scatter_nd_folding(model)
             model = self.apply_static_subgraph_folding(model)
 
@@ -57,9 +56,11 @@ class StaticFolder(Pass):
     # -------------------------------------------------------------------------
     # Identity ScatterND Folding
     # -------------------------------------------------------------------------
-    def apply_identity_scatter_nd_folding(self, model: onnx.ModelProto) -> onnx.ModelProto:
+    def apply_identity_scatter_nd_folding(
+        self, model: onnx.ModelProto
+    ) -> onnx.ModelProto:
         """Fold ScatterND(data, indices, updates) where data is static and already contains updates.
-        
+
         In models with cached positional buffers (e.g. RoPE frequency tables),
         forward passes often scatter updates back into a static precomputed cache.
         When updates match data[indices], the operation is an exact identity write.
@@ -78,7 +79,9 @@ class StaticFolder(Pass):
                         except Exception:
                             pass
 
-        scatter_nodes = [n for n in graph.node if n.op_type == "ScatterND" and len(n.input) >= 3]
+        scatter_nodes = [
+            n for n in graph.node if n.op_type == "ScatterND" and len(n.input) >= 3
+        ]
         if not scatter_nodes:
             return model
 
@@ -95,7 +98,11 @@ class StaticFolder(Pass):
             while updates_name in rewired_outputs:
                 updates_name = rewired_outputs[updates_name]
 
-            if data_name not in init_arrays or indices_name not in init_arrays or updates_name not in init_arrays:
+            if (
+                data_name not in init_arrays
+                or indices_name not in init_arrays
+                or updates_name not in init_arrays
+            ):
                 continue
 
             data_arr = init_arrays[data_name]
@@ -103,7 +110,9 @@ class StaticFolder(Pass):
             updates_arr = init_arrays[updates_name]
 
             try:
-                idx_tuple = tuple(indices_arr[..., i] for i in range(indices_arr.shape[-1]))
+                idx_tuple = tuple(
+                    indices_arr[..., i] for i in range(indices_arr.shape[-1])
+                )
                 target_slice = data_arr[idx_tuple]
                 if not np.array_equal(target_slice, updates_arr):
                     continue
@@ -226,14 +235,18 @@ class StaticFolder(Pass):
                     if out
                 ]
                 sub_graph = helper.make_graph([n], "sub", sub_inputs, sub_outputs)
-                sub_model = helper.make_model(sub_graph, opset_imports=model.opset_import)
+                sub_model = helper.make_model(
+                    sub_graph, opset_imports=model.opset_import
+                )
                 sess = ReferenceEvaluator(sub_model)
                 in_tensors = {inp: static_values[inp] for inp in n.input if inp}
                 res = sess.run(None, in_tensors)
                 for out_name, out_arr in zip(n.output, res):
                     if out_name:
                         static_values[out_name] = out_arr
-                        graph.initializer.append(numpy_helper.from_array(out_arr, name=out_name))
+                        graph.initializer.append(
+                            numpy_helper.from_array(out_arr, name=out_name)
+                        )
                 folded_nodes_set.add(id(n))
             except Exception:
                 # Fallback to direct numpy arithmetic for basic ops
@@ -250,7 +263,9 @@ class StaticFolder(Pass):
                         continue
                     out_name = n.output[0]
                     static_values[out_name] = val
-                    graph.initializer.append(numpy_helper.from_array(val, name=out_name))
+                    graph.initializer.append(
+                        numpy_helper.from_array(val, name=out_name)
+                    )
                     folded_nodes_set.add(id(n))
                 except Exception:
                     pass

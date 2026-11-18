@@ -9,34 +9,33 @@ from __future__ import annotations
 
 import numpy as np
 import onnx
-from onnx import TensorProto, helper, numpy_helper
-import pytest
 import torch
+from onnx import TensorProto, helper, numpy_helper
 
 from neuron_toolkit.compiler import NeuronCompiler
-from neuron_toolkit.compiler.passes.canonicalization.norm_canonicalizer import (
-    NormCanonicalizer,
+from neuron_toolkit.compiler.passes.canonicalization.activation_canonicalizer import (
+    ActivationCanonicalizer,
 )
 from neuron_toolkit.compiler.passes.canonicalization.math_canonicalizer import (
     MathCanonicalizer,
 )
-from neuron_toolkit.compiler.passes.canonicalization.static_folder import (
-    StaticFolder,
-)
-from neuron_toolkit.compiler.passes.canonicalization.activation_canonicalizer import (
-    ActivationCanonicalizer,
+from neuron_toolkit.compiler.passes.canonicalization.norm_canonicalizer import (
+    NormCanonicalizer,
 )
 from neuron_toolkit.compiler.passes.canonicalization.shape_canonicalizer import (
     ShapeCanonicalizer,
 )
+from neuron_toolkit.compiler.passes.canonicalization.static_folder import (
+    StaticFolder,
+)
 from neuron_toolkit.compiler.passes.synthesis.attention_synthesizer import (
     AttentionSynthesizer,
 )
-from neuron_toolkit.compiler.passes.synthesis.feedforward_synthesizer import (
-    FeedForwardSynthesizer,
-)
 from neuron_toolkit.compiler.passes.synthesis.axial_synthesizer import (
     AxialSynthesizer,
+)
+from neuron_toolkit.compiler.passes.synthesis.feedforward_synthesizer import (
+    FeedForwardSynthesizer,
 )
 from neuron_toolkit.compiler.passes.synthesis.macro_block_synthesizer import (
     MacroBlockSynthesizer,
@@ -49,7 +48,7 @@ from neuron_toolkit.runtime.registry import OpRegistry
 # ==============================================================================
 def test_vuln_1_layernorm_skip_fusion_missing_scale_crash():
     """Vulnerability 1: apply_skip_norm_fusion must safely handle LayerNorm without explicit scale.
-    
+
     FAILS WITH: IndexError: list index out of range at norm_canonicalizer.py:549
     """
     x = helper.make_tensor_value_info("X", TensorProto.FLOAT, [1, 16, 64])
@@ -74,7 +73,7 @@ def test_vuln_1_layernorm_skip_fusion_missing_scale_crash():
 # ==============================================================================
 def test_vuln_2_unbiased_linear_function_missing_bias_spec_violation():
     """Vulnerability 2: Fused Linear node input count must match FunctionProto formal inputs.
-    
+
     FAILS WITH: AssertionError: Linear node has 2 inputs, but FunctionProto requires 3 inputs
     """
     x = helper.make_tensor_value_info("X", TensorProto.FLOAT, [1, 32])
@@ -105,7 +104,7 @@ def test_vuln_2_unbiased_linear_function_missing_bias_spec_violation():
 # ==============================================================================
 def test_vuln_3_positional_bias_detached_in_softmax_matmul():
     """Vulnerability 3: Compiled graph with SoftmaxMatMul must maintain valid topological order.
-    
+
     FAILS WITH: onnx.checker.ValidationError: input 'scaled' is not output of any previous nodes
     """
     q = helper.make_tensor_value_info("Q", TensorProto.FLOAT, [1, 4, 16, 32])
@@ -122,7 +121,9 @@ def test_vuln_3_positional_bias_detached_in_softmax_matmul():
         helper.make_node("Softmax", ["scaled"], ["probs"], axis=-1),
         helper.make_node("MatMul", ["probs", "V"], ["Out"]),
     ]
-    graph = helper.make_graph(nodes, "TestGraph", [q, k, v, bias], [out], initializer=[scale])
+    graph = helper.make_graph(
+        nodes, "TestGraph", [q, k, v, bias], [out], initializer=[scale]
+    )
     model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 17)])
 
     compiler = NeuronCompiler()
@@ -137,7 +138,7 @@ def test_vuln_3_positional_bias_detached_in_softmax_matmul():
 # ==============================================================================
 def test_vuln_4_softmax_fusion_opset13_axis_ignored_fallback():
     """Vulnerability 4: Decomposed Softmax along axis 1 must preserve axis=1 on Opset 13+.
-    
+
     FAILS WITH: AssertionError: Expected axis=1, but compiler silently defaulted to -1
     """
     x = helper.make_tensor_value_info("X", TensorProto.FLOAT, [1, 4, 16])
@@ -146,7 +147,13 @@ def test_vuln_4_softmax_fusion_opset13_axis_ignored_fallback():
     axes_tensor = helper.make_tensor("axes_axis_1", TensorProto.INT64, [1], [1])
     nodes = [
         helper.make_node("Exp", ["X"], ["exp_out"], name="exp0"),
-        helper.make_node("ReduceSum", ["exp_out", "axes_axis_1"], ["sum_out"], keepdims=1, name="sum0"),
+        helper.make_node(
+            "ReduceSum",
+            ["exp_out", "axes_axis_1"],
+            ["sum_out"],
+            keepdims=1,
+            name="sum0",
+        ),
         helper.make_node("Div", ["exp_out", "sum_out"], ["Y"], name="div0"),
     ]
     graph = helper.make_graph(nodes, "TestGraph", [x], [y], initializer=[axes_tensor])
@@ -169,7 +176,7 @@ def test_vuln_4_softmax_fusion_opset13_axis_ignored_fallback():
 # ==============================================================================
 def test_vuln_5_scatter_nd_unconditional_folding_erases_updates():
     """Vulnerability 5: ScatterND with dynamic updates must not be deleted and rewired to empty buffer.
-    
+
     FAILS WITH: AssertionError: Dynamic ScatterND updates were deleted and rewired to empty buffer
     """
     cache_arr = np.zeros((4, 8), dtype=np.float32)
@@ -190,7 +197,11 @@ def test_vuln_5_scatter_nd_unconditional_folding_erases_updates():
     relu = helper.make_node("Relu", ["scatter_out"], ["Y"], name="relu0")
 
     graph = helper.make_graph(
-        [scatter, relu], "TestGraph", [updates], [y], initializer=[cache_init, indices_init]
+        [scatter, relu],
+        "TestGraph",
+        [updates],
+        [y],
+        initializer=[cache_init, indices_init],
     )
     model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 17)])
 
@@ -209,7 +220,7 @@ def test_vuln_5_scatter_nd_unconditional_folding_erases_updates():
 # ==============================================================================
 def test_vuln_6_unnamed_node_drop_bug_in_rope_and_attention():
     """Vulnerability 6: Unnamed nodes must not trigger mass deletion of unrelated unnamed nodes.
-    
+
     FAILS WITH: AssertionError: Expected 2 surviving Relu nodes, but found 0
     """
     x = helper.make_tensor_value_info("X", TensorProto.FLOAT, [1, 16])
@@ -217,7 +228,9 @@ def test_vuln_6_unnamed_node_drop_bug_in_rope_and_attention():
 
     scores = helper.make_tensor_value_info("Scores", TensorProto.FLOAT, [1, 4, 16, 16])
     v = helper.make_tensor_value_info("V", TensorProto.FLOAT, [1, 4, 16, 16])
-    attn_out = helper.make_tensor_value_info("AttnOut", TensorProto.FLOAT, [1, 4, 16, 16])
+    attn_out = helper.make_tensor_value_info(
+        "AttnOut", TensorProto.FLOAT, [1, 4, 16, 16]
+    )
 
     sm = helper.make_node("Softmax", ["Scores"], ["probs"], axis=-1, name="")
     mm = helper.make_node("MatMul", ["probs", "V"], ["AttnOut"], name="")
@@ -225,7 +238,9 @@ def test_vuln_6_unnamed_node_drop_bug_in_rope_and_attention():
     r1 = helper.make_node("Relu", ["X"], ["r1_out"], name="")
     r2 = helper.make_node("Relu", ["r1_out"], ["Y"], name="")
 
-    graph = helper.make_graph([sm, mm, r1, r2], "TestGraph", [x, scores, v], [y, attn_out])
+    graph = helper.make_graph(
+        [sm, mm, r1, r2], "TestGraph", [x, scores, v], [y, attn_out]
+    )
     model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 17)])
 
     pass_obj = AttentionSynthesizer()
@@ -244,7 +259,7 @@ def test_vuln_6_unnamed_node_drop_bug_in_rope_and_attention():
 # ==============================================================================
 def test_vuln_7_sdpa_function_proto_omits_scale_division():
     """Vulnerability 7: ScaledDotProductAttention FunctionProto must include scale division node.
-    
+
     FAILS WITH: AssertionError: ScaledDotProductAttention FunctionProto computes unscaled QK^T
     """
     model = helper.make_model(
@@ -254,7 +269,9 @@ def test_vuln_7_sdpa_function_proto_omits_scale_division():
     pass_obj = AttentionSynthesizer()
     pass_obj._attach_sdpa_function_def(model)
 
-    sdpa_func = next(f for f in model.functions if f.name == "ScaledDotProductAttention")
+    sdpa_func = next(
+        f for f in model.functions if f.name == "ScaledDotProductAttention"
+    )
     func_op_types = [n.op_type for n in sdpa_func.node]
 
     # Contract: FunctionProto must divide or multiply scores by scale factor (1/sqrt(d))
@@ -269,7 +286,7 @@ def test_vuln_7_sdpa_function_proto_omits_scale_division():
 # ==============================================================================
 def test_vuln_8_tanh_gelu_function_proto_shadowed_by_erf():
     """Vulnerability 8: Gelu(approximate='tanh') must register a dedicated tanh FunctionProto.
-    
+
     FAILS WITH: AssertionError: Gelu(approximate='tanh') has no tanh FunctionProto
     """
     x = helper.make_tensor_value_info("X", TensorProto.FLOAT, [1, 16])
@@ -292,7 +309,8 @@ def test_vuln_8_tanh_gelu_function_proto_shadowed_by_erf():
 
     # Contract: Dedicated FunctionProto implementing tanh must exist
     tanh_func = [
-        f for f in fused_model.functions
+        f
+        for f in fused_model.functions
         if "Gelu" in f.name and any(n.op_type == "Tanh" for n in f.node)
     ]
     assert len(tanh_func) >= 1, (
@@ -306,7 +324,7 @@ def test_vuln_8_tanh_gelu_function_proto_shadowed_by_erf():
 # ==============================================================================
 def test_vuln_9_dce_prunes_control_flow_subgraph_producers():
     """Vulnerability 9: Dead code elimination must not delete producers consumed in If branches.
-    
+
     FAILS WITH: AssertionError: DCE deleted producer consumed inside nested If branch
     """
     x = helper.make_tensor_value_info("X", TensorProto.FLOAT, [1, 16])
@@ -350,7 +368,7 @@ def test_vuln_9_dce_prunes_control_flow_subgraph_producers():
 # ==============================================================================
 def test_vuln_10_split_qkv_rank_mismatch_crash():
     """Vulnerability 10: _split_qkv must support 2D flattened inputs without crashing.
-    
+
     FAILS WITH: IndexError: tuple index out of range at registry.py:920
     """
     reg = OpRegistry()
@@ -369,22 +387,50 @@ def test_vuln_10_split_qkv_rank_mismatch_crash():
 # ==============================================================================
 def test_vuln_11_swiglu_biased_function_proto_param_mismatch():
     """Vulnerability 11: Biased SwiGLU node input count must match FunctionProto input count.
-    
+
     FAILS WITH: AssertionError: SwiGLU node has 8 inputs, but function expects 5
     """
     x = helper.make_tensor_value_info("X", TensorProto.FLOAT, [1, 16, 64])
     y = helper.make_tensor_value_info("Y", TensorProto.FLOAT, [1, 16, 64])
 
-    gamma = helper.make_tensor("gamma", TensorProto.FLOAT, [64], np.ones(64, dtype=np.float32).tolist())
-    w_gate = helper.make_tensor("w_gate", TensorProto.FLOAT, [64, 128], np.random.randn(64, 128).astype(np.float32).flatten())
-    b_gate = helper.make_tensor("b_gate", TensorProto.FLOAT, [128], np.zeros(128, dtype=np.float32).tolist())
-    w_up = helper.make_tensor("w_up", TensorProto.FLOAT, [64, 128], np.random.randn(64, 128).astype(np.float32).flatten())
-    w_down = helper.make_tensor("w_down", TensorProto.FLOAT, [128, 64], np.random.randn(128, 64).astype(np.float32).flatten())
+    gamma = helper.make_tensor(
+        "gamma", TensorProto.FLOAT, [64], np.ones(64, dtype=np.float32).tolist()
+    )
+    w_gate = helper.make_tensor(
+        "w_gate",
+        TensorProto.FLOAT,
+        [64, 128],
+        np.random.randn(64, 128).astype(np.float32).flatten(),
+    )
+    b_gate = helper.make_tensor(
+        "b_gate", TensorProto.FLOAT, [128], np.zeros(128, dtype=np.float32).tolist()
+    )
+    w_up = helper.make_tensor(
+        "w_up",
+        TensorProto.FLOAT,
+        [64, 128],
+        np.random.randn(64, 128).astype(np.float32).flatten(),
+    )
+    w_down = helper.make_tensor(
+        "w_down",
+        TensorProto.FLOAT,
+        [128, 64],
+        np.random.randn(128, 64).astype(np.float32).flatten(),
+    )
 
     nodes = [
-        helper.make_node("RMSNorm", ["X", "gamma"], ["x_norm"], domain="custom.pytorch"),
-        helper.make_node("Linear", ["x_norm", "w_gate", "b_gate"], ["h_gate"], domain="custom.pytorch"),
-        helper.make_node("Linear", ["x_norm", "w_up"], ["h_up"], domain="custom.pytorch"),
+        helper.make_node(
+            "RMSNorm", ["X", "gamma"], ["x_norm"], domain="custom.pytorch"
+        ),
+        helper.make_node(
+            "Linear",
+            ["x_norm", "w_gate", "b_gate"],
+            ["h_gate"],
+            domain="custom.pytorch",
+        ),
+        helper.make_node(
+            "Linear", ["x_norm", "w_up"], ["h_up"], domain="custom.pytorch"
+        ),
         helper.make_node("SiLU", ["h_gate"], ["h_act"], domain="custom.pytorch"),
         helper.make_node("Mul", ["h_act", "h_up"], ["h_mul"]),
         helper.make_node("Linear", ["h_mul", "w_down"], ["Y"], domain="custom.pytorch"),
@@ -397,7 +443,9 @@ def test_vuln_11_swiglu_biased_function_proto_param_mismatch():
     pass_obj = FeedForwardSynthesizer()
     fused_model = pass_obj.apply_feedforward_swiglu_fusion(model, mode="function_proto")
 
-    swiglu_node = next(n for n in fused_model.graph.node if n.op_type == "FeedForwardSwiGLU")
+    swiglu_node = next(
+        n for n in fused_model.graph.node if n.op_type == "FeedForwardSwiGLU"
+    )
     func = next(f for f in fused_model.functions if f.name == "FeedForwardSwiGLU")
 
     # Contract: Node input count must equal function parameter count
@@ -412,7 +460,7 @@ def test_vuln_11_swiglu_biased_function_proto_param_mismatch():
 # ==============================================================================
 def test_vuln_12_unbind_function_proto_hardcodes_3_outputs():
     """Vulnerability 12: Unbind FunctionProto must dynamically match 2 output splits.
-    
+
     FAILS WITH: AssertionError: Unbind node has 2 outputs, but function expects 3
     """
     x = helper.make_tensor_value_info("X", TensorProto.FLOAT, [2, 16, 64])
@@ -423,11 +471,15 @@ def test_vuln_12_unbind_function_proto_hardcodes_3_outputs():
     axes = helper.make_tensor("axes", TensorProto.INT64, [1], [0])
 
     nodes = [
-        helper.make_node("Split", ["X", "split_lens"], ["s0", "s1"], axis=0, name="sp0"),
+        helper.make_node(
+            "Split", ["X", "split_lens"], ["s0", "s1"], axis=0, name="sp0"
+        ),
         helper.make_node("Squeeze", ["s0", "axes"], ["Y0"], name="sq0"),
         helper.make_node("Squeeze", ["s1", "axes"], ["Y1"], name="sq1"),
     ]
-    graph = helper.make_graph(nodes, "TestGraph", [x], [y0, y1], initializer=[split_lens, axes])
+    graph = helper.make_graph(
+        nodes, "TestGraph", [x], [y0, y1], initializer=[split_lens, axes]
+    )
     model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 17)])
 
     pass_obj = AxialSynthesizer()
@@ -448,18 +500,26 @@ def test_vuln_12_unbind_function_proto_hardcodes_3_outputs():
 # ==============================================================================
 def test_vuln_13_deep_mlp_function_proto_hardcodes_5_inputs():
     """Vulnerability 13: DeepMLP FunctionProto must match input count on unbiased Linear/RMSNorm.
-    
+
     FAILS WITH: AssertionError: DeepMLP node has 3 inputs, function expects 5
     """
     x = helper.make_tensor_value_info("X", TensorProto.FLOAT, [1, 16, 64])
     y = helper.make_tensor_value_info("Y", TensorProto.FLOAT, [1, 16, 64])
 
-    gamma = helper.make_tensor("gamma", TensorProto.FLOAT, [64], np.ones(64, dtype=np.float32).tolist())
-    w = helper.make_tensor("W", TensorProto.FLOAT, [64, 64], np.eye(64, dtype=np.float32).flatten())
+    gamma = helper.make_tensor(
+        "gamma", TensorProto.FLOAT, [64], np.ones(64, dtype=np.float32).tolist()
+    )
+    w = helper.make_tensor(
+        "W", TensorProto.FLOAT, [64, 64], np.eye(64, dtype=np.float32).flatten()
+    )
 
     nodes = [
-        helper.make_node("RMSNorm", ["X", "gamma"], ["x_norm"], domain="custom.pytorch", name="norm0"),
-        helper.make_node("Linear", ["x_norm", "W"], ["lin_out"], domain="custom.pytorch", name="lin0"),
+        helper.make_node(
+            "RMSNorm", ["X", "gamma"], ["x_norm"], domain="custom.pytorch", name="norm0"
+        ),
+        helper.make_node(
+            "Linear", ["x_norm", "W"], ["lin_out"], domain="custom.pytorch", name="lin0"
+        ),
         helper.make_node("Relu", ["lin_out"], ["Y"], name="act0"),
     ]
     graph = helper.make_graph(nodes, "TestGraph", [x], [y], initializer=[gamma, w])
@@ -483,29 +543,49 @@ def test_vuln_13_deep_mlp_function_proto_hardcodes_5_inputs():
 # ==============================================================================
 def test_vuln_14_sgu_drops_norm_gamma_and_bias():
     """Vulnerability 14: SGU must properly match on standard (u, gate) order and preserve norm gamma.
-    
+
     FAILS WITH: AssertionError: Pattern Matcher Bug: SpatialGatingUnit failed to match on (u, gate)
     """
     x = helper.make_tensor_value_info("X", TensorProto.FLOAT, [1, 16, 64])
     y = helper.make_tensor_value_info("Y", TensorProto.FLOAT, [1, 16, 32])
 
     split_lens = helper.make_tensor("split_lens", TensorProto.INT64, [2], [32, 32])
-    gamma = helper.make_tensor("gamma", TensorProto.FLOAT, [32], np.ones(32, dtype=np.float32).tolist())
-    w = helper.make_tensor("W", TensorProto.FLOAT, [32, 32], np.eye(32, dtype=np.float32).flatten())
-    b = helper.make_tensor("B", TensorProto.FLOAT, [32], np.zeros(32, dtype=np.float32).tolist())
+    gamma = helper.make_tensor(
+        "gamma", TensorProto.FLOAT, [32], np.ones(32, dtype=np.float32).tolist()
+    )
+    w = helper.make_tensor(
+        "W", TensorProto.FLOAT, [32, 32], np.eye(32, dtype=np.float32).flatten()
+    )
+    b = helper.make_tensor(
+        "B", TensorProto.FLOAT, [32], np.zeros(32, dtype=np.float32).tolist()
+    )
 
     nodes_order_a = [
         helper.make_node("Split", ["X", "split_lens"], ["u", "v"], axis=-1, name="sp0"),
-        helper.make_node("RMSNorm", ["v", "gamma"], ["v_norm"], domain="custom.pytorch", name="norm0"),
-        helper.make_node("Linear", ["v_norm", "W", "B"], ["gate"], domain="custom.pytorch", name="lin0"),
+        helper.make_node(
+            "RMSNorm", ["v", "gamma"], ["v_norm"], domain="custom.pytorch", name="norm0"
+        ),
+        helper.make_node(
+            "Linear",
+            ["v_norm", "W", "B"],
+            ["gate"],
+            domain="custom.pytorch",
+            name="lin0",
+        ),
         helper.make_node("Mul", ["u", "gate"], ["Y"], name="mul0"),
     ]
-    graph_a = helper.make_graph(nodes_order_a, "TestGraphA", [x], [y], initializer=[split_lens, gamma, w, b])
+    graph_a = helper.make_graph(
+        nodes_order_a, "TestGraphA", [x], [y], initializer=[split_lens, gamma, w, b]
+    )
     model_a = helper.make_model(graph_a, opset_imports=[helper.make_opsetid("", 17)])
 
     pass_obj = MacroBlockSynthesizer()
-    fused_model_a = pass_obj.apply_spatial_gating_unit_fusion(model_a, mode="function_proto")
-    sgu_nodes_a = [n for n in fused_model_a.graph.node if n.op_type == "SpatialGatingUnit"]
+    fused_model_a = pass_obj.apply_spatial_gating_unit_fusion(
+        model_a, mode="function_proto"
+    )
+    sgu_nodes_a = [
+        n for n in fused_model_a.graph.node if n.op_type == "SpatialGatingUnit"
+    ]
 
     # Contract: SGU fusion must match on standard (u, gate) ordering
     assert len(sgu_nodes_a) == 1, (
@@ -518,7 +598,7 @@ def test_vuln_14_sgu_drops_norm_gamma_and_bias():
 # ==============================================================================
 def test_vuln_15_highway_block_missing_skip_input_x():
     """Vulnerability 15: HighwayBlock node must pass carry input 'x' to match FunctionProto.
-    
+
     FAILS WITH: AssertionError: HighwayBlock node has 2 inputs, function expects 3 (missing 'x')
     """
     h = helper.make_tensor_value_info("H", TensorProto.FLOAT, [1, 16, 64])
@@ -529,13 +609,21 @@ def test_vuln_15_highway_block_missing_skip_input_x():
     c_one = helper.make_tensor("c_one", TensorProto.FLOAT, [1], [1.0])
 
     nodes = [
-        helper.make_node("GatedUnit", ["H", "GateIn"], ["trans_out"], domain="custom.pytorch", name="gu0"),
+        helper.make_node(
+            "GatedUnit",
+            ["H", "GateIn"],
+            ["trans_out"],
+            domain="custom.pytorch",
+            name="gu0",
+        ),
         helper.make_node("Sigmoid", ["GateIn"], ["t"], name="sig0"),
         helper.make_node("Sub", ["c_one", "t"], ["carry"], name="sub0"),
         helper.make_node("Mul", ["X", "carry"], ["carry_out"], name="mul_c"),
         helper.make_node("Add", ["trans_out", "carry_out"], ["Y"], name="add0"),
     ]
-    graph = helper.make_graph(nodes, "TestGraph", [h, gate_in, x], [y], initializer=[c_one])
+    graph = helper.make_graph(
+        nodes, "TestGraph", [h, gate_in, x], [y], initializer=[c_one]
+    )
     model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 17)])
 
     pass_obj = MacroBlockSynthesizer()
@@ -556,7 +644,7 @@ def test_vuln_15_highway_block_missing_skip_input_x():
 # ==============================================================================
 def test_vuln_16_squeeze_excitation_hardcodes_conv_on_linear_weights():
     """Vulnerability 16: SqueezeExcitation FunctionProto must not hardcode Conv on Linear blocks.
-    
+
     FAILS WITH: AssertionError: SqueezeExcitation FunctionProto hardcoded Conv for 2D Linear weights
     """
     model = helper.make_model(
@@ -580,18 +668,40 @@ def test_vuln_16_squeeze_excitation_hardcodes_conv_on_linear_weights():
 # ==============================================================================
 def test_vuln_17_mha_composite_fusion_missing_function_proto():
     """Vulnerability 17: MultiHeadAttention composite fusion must register a FunctionProto definition.
-    
+
     FAILS WITH: AssertionError: MultiHeadAttention node was created without registering FunctionProto
     """
     x = helper.make_tensor_value_info("X", TensorProto.FLOAT, [1, 16, 64])
     y = helper.make_tensor_value_info("Y", TensorProto.FLOAT, [1, 16, 64])
-    w_out = helper.make_tensor("W_out", TensorProto.FLOAT, [64, 64], np.eye(64, dtype=np.float32).flatten())
+    w_out = helper.make_tensor(
+        "W_out", TensorProto.FLOAT, [64, 64], np.eye(64, dtype=np.float32).flatten()
+    )
 
     nodes = [
-        helper.make_node("SplitQKV", ["X"], ["q", "k", "v"], domain="custom.pytorch", name="sp0"),
-        helper.make_node("ScaledDotProductAttention", ["q", "k", "v"], ["attn_out"], domain="custom.pytorch", name="sdpa0"),
-        helper.make_node("MergeHeads", ["attn_out"], ["merged"], domain="custom.pytorch", name="merge0"),
-        helper.make_node("Linear", ["merged", "W_out"], ["Y"], domain="custom.pytorch", name="lin_out"),
+        helper.make_node(
+            "SplitQKV", ["X"], ["q", "k", "v"], domain="custom.pytorch", name="sp0"
+        ),
+        helper.make_node(
+            "ScaledDotProductAttention",
+            ["q", "k", "v"],
+            ["attn_out"],
+            domain="custom.pytorch",
+            name="sdpa0",
+        ),
+        helper.make_node(
+            "MergeHeads",
+            ["attn_out"],
+            ["merged"],
+            domain="custom.pytorch",
+            name="merge0",
+        ),
+        helper.make_node(
+            "Linear",
+            ["merged", "W_out"],
+            ["Y"],
+            domain="custom.pytorch",
+            name="lin_out",
+        ),
     ]
     graph = helper.make_graph(nodes, "TestGraph", [x], [y], initializer=[w_out])
     model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 17)])
@@ -611,7 +721,7 @@ def test_vuln_17_mha_composite_fusion_missing_function_proto():
 # ==============================================================================
 def test_vuln_18_tensor_route_deletes_multiconsumer_gather():
     """Vulnerability 18: TensorRoute in AxialSynthesizer must not delete Gather if consumed elsewhere.
-    
+
     FAILS WITH: AssertionError: Multi-consumer Gather producer was deleted, corrupting consumer input
     """
     x = helper.make_tensor_value_info("X", TensorProto.FLOAT, [1, 32, 64])
@@ -625,8 +735,12 @@ def test_vuln_18_tensor_route_deletes_multiconsumer_gather():
     axes = helper.make_tensor("axes", TensorProto.INT64, [1], [1])
 
     nodes = [
-        helper.make_node("Gather", ["X", "idx"], ["gather_out"], axis=1, name="gather0"),
-        helper.make_node("Slice", ["gather_out", "starts", "ends", "axes"], ["Y1"], name="slice0"),
+        helper.make_node(
+            "Gather", ["X", "idx"], ["gather_out"], axis=1, name="gather0"
+        ),
+        helper.make_node(
+            "Slice", ["gather_out", "starts", "ends", "axes"], ["Y1"], name="slice0"
+        ),
         helper.make_node("Add", ["gather_out", "Res"], ["Y2"], name="add_res"),
     ]
     graph = helper.make_graph(

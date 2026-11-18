@@ -3,15 +3,12 @@
 from __future__ import annotations
 
 import tempfile
-import numpy as np
-import onnx
-from onnx import helper, TensorProto, numpy_helper
-import pytest
 
-from neuron_toolkit.rules.schema import JSONRule, NodePattern, RuleCondition, RuleAction
+import numpy as np
+from onnx import TensorProto, helper, numpy_helper
+
 from neuron_toolkit.rules.engine import JSONRuleEngine
 from neuron_toolkit.rules.exporter import export_simplified_onnx
-from neuron_toolkit.graph import NeuronGraph
 
 
 def test_json_rule_schema_loading():
@@ -128,9 +125,24 @@ def test_continuous_math_collapse_synthetic():
     X = helper.make_tensor_value_info("X", TensorProto.FLOAT, [1, 4])
     Y = helper.make_tensor_value_info("Y", TensorProto.FLOAT, [1, 4])
 
-    c1 = helper.make_node("Constant", inputs=[], outputs=["c1"], value=helper.make_tensor("c1_t", TensorProto.FLOAT, [1], [2.0]))
-    c2 = helper.make_node("Constant", inputs=[], outputs=["c2"], value=helper.make_tensor("c2_t", TensorProto.FLOAT, [1], [3.0]))
-    c3 = helper.make_node("Constant", inputs=[], outputs=["c3"], value=helper.make_tensor("c3_t", TensorProto.FLOAT, [1], [2.0]))
+    c1 = helper.make_node(
+        "Constant",
+        inputs=[],
+        outputs=["c1"],
+        value=helper.make_tensor("c1_t", TensorProto.FLOAT, [1], [2.0]),
+    )
+    c2 = helper.make_node(
+        "Constant",
+        inputs=[],
+        outputs=["c2"],
+        value=helper.make_tensor("c2_t", TensorProto.FLOAT, [1], [3.0]),
+    )
+    c3 = helper.make_node(
+        "Constant",
+        inputs=[],
+        outputs=["c3"],
+        value=helper.make_tensor("c3_t", TensorProto.FLOAT, [1], [2.0]),
+    )
 
     # (2.0 / 3.0) + 2.0
     div = helper.make_node("Div", inputs=["c1", "c2"], outputs=["div_out"])
@@ -161,7 +173,9 @@ def test_dual_mode_export():
     """Verify exporting in both function_proto and plain_custom_op modes."""
     X = helper.make_tensor_value_info("X", TensorProto.FLOAT, [1, 4])
     Y = helper.make_tensor_value_info("Y", TensorProto.FLOAT, [1, 4])
-    gelu = helper.make_node("Gelu", inputs=["X"], outputs=["Y"], domain="custom.pytorch")
+    gelu = helper.make_node(
+        "Gelu", inputs=["X"], outputs=["Y"], domain="custom.pytorch"
+    )
 
     func_def = helper.make_function(
         domain="custom.pytorch",
@@ -175,7 +189,10 @@ def test_dual_mode_export():
     graph = helper.make_graph(nodes=[gelu], name="GeluM", inputs=[X], outputs=[Y])
     model = helper.make_model(
         graph,
-        opset_imports=[helper.make_opsetid("", 14), helper.make_opsetid("custom.pytorch", 1)],
+        opset_imports=[
+            helper.make_opsetid("", 14),
+            helper.make_opsetid("custom.pytorch", 1),
+        ],
         functions=[func_def],
     )
 

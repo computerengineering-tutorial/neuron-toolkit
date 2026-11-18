@@ -41,9 +41,15 @@ class CompilerContext:
 
         def _base_id(s: str) -> str:
             s = s.lower().strip()
-            for suffix in ("_canonicalization", "_fusion", "_folding", "_elimination", "_projection"):
+            for suffix in (
+                "_canonicalization",
+                "_fusion",
+                "_folding",
+                "_elimination",
+                "_projection",
+            ):
                 if s.endswith(suffix):
-                    return s[:-len(suffix)]
+                    return s[: -len(suffix)]
             return s
 
         target = _base_id(rule_or_pass_id)
@@ -82,7 +88,9 @@ class Pass(ABC):
         """Execute transformation pass on the given ONNX ModelProto."""
         ...
 
-    def __call__(self, model: onnx.ModelProto, context: CompilerContext | None = None) -> onnx.ModelProto:
+    def __call__(
+        self, model: onnx.ModelProto, context: CompilerContext | None = None
+    ) -> onnx.ModelProto:
         if context is None:
             context = CompilerContext()
         return self.run(model, context)

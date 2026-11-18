@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import collections
 import logging
-from typing import Any
 
 import onnx
 from onnx import helper
@@ -51,7 +50,9 @@ class FeedForwardSynthesizer(Pass):
     # -------------------------------------------------------------------------
     # FeedForward GELU Fusion
     # -------------------------------------------------------------------------
-    def apply_feedforward_fusion(self, model: onnx.ModelProto, mode: str = "function_proto") -> onnx.ModelProto:
+    def apply_feedforward_fusion(
+        self, model: onnx.ModelProto, mode: str = "function_proto"
+    ) -> onnx.ModelProto:
         """Fuse 4-node FeedForward / MLP block (RMSNorm -> Linear -> Gelu -> Linear) into FeedForward."""
         graph = model.graph
         node_by_output: dict[str, onnx.NodeProto] = {
@@ -113,7 +114,10 @@ class FeedForwardSynthesizer(Pass):
             nodes_to_drop.update({lin1.name, n.name, lin2.name})
             # Only drop norm if it has no other consumers outside this FFN block
             graph_outputs = {o.name for o in graph.output}
-            if len(consumer_map.get(norm.output[0], [])) == 1 and norm.output[0] not in graph_outputs:
+            if (
+                len(consumer_map.get(norm.output[0], [])) == 1
+                and norm.output[0] not in graph_outputs
+            ):
                 nodes_to_drop.add(norm.name)
             ff_count += 1
 
@@ -134,7 +138,10 @@ class FeedForwardSynthesizer(Pass):
         del graph.node[:]
         graph.node.extend(kept)
 
-        log.info("FeedForward Fusion: Fused %d FFN blocks with polymorphic fingerprints", ff_count)
+        log.info(
+            "FeedForward Fusion: Fused %d FFN blocks with polymorphic fingerprints",
+            ff_count,
+        )
         return model
 
     def _attach_specialized_feedforward_function(
@@ -146,15 +153,38 @@ class FeedForwardSynthesizer(Pass):
         fingerprint: str,
     ) -> None:
         """Attach formal, content-hashed ONNX FunctionProto definition for FeedForward."""
-        if any(f.name == fname and f.domain == "custom.pytorch" for f in model.functions):
+        if any(
+            f.name == fname and f.domain == "custom.pytorch" for f in model.functions
+        ):
             return
         opset_standard = helper.make_opsetid("", 14)
         opset_custom = helper.make_opsetid("custom.pytorch", 1)
 
-        norm = helper.make_node(norm_op, inputs=["X", "gamma"], outputs=["X_norm"], domain="custom.pytorch", epsilon=1e-12)
-        fc1 = helper.make_node("Linear", inputs=["X_norm", "fc1_w", "fc1_b"], outputs=["H1"], domain="custom.pytorch")
-        act = helper.make_node(act_name, inputs=["H1"], outputs=["H_act"], domain="" if act_name in ("Relu", "Tanh") else "custom.pytorch")
-        fc2 = helper.make_node("Linear", inputs=["H_act", "fc2_w", "fc2_b"], outputs=["Y"], domain="custom.pytorch")
+        norm = helper.make_node(
+            norm_op,
+            inputs=["X", "gamma"],
+            outputs=["X_norm"],
+            domain="custom.pytorch",
+            epsilon=1e-12,
+        )
+        fc1 = helper.make_node(
+            "Linear",
+            inputs=["X_norm", "fc1_w", "fc1_b"],
+            outputs=["H1"],
+            domain="custom.pytorch",
+        )
+        act = helper.make_node(
+            act_name,
+            inputs=["H1"],
+            outputs=["H_act"],
+            domain="" if act_name in ("Relu", "Tanh") else "custom.pytorch",
+        )
+        fc2 = helper.make_node(
+            "Linear",
+            inputs=["H_act", "fc2_w", "fc2_b"],
+            outputs=["Y"],
+            domain="custom.pytorch",
+        )
 
         ensure_specialized_function_proto(
             model=model,
@@ -170,7 +200,9 @@ class FeedForwardSynthesizer(Pass):
     # -------------------------------------------------------------------------
     # FeedForward SwiGLU Fusion
     # -------------------------------------------------------------------------
-    def apply_feedforward_swiglu_fusion(self, model: onnx.ModelProto, mode: str = "function_proto") -> onnx.ModelProto:
+    def apply_feedforward_swiglu_fusion(
+        self, model: onnx.ModelProto, mode: str = "function_proto"
+    ) -> onnx.ModelProto:
         """Fuse SwiGLU FFN block (RMSNorm -> Linear_gate * SiLU * Linear_up -> Linear_down) into FeedForwardSwiGLU."""
         graph = model.graph
         node_by_output = {out: n for n in graph.node for out in n.output}
@@ -207,13 +239,20 @@ class FeedForwardSynthesizer(Pass):
 
             # gate and up must share the same norm input
             norm_node = node_by_output.get(gate_node.input[0])
-            if not norm_node or norm_node.op_type not in ("RMSNorm", "RMSNormalization"):
+            if not norm_node or norm_node.op_type not in (
+                "RMSNorm",
+                "RMSNormalization",
+            ):
                 continue
             if up_node.input[0] != norm_node.output[0]:
                 continue
 
             # Consumer of Mul must be Linear down
-            down_candidates = [c for c in consumer_map.get(mul_node.output[0], []) if c.op_type == "Linear"]
+            down_candidates = [
+                c
+                for c in consumer_map.get(mul_node.output[0], [])
+                if c.op_type == "Linear"
+            ]
             if not down_candidates:
                 continue
             down_node = down_candidates[0]
@@ -228,19 +267,33 @@ class FeedForwardSynthesizer(Pass):
             b_down = down_node.input[2] if len(down_node.input) > 2 else ""
             final_out = down_node.output[0]
 
-            nodes_to_drop.update({
-                gate_node.name or gate_node.output[0],
-                silu_node.name or silu_node.output[0],
-                up_node.name or up_node.output[0],
-                mul_node.name or mul_node.output[0],
-                down_node.name or down_node.output[0],
-            })
+            nodes_to_drop.update(
+                {
+                    gate_node.name or gate_node.output[0],
+                    silu_node.name or silu_node.output[0],
+                    up_node.name or up_node.output[0],
+                    mul_node.name or mul_node.output[0],
+                    down_node.name or down_node.output[0],
+                }
+            )
             graph_outputs = {o.name for o in graph.output}
-            if len(consumer_map.get(norm_node.output[0], [])) <= 2 and norm_node.output[0] not in graph_outputs:
+            if (
+                len(consumer_map.get(norm_node.output[0], [])) <= 2
+                and norm_node.output[0] not in graph_outputs
+            ):
                 nodes_to_drop.add(norm_node.name or norm_node.output[0])
 
             if b_gate or b_up or b_down:
-                swiglu_inputs = [x, norm_gamma, w_gate, b_gate, w_up, b_up, w_down, b_down]
+                swiglu_inputs = [
+                    x,
+                    norm_gamma,
+                    w_gate,
+                    b_gate,
+                    w_up,
+                    b_up,
+                    w_down,
+                    b_down,
+                ]
             else:
                 swiglu_inputs = [x, norm_gamma, w_gate, w_up, w_down]
 
@@ -257,7 +310,11 @@ class FeedForwardSynthesizer(Pass):
         if not new_nodes:
             return model
 
-        kept = [n for n in graph.node if (n.name or (n.output[0] if n.output else "")) not in nodes_to_drop]
+        kept = [
+            n
+            for n in graph.node
+            if (n.name or (n.output[0] if n.output else "")) not in nodes_to_drop
+        ]
         kept.extend(new_nodes)
         del graph.node[:]
         graph.node.extend(kept)
@@ -269,34 +326,92 @@ class FeedForwardSynthesizer(Pass):
         log.info("FeedForward SwiGLU Fusion: Fused %d SwiGLU blocks", count)
         return model
 
-    def _attach_feedforward_swiglu_function_def(self, model: onnx.ModelProto, has_bias: bool = False) -> None:
+    def _attach_feedforward_swiglu_function_def(
+        self, model: onnx.ModelProto, has_bias: bool = False
+    ) -> None:
         """Attach formal ONNX FunctionProto definition for FeedForwardSwiGLU."""
         func_name = "FeedForwardSwiGLU"
         domain = "custom.pytorch"
         expected_inps = 8 if has_bias else 5
-        if any(f.name == func_name and f.domain == domain and len(f.input) == expected_inps for f in model.functions):
+        if any(
+            f.name == func_name and f.domain == domain and len(f.input) == expected_inps
+            for f in model.functions
+        ):
             return
-        surviving_funcs = [f for f in model.functions if not (f.name == func_name and f.domain == domain)]
+        surviving_funcs = [
+            f
+            for f in model.functions
+            if not (f.name == func_name and f.domain == domain)
+        ]
         del model.functions[:]
         model.functions.extend(surviving_funcs)
 
         opset_standard = helper.make_opsetid("", 14)
         opset_custom = helper.make_opsetid("custom.pytorch", 1)
 
-        norm = helper.make_node("RMSNorm", inputs=["X", "gamma"], outputs=["X_norm"], domain="custom.pytorch", epsilon=1e-12)
+        norm = helper.make_node(
+            "RMSNorm",
+            inputs=["X", "gamma"],
+            outputs=["X_norm"],
+            domain="custom.pytorch",
+            epsilon=1e-12,
+        )
         if has_bias:
-            gate = helper.make_node("Linear", inputs=["X_norm", "w_gate", "b_gate"], outputs=["H_gate"], domain="custom.pytorch")
-            up = helper.make_node("Linear", inputs=["X_norm", "w_up", "b_up"], outputs=["H_up"], domain="custom.pytorch")
-            silu = helper.make_node("SiLU", inputs=["H_gate"], outputs=["H_act"], domain="custom.pytorch")
+            gate = helper.make_node(
+                "Linear",
+                inputs=["X_norm", "w_gate", "b_gate"],
+                outputs=["H_gate"],
+                domain="custom.pytorch",
+            )
+            up = helper.make_node(
+                "Linear",
+                inputs=["X_norm", "w_up", "b_up"],
+                outputs=["H_up"],
+                domain="custom.pytorch",
+            )
+            silu = helper.make_node(
+                "SiLU", inputs=["H_gate"], outputs=["H_act"], domain="custom.pytorch"
+            )
             mul = helper.make_node("Mul", inputs=["H_act", "H_up"], outputs=["H_mul"])
-            down = helper.make_node("Linear", inputs=["H_mul", "w_down", "b_down"], outputs=["Y"], domain="custom.pytorch")
-            func_inputs = ["X", "gamma", "w_gate", "b_gate", "w_up", "b_up", "w_down", "b_down"]
+            down = helper.make_node(
+                "Linear",
+                inputs=["H_mul", "w_down", "b_down"],
+                outputs=["Y"],
+                domain="custom.pytorch",
+            )
+            func_inputs = [
+                "X",
+                "gamma",
+                "w_gate",
+                "b_gate",
+                "w_up",
+                "b_up",
+                "w_down",
+                "b_down",
+            ]
         else:
-            gate = helper.make_node("Linear", inputs=["X_norm", "w_gate"], outputs=["H_gate"], domain="custom.pytorch")
-            up = helper.make_node("Linear", inputs=["X_norm", "w_up"], outputs=["H_up"], domain="custom.pytorch")
-            silu = helper.make_node("SiLU", inputs=["H_gate"], outputs=["H_act"], domain="custom.pytorch")
+            gate = helper.make_node(
+                "Linear",
+                inputs=["X_norm", "w_gate"],
+                outputs=["H_gate"],
+                domain="custom.pytorch",
+            )
+            up = helper.make_node(
+                "Linear",
+                inputs=["X_norm", "w_up"],
+                outputs=["H_up"],
+                domain="custom.pytorch",
+            )
+            silu = helper.make_node(
+                "SiLU", inputs=["H_gate"], outputs=["H_act"], domain="custom.pytorch"
+            )
             mul = helper.make_node("Mul", inputs=["H_act", "H_up"], outputs=["H_mul"])
-            down = helper.make_node("Linear", inputs=["H_mul", "w_down"], outputs=["Y"], domain="custom.pytorch")
+            down = helper.make_node(
+                "Linear",
+                inputs=["H_mul", "w_down"],
+                outputs=["Y"],
+                domain="custom.pytorch",
+            )
             func_inputs = ["X", "gamma", "w_gate", "w_up", "w_down"]
 
         func = helper.make_function(

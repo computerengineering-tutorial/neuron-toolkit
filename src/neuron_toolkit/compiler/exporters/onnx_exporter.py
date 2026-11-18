@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-import copy
 import logging
 from pathlib import Path
-from typing import Any
 
 import onnx
 from onnx import helper
@@ -47,7 +45,9 @@ class OnnxExporter:
                     opset.version = max(opset.version, context.opset_version)
                     has_main = True
             if not has_main:
-                model.opset_import.append(helper.make_opsetid("", context.opset_version))
+                model.opset_import.append(
+                    helper.make_opsetid("", context.opset_version)
+                )
 
         # Ensure all node and function custom domains are imported
         existing_domains = {op.domain for op in model.opset_import}

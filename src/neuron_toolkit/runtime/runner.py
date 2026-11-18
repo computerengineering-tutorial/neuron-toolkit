@@ -9,8 +9,8 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import onnx
-from onnx import numpy_helper
 import torch
+from onnx import numpy_helper
 
 from neuron_toolkit.runtime.registry import OpRegistry, global_registry
 
@@ -68,7 +68,9 @@ class PyTorchRunner:
         device: str | torch.device = "cpu",
     ) -> None:
         """Initialize runner with an ONNX model or NeuronGraph."""
-        if hasattr(model_or_graph, "_backend") and hasattr(model_or_graph._backend, "model"):
+        if hasattr(model_or_graph, "_backend") and hasattr(
+            model_or_graph._backend, "model"
+        ):
             self.model: onnx.ModelProto = copy.deepcopy(model_or_graph._backend.model)
         elif isinstance(model_or_graph, onnx.ModelProto):
             self.model = copy.deepcopy(model_or_graph)
@@ -87,7 +89,9 @@ class PyTorchRunner:
         for init in self.model.graph.initializer:
             try:
                 arr = numpy_helper.to_array(init)
-                self.initializers[init.name] = torch.from_numpy(arr.copy()).to(self.device)
+                self.initializers[init.name] = torch.from_numpy(arr.copy()).to(
+                    self.device
+                )
             except Exception as e:
                 log.warning("Could not convert initializer %r: %s", init.name, e)
 
@@ -136,7 +140,9 @@ class PyTorchRunner:
             elif attr.ints:
                 attrs[attr.name] = list(attr.ints)
             elif attr.strings:
-                attrs[attr.name] = [s.decode("utf-8", errors="ignore") for s in attr.strings]
+                attrs[attr.name] = [
+                    s.decode("utf-8", errors="ignore") for s in attr.strings
+                ]
         return attrs
 
     def run(
@@ -177,7 +183,10 @@ class PyTorchRunner:
                     out = handler(node_inputs, attrs)
                     if isinstance(out, (list, tuple)):
                         for idx, out_tensor in enumerate(out):
-                            if idx < len(node_outputs_names) and node_outputs_names[idx]:
+                            if (
+                                idx < len(node_outputs_names)
+                                and node_outputs_names[idx]
+                            ):
                                 tensor_env[node_outputs_names[idx]] = out_tensor
                     elif len(node_outputs_names) >= 1:
                         tensor_env[node_outputs_names[0]] = out

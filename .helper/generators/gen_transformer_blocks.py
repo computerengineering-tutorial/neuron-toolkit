@@ -15,10 +15,8 @@ import json
 from pathlib import Path
 
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
-import onnx
-from onnx import helper, TensorProto, numpy_helper
+from torch import nn
 
 
 class RMSNormLayer(nn.Module):
@@ -67,7 +65,9 @@ class FeedForwardSwiGLUBlock(nn.Module):
 class SDPABlock(nn.Module):
     """Scaled Dot-Product Attention."""
 
-    def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor
+    ) -> torch.Tensor:
         scale = q.shape[-1] ** -0.5
         scores = torch.matmul(q * scale, k.transpose(-1, -2))
         probs = torch.softmax(scores, dim=-1)

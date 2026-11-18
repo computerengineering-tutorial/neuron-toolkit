@@ -11,8 +11,8 @@ from typing import Any
 
 import onnx
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
+from torch import nn
 
 OUT_DIR = Path(".helper/models/hierarchical_vit")
 OUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -33,7 +33,9 @@ class Swin_WindowAttentionBlock(nn.Module):
 
         self.qkv = nn.Linear(dim, 3 * dim, bias=True)
         self.proj = nn.Linear(dim, dim)
-        self.relative_position_bias = nn.Parameter(torch.zeros(2 * window_size - 1, 2 * window_size - 1))
+        self.relative_position_bias = nn.Parameter(
+            torch.zeros(2 * window_size - 1, 2 * window_size - 1)
+        )
         self.norm = nn.LayerNorm(dim)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -44,21 +46,39 @@ class Swin_WindowAttentionBlock(nn.Module):
 
         # Partition into windows of (window_size, window_size)
         ws = self.window_size
-        x_win = x_norm.view(B, H // ws, ws, W // ws, ws, C).permute(0, 1, 3, 2, 4, 5).contiguous()
+        x_win = (
+            x_norm.view(B, H // ws, ws, W // ws, ws, C)
+            .permute(0, 1, 3, 2, 4, 5)
+            .contiguous()
+        )
         num_windows = (H // ws) * (W // ws)
         x_win = x_win.view(B * num_windows, ws * ws, C)
 
         # Multi-head attention inside windows
-        qkv = self.qkv(x_win).view(B * num_windows, ws * ws, 3, self.num_heads, self.head_dim).permute(2, 0, 3, 1, 4)
+        qkv = (
+            self.qkv(x_win)
+            .view(B * num_windows, ws * ws, 3, self.num_heads, self.head_dim)
+            .permute(2, 0, 3, 1, 4)
+        )
         q, k, v = qkv[0], qkv[1], qkv[2]
 
         scores = torch.matmul(q / math.sqrt(self.head_dim), k.transpose(-1, -2))
         probs = torch.softmax(scores, dim=-1)
-        attn = torch.matmul(probs, v).transpose(1, 2).contiguous().view(B * num_windows, ws * ws, C)
+        attn = (
+            torch.matmul(probs, v)
+            .transpose(1, 2)
+            .contiguous()
+            .view(B * num_windows, ws * ws, C)
+        )
         out = self.proj(attn)
 
         # Merge windows back
-        out = out.view(B, H // ws, W // ws, ws, ws, C).permute(0, 1, 3, 2, 4, 5).contiguous().view(B, H, W, C)
+        out = (
+            out.view(B, H // ws, W // ws, ws, ws, C)
+            .permute(0, 1, 3, 2, 4, 5)
+            .contiguous()
+            .view(B, H, W, C)
+        )
         return shortcut + out
 
 
@@ -83,9 +103,15 @@ class CrossCovarianceAttention_XCiT(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # x: (B, N, C)
         B, N, C = x.shape
-        q = self.q(x).view(B, N, self.num_heads, self.head_dim).permute(0, 2, 3, 1)  # (B, H, D, N)
-        k = self.k(x).view(B, N, self.num_heads, self.head_dim).permute(0, 2, 3, 1)  # (B, H, D, N)
-        v = self.v(x).view(B, N, self.num_heads, self.head_dim).permute(0, 2, 3, 1)  # (B, H, D, N)
+        q = (
+            self.q(x).view(B, N, self.num_heads, self.head_dim).permute(0, 2, 3, 1)
+        )  # (B, H, D, N)
+        k = (
+            self.k(x).view(B, N, self.num_heads, self.head_dim).permute(0, 2, 3, 1)
+        )  # (B, H, D, N)
+        v = (
+            self.v(x).view(B, N, self.num_heads, self.head_dim).permute(0, 2, 3, 1)
+        )  # (B, H, D, N)
 
         # Normalize along token dimension N for L2 stability
         q = F.normalize(q, dim=-1)
@@ -163,10 +189,21 @@ def export_hierarchical_zoo() -> list[dict[str, Any]]:
                 m = onnx.load(str(out_path))
                 m.ir_version = min(m.ir_version, 10)
                 onnx.save(m, str(out_path))
-                catalog.append({"name": name, "opset": opset, "path": str(out_path), "nodes": len(m.graph.node)})
-                print(f"[Hierarchical Zoo] Exported {out_path.name} (opset {opset}, {len(m.graph.node)} nodes)")
+                catalog.append(
+                    {
+                        "name": name,
+                        "opset": opset,
+                        "path": str(out_path),
+                        "nodes": len(m.graph.node),
+                    }
+                )
+                print(
+                    f"[Hierarchical Zoo] Exported {out_path.name} (opset {opset}, {len(m.graph.node)} nodes)"
+                )
             except Exception as e:
-                print(f"[Hierarchical Zoo] Failed to export {name} for opset {opset}: {e}")
+                print(
+                    f"[Hierarchical Zoo] Failed to export {name} for opset {opset}: {e}"
+                )
 
     return catalog
 

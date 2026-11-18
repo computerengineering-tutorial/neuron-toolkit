@@ -14,6 +14,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 import onnx
+
 from neuron_toolkit.compiler import NeuronCompiler
 from neuron_toolkit.runtime.cross_verifier import CrossVerifier
 
@@ -26,9 +27,9 @@ def benchmark_model(
     export_dir: Path | None = None,
 ) -> dict:
     """Run optimization, clean model export, and cross-verification on a single ONNX model."""
-    print(f"\n==================================================================")
+    print("\n==================================================================")
     print(f"BENCHMARKING MODEL: {model_path.name}")
-    print(f"==================================================================")
+    print("==================================================================")
 
     orig_model = onnx.load(str(model_path))
 
@@ -56,19 +57,29 @@ def benchmark_model(
 
     # Print individual CROSS-VERIFICATION REPORT
     print(report.summary())
-    print(f"Optimization Time: {opt_time_ms:.2f} ms | Verification Time: {verify_time_ms:.2f} ms")
+    print(
+        f"Optimization Time: {opt_time_ms:.2f} ms | Verification Time: {verify_time_ms:.2f} ms"
+    )
     if clean_model_path:
         print(f"Visualizer Ready Path: file://{clean_model_path.resolve()}")
 
     # Aggregate metric stats across outputs
-    max_diff = max(m.max_abs_diff for m in report.metrics.values()) if report.metrics else 0.0
+    max_diff = (
+        max(m.max_abs_diff for m in report.metrics.values()) if report.metrics else 0.0
+    )
     max_mse = max(m.mse for m in report.metrics.values()) if report.metrics else 0.0
-    min_cosine = min(m.cosine_similarity for m in report.metrics.values()) if report.metrics else 1.0
+    min_cosine = (
+        min(m.cosine_similarity for m in report.metrics.values())
+        if report.metrics
+        else 1.0
+    )
 
     return {
         "model_name": model_path.name,
         "model_path": str(model_path),
-        "clean_model_path": str(clean_model_path.resolve()) if clean_model_path else None,
+        "clean_model_path": str(clean_model_path.resolve())
+        if clean_model_path
+        else None,
         "original_nodes": report.original_nodes,
         "simplified_nodes": report.simplified_nodes,
         "eliminated_nodes": report.eliminated_nodes,
@@ -86,7 +97,9 @@ def benchmark_model(
     }
 
 
-def print_consolidated_table(results: list[dict], export_dir: Path | None = None) -> None:
+def print_consolidated_table(
+    results: list[dict], export_dir: Path | None = None
+) -> None:
     """Format and print an executive comparative table across all models."""
     header = (
         f"{'Model':<14} | {'Orig':<5} | {'Opt':<5} | {'Eliminated':<14} | "
@@ -113,10 +126,14 @@ def print_consolidated_table(results: list[dict], export_dir: Path | None = None
             all_custom_ops[op] += cnt
 
         elim_str = f"-{r['eliminated_nodes']} ({r['reduction_percentage']:.1f}%)"
-        std_pct = (r['standard_nodes'] / max(1, r['simplified_nodes'])) * 100.0
+        std_pct = (r["standard_nodes"] / max(1, r["simplified_nodes"])) * 100.0
         std_str = f"{r['standard_nodes']} ({std_pct:.1f}%)"
         cust_str = f"{r['custom_nodes']} ({r['custom_ratio']:.1f}%)"
-        ratio_str = f"1 : {r['standard_nodes'] / r['custom_nodes']:.2f}" if r["custom_nodes"] > 0 else "N/A"
+        ratio_str = (
+            f"1 : {r['standard_nodes'] / r['custom_nodes']:.2f}"
+            if r["custom_nodes"] > 0
+            else "N/A"
+        )
         status_str = "PASS" if r["passed"] else "FAIL"
 
         print(
@@ -143,7 +160,9 @@ def print_consolidated_table(results: list[dict], export_dir: Path | None = None
         print(f"  - {op:<28}: {cnt:>3d} instances")
     print(f"Total Custom Ops Synthesized: {total_cust}")
     print(f"Total Standard ONNX Ops Retained: {total_std}")
-    print(f"Overall Custom Ops vs Standard ONNX Ops Ratio: {overall_cust_pct:.1f}% Custom vs {overall_std_pct:.1f}% Standard")
+    print(
+        f"Overall Custom Ops vs Standard ONNX Ops Ratio: {overall_cust_pct:.1f}% Custom vs {overall_std_pct:.1f}% Standard"
+    )
 
     # Exported Clean Models Directory for Visualizer
     if export_dir and any(r.get("clean_model_path") for r in results):
@@ -155,8 +174,12 @@ def print_consolidated_table(results: list[dict], export_dir: Path | None = None
             if r.get("clean_model_path"):
                 p = Path(r["clean_model_path"])
                 sz = p.stat().st_size / (1024 * 1024) if p.exists() else 0.0
-                print(f"  * {r['model_name']:<14} -> file://{p.resolve()} ({sz:.2f} MB)")
-        print("\nTip: Open any of these files directly in Netron (https://netron.app) to inspect the minified graph.\n")
+                print(
+                    f"  * {r['model_name']:<14} -> file://{p.resolve()} ({sz:.2f} MB)"
+                )
+        print(
+            "\nTip: Open any of these files directly in Netron (https://netron.app) to inspect the minified graph.\n"
+        )
 
 
 def main() -> None:
@@ -189,7 +212,12 @@ def main() -> None:
         action="store_true",
         help="Disable exporting clean saved models",
     )
-    parser.add_argument("--json", dest="json_out", default=None, help="Optional path to export benchmark results as JSON")
+    parser.add_argument(
+        "--json",
+        dest="json_out",
+        default=None,
+        help="Optional path to export benchmark results as JSON",
+    )
     args = parser.parse_args()
 
     # Discover models
@@ -198,7 +226,9 @@ def main() -> None:
     else:
         dir_path = Path(args.models_dir)
         if not dir_path.exists():
-            print(f"Error: Models directory '{dir_path}' does not exist.", file=sys.stderr)
+            print(
+                f"Error: Models directory '{dir_path}' does not exist.", file=sys.stderr
+            )
             sys.exit(1)
         model_paths = sorted(dir_path.glob("*.onnx"))
 
@@ -226,6 +256,7 @@ def main() -> None:
         except Exception as e:
             print(f"\nERROR benchmarking {p.name}: {e}", file=sys.stderr)
             import traceback
+
             traceback.print_exc()
             all_passed = False
 

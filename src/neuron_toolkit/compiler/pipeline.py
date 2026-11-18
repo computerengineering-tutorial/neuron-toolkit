@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any
 
 import onnx
 
-from neuron_toolkit.compiler.base import CompilerContext, Pass
+from neuron_toolkit.compiler.base import CompilerContext
 from neuron_toolkit.compiler.exporters.onnx_exporter import OnnxExporter
 from neuron_toolkit.compiler.passes.canonicalization.activation_canonicalizer import (
     ActivationCanonicalizer,
@@ -92,7 +92,9 @@ class OptimizationPipeline:
         # -------------------------------------------------------------
         # Stage 1: Micro-Canonicalization Pipeline
         # -------------------------------------------------------------
-        if context.should_run("static_folder") or context.should_run("constant_folding"):
+        if context.should_run("static_folder") or context.should_run(
+            "constant_folding"
+        ):
             model = self.static_pass.apply_static_subgraph_folding(model)
 
         if context.should_run("cast"):
@@ -134,7 +136,11 @@ class OptimizationPipeline:
         if context.should_run("identity"):
             model = self.shape_pass.apply_identity_elimination(model)
 
-        if context.should_run("transpose") or context.should_run("identity") or context.should_run("shape"):
+        if (
+            context.should_run("transpose")
+            or context.should_run("identity")
+            or context.should_run("shape")
+        ):
             model = self.shape_pass.apply_transpose_cancellation(model)
 
         # -------------------------------------------------------------
@@ -143,7 +149,11 @@ class OptimizationPipeline:
         if context.should_run("rope"):
             model = self.attn_pass.apply_rope_fusion(model, mode=context.mode)
 
-        if context.should_run("static_folder") or context.should_run("constant_folding") or context.should_run("scatter"):
+        if (
+            context.should_run("static_folder")
+            or context.should_run("constant_folding")
+            or context.should_run("scatter")
+        ):
             model = self.static_pass.apply_identity_scatter_nd_folding(model)
 
         if context.should_run("gated_unit"):
@@ -153,7 +163,9 @@ class OptimizationPipeline:
             model = self.attn_pass.apply_softmax_matmul_fusion(model, mode=context.mode)
 
         if context.should_run("sdpa") or context.should_run("attention"):
-            model = self.attn_pass.apply_scaled_dot_product_attention_fusion(model, mode=context.mode)
+            model = self.attn_pass.apply_scaled_dot_product_attention_fusion(
+                model, mode=context.mode
+            )
 
         if context.should_run("linear"):
             model = self.math_pass.apply_linear_fusion(model, mode=context.mode)
@@ -162,13 +174,17 @@ class OptimizationPipeline:
             model = self.ffn_pass.apply_feedforward_fusion(model, mode=context.mode)
 
         if context.should_run("feedforward_swiglu") or context.should_run("swiglu"):
-            model = self.ffn_pass.apply_feedforward_swiglu_fusion(model, mode=context.mode)
+            model = self.ffn_pass.apply_feedforward_swiglu_fusion(
+                model, mode=context.mode
+            )
 
         if context.should_run("merge_heads"):
             model = self.attn_pass.apply_merge_heads_fusion(model, mode=context.mode)
 
         if context.should_run("axial") or context.should_run("rearrange"):
-            model = self.axial_pass.apply_axial_rearrange_fusion(model, mode=context.mode)
+            model = self.axial_pass.apply_axial_rearrange_fusion(
+                model, mode=context.mode
+            )
 
         if context.should_run("unbind"):
             model = self.axial_pass.apply_unbind_fusion(model, mode=context.mode)
@@ -177,12 +193,16 @@ class OptimizationPipeline:
             model = self.attn_pass.apply_split_qkv_fusion(model, mode=context.mode)
 
         if context.should_run("gated_attention") or context.should_run("attention"):
-            model = self.attn_pass.apply_gated_attention_fusion(model, mode=context.mode)
+            model = self.attn_pass.apply_gated_attention_fusion(
+                model, mode=context.mode
+            )
 
         if context.should_run("skip_norm"):
             model = self.norm_pass.apply_skip_norm_fusion(model, mode=context.mode)
 
-        if context.options.get("enable_macro_blocks", False) or (context.rule_ids and "macro_blocks" in context.rule_ids):
+        if context.options.get("enable_macro_blocks", False) or (
+            context.rule_ids and "macro_blocks" in context.rule_ids
+        ):
             model = self.macro_pass.run(model, mode=context.mode)
 
         # -------------------------------------------------------------

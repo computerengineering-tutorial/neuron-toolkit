@@ -3,13 +3,10 @@
 from __future__ import annotations
 
 import numpy as np
-import onnx
-from onnx import helper, TensorProto, numpy_helper
-import pytest
 import torch
+from onnx import TensorProto, helper, numpy_helper
 
 from neuron_toolkit.runtime.runner import PyTorchRunner, toposort_graph
-from neuron_toolkit.runtime.registry import OpRegistry
 
 
 def test_pytorch_runner_basic_math_and_activations():
@@ -17,15 +14,24 @@ def test_pytorch_runner_basic_math_and_activations():
     X = helper.make_tensor_value_info("X", TensorProto.FLOAT, [2, 4])
     Y = helper.make_tensor_value_info("Y", TensorProto.FLOAT, [2, 4])
 
-    c2 = helper.make_node("Constant", inputs=[], outputs=["c2"], value=helper.make_tensor("c2_t", TensorProto.FLOAT, [1], [2.0]))
+    c2 = helper.make_node(
+        "Constant",
+        inputs=[],
+        outputs=["c2"],
+        value=helper.make_tensor("c2_t", TensorProto.FLOAT, [1], [2.0]),
+    )
     mul = helper.make_node("Mul", inputs=["X", "c2"], outputs=["mul_out"])
     relu = helper.make_node("Relu", inputs=["mul_out"], outputs=["Y"])
 
-    graph = helper.make_graph(nodes=[c2, mul, relu], name="MathAct", inputs=[X], outputs=[Y])
+    graph = helper.make_graph(
+        nodes=[c2, mul, relu], name="MathAct", inputs=[X], outputs=[Y]
+    )
     model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 14)])
 
     runner = PyTorchRunner(model)
-    x_input = np.array([[-1.0, 2.0, -3.0, 4.0], [0.5, -0.5, 1.5, -2.5]], dtype=np.float32)
+    x_input = np.array(
+        [[-1.0, 2.0, -3.0, 4.0], [0.5, -0.5, 1.5, -2.5]], dtype=np.float32
+    )
     outs = runner.run({"X": x_input})
 
     expected = np.maximum(0.0, x_input * 2.0)
@@ -79,7 +85,9 @@ def test_pytorch_runner_custom_gelu_and_math():
     X = helper.make_tensor_value_info("X", TensorProto.FLOAT, [1, 4])
     Y = helper.make_tensor_value_info("Y", TensorProto.FLOAT, [1, 4])
 
-    gelu = helper.make_node("Gelu", inputs=["X"], outputs=["gelu_out"], domain="custom.pytorch")
+    gelu = helper.make_node(
+        "Gelu", inputs=["X"], outputs=["gelu_out"], domain="custom.pytorch"
+    )
     math_node = helper.make_node(
         "Math",
         inputs=["gelu_out"],
@@ -88,10 +96,15 @@ def test_pytorch_runner_custom_gelu_and_math():
         expr="x * 2.0 + 1.0",
     )
 
-    graph = helper.make_graph(nodes=[gelu, math_node], name="CustomOps", inputs=[X], outputs=[Y])
+    graph = helper.make_graph(
+        nodes=[gelu, math_node], name="CustomOps", inputs=[X], outputs=[Y]
+    )
     model = helper.make_model(
         graph,
-        opset_imports=[helper.make_opsetid("", 14), helper.make_opsetid("custom.pytorch", 1)],
+        opset_imports=[
+            helper.make_opsetid("", 14),
+            helper.make_opsetid("custom.pytorch", 1),
+        ],
     )
 
     runner = PyTorchRunner(model)
@@ -110,7 +123,12 @@ def test_toposort_graph():
     c = helper.make_node("Add", inputs=["b_out", "const"], outputs=["c_out"])
     b = helper.make_node("Relu", inputs=["a_out"], outputs=["b_out"])
     a = helper.make_node("Mul", inputs=["X", "const"], outputs=["a_out"])
-    const = helper.make_node("Constant", inputs=[], outputs=["const"], value=helper.make_tensor("c", TensorProto.FLOAT, [1], [1.0]))
+    const = helper.make_node(
+        "Constant",
+        inputs=[],
+        outputs=["const"],
+        value=helper.make_tensor("c", TensorProto.FLOAT, [1], [1.0]),
+    )
 
     graph = helper.make_graph(
         nodes=[c, b, a, const],

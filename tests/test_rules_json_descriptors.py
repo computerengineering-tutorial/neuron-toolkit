@@ -9,15 +9,14 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-import pytest
+
 import numpy as np
 import onnx
-import torch
+import pytest
 
-from neuron_toolkit.compiler.pipeline import OptimizationPipeline
 from neuron_toolkit.compiler.base import CompilerContext
+from neuron_toolkit.compiler.pipeline import OptimizationPipeline
 from neuron_toolkit.runtime.cross_verifier import CrossVerifier
-
 
 DESCRIPTOR_DIR = Path(__file__).parent / "rules_json_tests"
 TEST_FILES = sorted(DESCRIPTOR_DIR.glob("*_test.json"))
@@ -42,7 +41,10 @@ def test_json_rule_descriptor(descriptor_path: Path):
     expected_node = spec.get("expected_target_node")
     if expected_node:
         all_op_types = {n.op_type for n in opt_model.graph.node}
-        assert any(op == expected_node or op.startswith(f"{expected_node}_") for op in all_op_types), (
+        assert any(
+            op == expected_node or op.startswith(f"{expected_node}_")
+            for op in all_op_types
+        ), (
             f"Expected node '{expected_node}' not found in optimized graph ops: {all_op_types}"
         )
 
@@ -58,7 +60,7 @@ def test_json_rule_descriptor(descriptor_path: Path):
         rtol=spec.get("rtol", 1e-4),
         atol=spec.get("atol", 1e-4),
     )
-    report = verifier.verify(inputs if inputs else None)
+    report = verifier.verify(inputs or None)
 
     for out_name, metric in report.metrics.items():
         assert metric.cosine_similarity >= 0.99999, (

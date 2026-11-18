@@ -3,19 +3,21 @@
 from __future__ import annotations
 
 from pathlib import Path
+
 import numpy as np
 import onnx
 import pytest
 
+from neuron_toolkit.graph import NeuronGraph
 from neuron_toolkit.rules.engine import JSONRuleEngine
 from neuron_toolkit.runtime.cross_verifier import CrossVerifier
-from neuron_toolkit.graph import NeuronGraph
-
 
 MODELS_DIR = Path(".temp/diffrent_models")
 
 
-@pytest.mark.skipif(not (MODELS_DIR / "model2.onnx").exists(), reason="model2.onnx not found")
+@pytest.mark.skipif(
+    not (MODELS_DIR / "model2.onnx").exists(), reason="model2.onnx not found"
+)
 def test_cross_verify_model2_onnx():
     """Verify model2.onnx: Cast-Conv folding and ERF-GELU fusion with strict numerical parity."""
     model_path = str(MODELS_DIR / "model2.onnx")
@@ -51,7 +53,9 @@ def test_cross_verify_model2_onnx():
     assert report.metrics["bass_logp"].mse < 1e-5
 
 
-@pytest.mark.skipif(not (MODELS_DIR / "model4.onnx").exists(), reason="model4.onnx not found")
+@pytest.mark.skipif(
+    not (MODELS_DIR / "model4.onnx").exists(), reason="model4.onnx not found"
+)
 def test_cross_verify_model4_onnx():
     """Verify model4.onnx: Index routing and slicing with numerical parity."""
     model_path = str(MODELS_DIR / "model4.onnx")
@@ -65,7 +69,9 @@ def test_cross_verify_model4_onnx():
     assert report.metrics["perc_prob"].cosine_similarity >= 0.9999
 
 
-@pytest.mark.skipif(not (MODELS_DIR / "model3.onnx").exists(), reason="model3.onnx not found")
+@pytest.mark.skipif(
+    not (MODELS_DIR / "model3.onnx").exists(), reason="model3.onnx not found"
+)
 def test_cross_verify_model3_onnx():
     """Verify model3.onnx on PyTorchRunner against ONNX Runtime."""
     model_path = str(MODELS_DIR / "model3.onnx")
@@ -102,7 +108,9 @@ def test_neurongraph_high_level_api_model2():
     assert report.all_passed
 
 
-@pytest.mark.skipif(not (MODELS_DIR / "model1.onnx").exists(), reason="model1.onnx not found")
+@pytest.mark.skipif(
+    not (MODELS_DIR / "model1.onnx").exists(), reason="model1.onnx not found"
+)
 def test_cross_verify_model1_onnx():
     """Verify model1.onnx: RMSNorm, GELU, CSE, Identity elimination on large axial conformer."""
     model_path = str(MODELS_DIR / "model1.onnx")
@@ -133,4 +141,3 @@ def test_cross_verify_model1_onnx():
     assert report.metrics["downbeat"].cosine_similarity >= 0.99999
     assert report.metrics["beat"].mse < 1e-5
     assert report.metrics["downbeat"].mse < 1e-5
-

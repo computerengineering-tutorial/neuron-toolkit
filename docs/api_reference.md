@@ -63,6 +63,9 @@ Reconstructs a `NeuronGraph` from a JSON topology file or string, optionally ini
 - **`save_safetensors(path: str, metadata: dict[str, str] | None = None) -> None`**: Saves model parameters into a `.safetensors` file.
 - **`load_safetensors(path: str, strict: bool = False) -> dict[str, list[str]]`**: Loads weights from a `.safetensors` file and replaces model initializers in-place.
 - **`replace_weights(weights_dict: Mapping[str, Any], strict: bool = False) -> dict[str, list[str]]`**: Replaces weights in-place from a dictionary.
+- **`apply_json_rules(rules: list[str] | None = None, mode: str = "function_proto") -> NeuronGraph`**: Applies declarative JSON rewrite rules (Cast folding, GELU, RMSNorm, SDPA, SwiGLU).
+- **`run_pytorch(inputs: dict[str, Any], device: str = "cpu") -> dict[str, Any]`**: Executes the graph natively using the standalone PyTorch execution engine.
+- **`cross_verify(simplified_graph: NeuronGraph | object | str, inputs: dict[str, Any] | None = None, rtol: float = 1e-4, atol: float = 1e-4) -> CrossVerificationReport`**: Cross-verifies numerical output parity between this model on ONNX Runtime and a simplified/rewritten model on PyTorchRunner.
 - **`compare_outputs(start_points, end_points, pytorch_module, inputs_dict, rtol=1e-5, atol=1e-8) -> dict[str, Any]`**: Executes sliced subgraph and reference PyTorch module on inputs, comparing numerical outputs (MAE, MSE, Cosine Similarity).
 - **`verify_against_pytorch(start_points, end_points, rtol=1e-5, atol=1e-8) -> Callable`**: Function/method decorator asserting numerical equivalence with a PyTorch module.
 
@@ -170,6 +173,14 @@ Contains the results of a successful pattern match.
 - **`bindings: dict[str, object]`**: Dictionary of named captures specified via `.capture()`.
 - **`as_query() -> NeuronQuery`**: Converts the matched subgraph into a `NeuronQuery` instance.
 
+### `neuron_toolkit.pattern.PatternDetector`
+
+Graph matcher executing pattern searches with indexed candidate root lookup.
+
+- **`match(pattern: Pattern) -> MatchResult | None`**: Finds the first match of *pattern*.
+- **`find_all(pattern: Pattern) -> list[MatchResult]`**: Finds all occurrences of *pattern* in the graph using root-op indexing for $O(1)$ candidate root filtering.
+- **`op_to_nodes -> dict[str, list[object]]`**: Cached index mapping operator type strings to lists of graph nodes.
+
 ---
 
 ## 5. `neuron_toolkit.rewriter.NeuronRewriter`
@@ -209,6 +220,7 @@ Manages and executes an optimization pipeline. Supports indexing results by pass
 
 - **`add_pass(opt_pass: BasePass) -> PassManager`**: Registers a pass.
 - **`run(graph: NeuronGraph) -> tuple[NeuronGraph, PassStats]`**: Applies all passes sequentially.
+- **`run_until_fixed_point(graph: NeuronGraph, max_iterations: int = 10) -> tuple[NeuronGraph, PassStats]`**: Executes passes iteratively in a loop until the graph node count stabilizes (reaches a fixed point) or `max_iterations` is reached.
 
 ### Standard & Transformer Passes
 
@@ -235,6 +247,7 @@ Manages and executes an optimization pipeline. Supports indexing results by pass
     - `rebuild() -> int`: Runs incremental congruence closure.
     - `find(id: EClassId) -> EClassId`: Finds canonical representative.
     - `total_nodes() -> int`: Returns total count of ENodes across all classes.
+    - `classes_for_op(op: str) -> list[tuple[EClassId, EClass]]`: Fast lookup returning canonical (class_id, eclass) pairs containing at least one node with opcode *op*.
     - `from_ir(ir: IRGraph) -> tuple[EGraph, dict[str, EClassId]]`: Ingests an IRGraph.
 - **`ENode(op: str, children: tuple[EClassId, ...], attrs: tuple[tuple[str, Any], ...])`**: Immutable operator node.
 - **`EClass(id: EClassId, nodes: set[ENode], parents: list, data: Any)`**: Equivalence class grouping equivalent ENodes.
@@ -321,3 +334,178 @@ Differential numerical verification engine comparing sliced computational subgra
 - **`RewriteError`**: Raised when graph surgery fails topological validation.
 - **`VerificationMismatchError`**: Raised when differential outputs diverge.
 - **`BackendNotAvailableError`**: Raised when an optional backend dependency is missing.
+
+---
+
+## 15. `neuron_toolkit.compiler`
+
+High-level 3-stage optimization pipeline and compilation layer for ONNX and unified graphs.
+
+### `NeuronCompiler`
+
+Class-based front-end compiler entry point.
+
+- **`compile(model: onnx.ModelProto | NeuronGraph, mode: str = 'function_proto', rule_ids: list[str] | None = None, opset_version: int = 23, options: dict[str, Any] | None = None) -> onnx.ModelProto`**:
+  Executes the full 3-stage optimization pipeline on the model and exports an optimized ONNX ModelProto.
+
+### `OptimizationPipeline`
+
+Enterprise-grade 3-stage optimization pipeline driver orchestrating canonicalization, synthesis, and export.
+
+- **`__init__(mode: str = 'function_proto') -> None`**: Initializes pipeline with target representation mode (`'function_proto'` or `'plain'`).
+- **`run(target: onnx.ModelProto | NeuronGraph, context: CompilerContext | None = None) -> onnx.ModelProto`**:
+  Runs Stage 1 (Micro-Canonicalization), Stage 2 (Macro-Block Synthesis), and Stage 3 (Target Export).
+
+### `CompilerContext`
+
+Execution context and metrics tracker for compiler passes.
+
+- **`record_pass(pass_name: str, nodes_before: int, nodes_after: int) -> None`**: Records node delta metrics for a compiler pass.
+- **`should_run(rule_or_pass_id: str) -> bool`**: Returns boolean indicating whether a pass should be executed according to rule filtering options.
+
+### Canonicalization Passes (`neuron_toolkit.compiler.passes.canonicalization`)
+
+- **`ActivationCanonicalizer`**: Fuses mathematical expansions into standard activations (`apply_erf_gelu_fusion`, `apply_tanh_gelu_fusion`, `apply_silu_fusion`, `apply_hardswish_fusion`, `apply_relu6_fusion`, `apply_mish_fusion`, `apply_softmax_fusion`).
+- **`MathCanonicalizer`**: Canonicalizes linear projections and matrix arithmetic (`apply_linear_fusion`, `apply_continuous_math_collapse`).
+- **`NormCanonicalizer`**: Normalizes and fuses normalization expansions across opset versions (`apply_rmsnorm_fusion`, `apply_layernorm_fusion`, `apply_groupnorm_fusion`, `apply_skip_norm_fusion`).
+- **`ShapeCanonicalizer`**: Optimizes tensor shapes, deduplicates subtrees, and removes unreachable nodes (`apply_common_subexpression_elimination`, `apply_dead_code_elimination`, `apply_cast_initializer_folding`, `apply_identity_elimination`).
+- **`StaticFolder`**: Evaluates static constant subgraphs and propagates folded constants.
+
+### Synthesis Passes (`neuron_toolkit.compiler.passes.synthesis`)
+
+- **`AttentionSynthesizer`**: Synthesizes high-level attention primitives (`apply_scaled_dot_product_attention_fusion`, `apply_split_qkv_fusion`, `apply_merge_heads_fusion`, `apply_rope_fusion`).
+- **`FeedForwardSynthesizer`**: Synthesizes transformer MLP and FFN blocks (`apply_feedforward_fusion`, `apply_feedforward_swiglu_fusion`).
+- **`MacroBlockSynthesizer`**: Synthesizes neural blocks for vision, diffusion, and state-space architectures (`apply_deep_mlp_norm_act_fusion`, `apply_spatial_gating_unit_fusion`, `apply_highway_block_fusion`, `apply_squeeze_excitation_fusion`, `apply_mha_composite_fusion`).
+- **`AxialSynthesizer`**: Synthesizes Conformer and multi-dimensional tensor arrangements (`apply_axial_rearrange_fusion`, `apply_unbind_fusion`).
+
+### Exporters (`neuron_toolkit.compiler.exporters`)
+
+- **`OnnxExporter(mode: str = 'function_proto')`**: Exports optimized model in dual-mode (FunctionProto or plain custom ops).
+  - **`export(model: onnx.ModelProto, context: CompilerContext | None = None, output_path: str | Path | None = None) -> onnx.ModelProto`**
+- **`PyTorchExporter(registry: OpRegistry | None = None)`**: Exports model directly into an executable `PyTorchRunner`.
+  - **`export(model: onnx.ModelProto, context: CompilerContext | None = None) -> PyTorchRunner`**
+
+---
+
+## 16. `neuron_toolkit.compiler.analyzer` & `neuron_toolkit.compiler.architectures`
+
+Architecture block prediction, subgraph discovery, and polymorphic fingerprinting.
+
+### `ArchitectureBlockPredictor`
+
+Automatic pattern matcher and semantic architecture predictor.
+
+- **`__init__(catalog: ArchitectureCatalog | None = None) -> None`**
+- **`analyze(model: onnx.ModelProto | str | Path) -> ArchitectureManifest`**: Analyzes graph topology and predicts architectural components with confidence metrics.
+
+### `ArchitectureManifest`
+
+Consolidated semantic architecture manifest and interpretability analysis.
+
+- **`model_name: str`**: Identifier / name of the model.
+- **`total_nodes: int`**: Total operator node count in graph.
+- **`primary_family: str`**: Dominant architecture family (e.g. `Transformer`, `DiT`, `ConvNeXt`, `Mamba/SSM`, `ResMLP`, `GNN`, `RNN`).
+- **`detected_blocks: list[DetectedBlock]`**: List of all identified architectural blocks.
+- **`operator_distribution: dict[str, int]`**: Frequencies of operator types in the graph.
+- **`interpretability_summary: str`**: High-level semantic summary of the architecture.
+- **`optimization_recommendations: list[str]`**: List of suggested synthesis passes based on detected motifs.
+- **`print_report() -> None`**: Formats and prints an ASCII architecture report to stdout.
+
+### `DetectedBlock`
+
+Individual architectural block identified by the predictor.
+
+- **`block_type: str`**: Name of block (e.g. `MultiHeadAttention`, `FeedForward_SwiGLU`, `SpatialGatingUnit`).
+- **`category: str`**: Higher-level category (`Attention`, `MLP`, `Norm`, `Convolution`, `Sequential`).
+- **`confidence: float`**: Confidence score of the match ($0.0$ to $1.0$).
+- **`nodes_involved: list[str]`**: List of node names comprising the block.
+- **`properties: dict[str, Any]`**: Extracted parameters (e.g. `has_bias`, `norm_type`, `activation`).
+- **`summary: str`**: Single-line explanatory summary.
+
+### `ArchitectureCatalog`
+
+Manages declarative architecture block signatures loaded from JSON.
+
+- **`load() -> None`**: Loads block signatures from catalog file.
+- **`get_signature(name: str) -> BlockSignature | None`**: Retrieves specific signature by identifier.
+- **`list_signatures() -> list[str]`**: Lists all registered signature names.
+
+### Fingerprinting Utilities (`neuron_toolkit.compiler.architectures.fingerprint`)
+
+- **`compute_subgraph_fingerprint(nodes: list[onnx.NodeProto], external_inputs: list[str] | None = None, external_outputs: list[str] | None = None) -> str`**: Calculates deterministic 8-character SHA-256 fingerprint from subgraph topology and opcode sequence.
+- **`build_monomorphized_op_type(family: str, variant_hint: str | None = None, fingerprint: str | None = None) -> str`**: Constructs monomorphized op name (e.g. `FeedForward_swiglu_a1b2c3d4`).
+- **`ensure_specialized_function_proto(model: onnx.ModelProto, domain: str, fname: str, formal_inputs: list[str], formal_outputs: list[str], body_nodes: list[onnx.NodeProto], opset_imports: list[onnx.OperatorSetIdProto] | None = None, doc_string: str = '') -> onnx.FunctionProto`**: Registers specialized FunctionProto in `model.functions` if not present.
+
+---
+
+## 17. `neuron_toolkit.rules`
+
+Declarative JSON pattern rules and graph rewriting engine.
+
+### `JSONRuleEngine`
+
+Facade engine that loads declarative JSON rewrite rules and transforms ONNX models.
+
+- **`__init__(mode: str = 'function_proto') -> None`**
+- **`load_rules_from_dir(directory: str | Path | None = None) -> list[JSONRule]`**: Loads all declarative JSON rules from directory (defaults to built-in `definitions/`).
+- **`load_rule_from_file(path: str | Path) -> JSONRule`**: Loads and registers a single JSON rule file.
+- **`apply(target: onnx.ModelProto | NeuronGraph, rule_ids: list[str] | None = None) -> onnx.ModelProto`**: Transforms the model applying all loaded or specified rules.
+
+### Schema Entities (`neuron_toolkit.rules.schema`)
+
+- **`JSONRule`**: Declarative rule specification containing metadata, pattern, conditions, and action.
+- **`NodePattern`**: Subgraph node matching specification with opcode, input/output placeholders, and attribute filters.
+- **`RuleCondition`**: Predicate condition on tensors, shapes, constants, or data types.
+- **`RuleAction`**: Action definition specifying graph replacement or custom operator fusion.
+
+### Exporter Function
+
+- **`export_simplified_onnx(model_or_graph: onnx.ModelProto | NeuronGraph, output_path: str, mode: str = 'function_proto', metadata: dict[str, Any] | None = None) -> onnx.ModelProto`**: Exports transformed model in dual-mode representation with attached FunctionProtos.
+
+---
+
+## 18. `neuron_toolkit.runtime`
+
+Native PyTorch execution runtime and differential cross-verification engine.
+
+### `PyTorchRunner`
+
+Vectorized, native PyTorch execution runtime for standard and rewritten ONNX graphs with custom operators.
+
+- **`__init__(model_or_graph: onnx.ModelProto | NeuronGraph, registry: OpRegistry | None = None, device: str | torch.device = 'cpu') -> None`**
+- **`run(inputs: dict[str, np.ndarray | torch.Tensor]) -> dict[str, np.ndarray]`**: Executes the computational graph using PyTorch and returns dictionary of numpy array outputs.
+
+### `OpRegistry`
+
+Registry of PyTorch implementations for ONNX standard and custom operations.
+
+- **`register(domain: str, op_type: str, handler: OpHandler | None = None) -> Callable[[OpHandler], OpHandler] | None`**: Decorator / method to register a custom op handler.
+- **`get(domain: str, op_type: str) -> OpHandler | None`**: Resolves handler for given domain and opcode.
+
+### `CrossVerifier`
+
+Differential verification suite comparing original models executed on ONNX Runtime against simplified/compiled models on `PyTorchRunner`.
+
+- **`__init__(original_model: onnx.ModelProto | NeuronGraph | str, simplified_model: onnx.ModelProto | NeuronGraph | str, rtol: float = 0.0001, atol: float = 0.0001, min_cosine_similarity: float = 0.9999) -> None`**
+- **`generate_dummy_inputs(batch_size: int = 1, default_dynamic_dim: int = 32) -> dict[str, np.ndarray]`**: Generates valid random inputs conforming to graph input tensor specifications.
+- **`verify(inputs: dict[str, np.ndarray] | None = None) -> CrossVerificationReport`**: Executes both engines and returns comprehensive numerical divergence report.
+
+### `CrossVerificationReport` & `OutputMetric`
+
+- **`report.all_passed: bool`**: Overall pass/fail status across all output tensors.
+- **`report.original_nodes: int`**: Node count in original unoptimized model.
+- **`report.simplified_nodes: int`**: Node count in optimized model.
+- **`report.eliminated_nodes: int`**: Net nodes removed.
+- **`report.reduction_percentage: float`**: Percentage reduction in node count.
+- **`report.standard_nodes: int`**: Count of remaining standard ONNX nodes.
+- **`report.custom_nodes: int`**: Count of custom operator nodes.
+- **`report.custom_ratio: float`**: Percentage of custom operator nodes in optimized model.
+- **`report.custom_op_breakdown: dict[str, int]`**: Frequencies of active custom operators.
+- **`report.metrics: dict[str, OutputMetric]`**: Per-output verification metrics:
+  - `metric.name: str`: Output tensor name.
+  - `metric.shape: tuple[int, ...]`: Shape of output tensor.
+  - `metric.max_abs_diff: float`: Maximum absolute deviation between ORT and PyTorchRunner.
+  - `metric.mse: float`: Mean squared error.
+  - `metric.cosine_similarity: float`: Vector cosine similarity.
+  - `metric.passed: bool`: Individual output validation status against `rtol`, `atol`, and `min_cosine_similarity`.
+- **`report.summary() -> str`**: Formatted ASCII / Markdown verification table.

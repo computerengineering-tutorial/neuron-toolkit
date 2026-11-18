@@ -11,8 +11,8 @@ from typing import Any
 
 import onnx
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
+from torch import nn
 
 OUT_DIR = Path(".helper/models/diffusion_dit")
 OUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -56,11 +56,17 @@ class DiT_AdaLNZero_Block(nn.Module):
         B, S, D = x.shape
 
         # Compute adaptive modulation parameters
-        shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.adaLN_modulation(c).chunk(6, dim=1)
+        shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = (
+            self.adaLN_modulation(c).chunk(6, dim=1)
+        )
 
         # 1. Self-Attention with AdaLN modulation
         normed = modulate(self.norm1(x), shift_msa, scale_msa)
-        qkv = self.attn_qkv(normed).view(B, S, 3, self.num_heads, self.head_dim).permute(2, 0, 3, 1, 4)
+        qkv = (
+            self.attn_qkv(normed)
+            .view(B, S, 3, self.num_heads, self.head_dim)
+            .permute(2, 0, 3, 1, 4)
+        )
         q, k, v = qkv[0], qkv[1], qkv[2]
 
         scores = torch.matmul(q / math.sqrt(self.head_dim), k.transpose(-1, -2))
@@ -85,7 +91,9 @@ class DiT_AdaLNZero_Block(nn.Module):
 class UNet_ResBlock_WithTimestep(nn.Module):
     """Classic Diffusion U-Net Residual block with timestep embedding projection."""
 
-    def __init__(self, in_channels: int = 32, out_channels: int = 32, d_time: int = 64) -> None:
+    def __init__(
+        self, in_channels: int = 32, out_channels: int = 32, d_time: int = 64
+    ) -> None:
         super().__init__()
         self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1)
         self.norm1 = nn.GroupNorm(num_groups=4, num_channels=out_channels)
@@ -96,7 +104,11 @@ class UNet_ResBlock_WithTimestep(nn.Module):
         self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1)
         self.norm2 = nn.GroupNorm(num_groups=4, num_channels=out_channels)
 
-        self.skip = nn.Identity() if in_channels == out_channels else nn.Conv2d(in_channels, out_channels, kernel_size=1)
+        self.skip = (
+            nn.Identity()
+            if in_channels == out_channels
+            else nn.Conv2d(in_channels, out_channels, kernel_size=1)
+        )
 
     def forward(self, x: torch.Tensor, t_emb: torch.Tensor) -> torch.Tensor:
         # x: (B, C, H, W), t_emb: (B, d_time)
@@ -117,7 +129,9 @@ class UNet_ResBlock_WithTimestep(nn.Module):
 class CrossAttention_DownBlock(nn.Module):
     """U-Net Spatial downsample with Text/Prompt Cross-Attention."""
 
-    def __init__(self, channels: int = 32, d_context: int = 64, num_heads: int = 4) -> None:
+    def __init__(
+        self, channels: int = 32, d_context: int = 64, num_heads: int = 4
+    ) -> None:
         super().__init__()
         self.channels = channels
         self.num_heads = num_heads
@@ -133,9 +147,21 @@ class CrossAttention_DownBlock(nn.Module):
         B, C, H, W = x.shape
         x_flat = x.permute(0, 2, 3, 1).reshape(B, H * W, C)
 
-        q = self.to_q(x_flat).view(B, H * W, self.num_heads, self.head_dim).transpose(1, 2)
-        k = self.to_k(context).view(B, context.shape[1], self.num_heads, self.head_dim).transpose(1, 2)
-        v = self.to_v(context).view(B, context.shape[1], self.num_heads, self.head_dim).transpose(1, 2)
+        q = (
+            self.to_q(x_flat)
+            .view(B, H * W, self.num_heads, self.head_dim)
+            .transpose(1, 2)
+        )
+        k = (
+            self.to_k(context)
+            .view(B, context.shape[1], self.num_heads, self.head_dim)
+            .transpose(1, 2)
+        )
+        v = (
+            self.to_v(context)
+            .view(B, context.shape[1], self.num_heads, self.head_dim)
+            .transpose(1, 2)
+        )
 
         scores = torch.matmul(q / math.sqrt(self.head_dim), k.transpose(-1, -2))
         probs = torch.softmax(scores, dim=-1)
@@ -188,8 +214,17 @@ def export_diffusion_zoo() -> list[dict[str, Any]]:
                 m = onnx.load(str(out_path))
                 m.ir_version = min(m.ir_version, 10)
                 onnx.save(m, str(out_path))
-                catalog.append({"name": name, "opset": opset, "path": str(out_path), "nodes": len(m.graph.node)})
-                print(f"[DiT Zoo] Exported {out_path.name} (opset {opset}, {len(m.graph.node)} nodes)")
+                catalog.append(
+                    {
+                        "name": name,
+                        "opset": opset,
+                        "path": str(out_path),
+                        "nodes": len(m.graph.node),
+                    }
+                )
+                print(
+                    f"[DiT Zoo] Exported {out_path.name} (opset {opset}, {len(m.graph.node)} nodes)"
+                )
             except Exception as e:
                 print(f"[DiT Zoo] Failed to export {name} for opset {opset}: {e}")
 

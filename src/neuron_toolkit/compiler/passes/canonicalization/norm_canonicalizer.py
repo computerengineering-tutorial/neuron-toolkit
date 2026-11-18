@@ -10,9 +10,7 @@ Fuses low-level normalization expansions into canonical ops:
 from __future__ import annotations
 
 import logging
-from typing import Any
 
-import numpy as np
 import onnx
 from onnx import helper, numpy_helper
 
@@ -41,7 +39,11 @@ class NormCanonicalizer(Pass):
             model = self.apply_layernorm_fusion(model, mode=context.mode)
         if context.should_run("rmsnorm"):
             model = self.apply_rmsnorm_fusion(model, mode=context.mode)
-        if context.should_run("skip_norm") or context.should_run("skip_rmsnorm") or context.should_run("skip_layernorm"):
+        if (
+            context.should_run("skip_norm")
+            or context.should_run("skip_rmsnorm")
+            or context.should_run("skip_layernorm")
+        ):
             model = self.apply_skip_norm_fusion(model, mode=context.mode)
 
         nodes_after = len(model.graph.node)
@@ -51,7 +53,9 @@ class NormCanonicalizer(Pass):
     # -------------------------------------------------------------------------
     # GroupNorm Fusion
     # -------------------------------------------------------------------------
-    def apply_groupnorm_fusion(self, model: onnx.ModelProto, mode: str = "function_proto") -> onnx.ModelProto:
+    def apply_groupnorm_fusion(
+        self, model: onnx.ModelProto, mode: str = "function_proto"
+    ) -> onnx.ModelProto:
         """Fuses 9-node GroupNorm pattern into unified GroupNorm op."""
         graph = model.graph
         node_by_output: dict[str, onnx.NodeProto] = {
@@ -62,9 +66,7 @@ class NormCanonicalizer(Pass):
             for inp in n.input:
                 consumer_map.setdefault(inp, []).append(n)
 
-        inits_dict = {
-            i.name: numpy_helper.to_array(i) for i in graph.initializer
-        }
+        inits_dict = {i.name: numpy_helper.to_array(i) for i in graph.initializer}
         nodes_to_remove: set[str] = set()
         new_gn_nodes: list[onnx.NodeProto] = []
         gn_count = 0
@@ -90,12 +92,10 @@ class NormCanonicalizer(Pass):
 
             x_3d = reshape_expand.input[0]
             final_out = add_node.output[0]
-            scale_name = [
-                i for i in mul_node.input if i != reshape_restore.output[0]
-            ][0]
-            bias_name = [
-                i for i in add_node.input if i != mul_node.output[0]
-            ][0]
+            scale_name = [i for i in mul_node.input if i != reshape_restore.output[0]][
+                0
+            ]
+            bias_name = [i for i in add_node.input if i != mul_node.output[0]][0]
 
             # Convert scale and bias inits to 1D
             if scale_name in inits_dict:
@@ -164,10 +164,16 @@ class NormCanonicalizer(Pass):
                 nodes_to_remove.add(n.name or n.output[0])
 
             shape_in = reshape_restore.input[1]
-            if shape_in in node_by_output and node_by_output[shape_in].op_type == "Shape":
+            if (
+                shape_in in node_by_output
+                and node_by_output[shape_in].op_type == "Shape"
+            ):
                 nodes_to_remove.add(node_by_output[shape_in].name or shape_in)
             for c_inp in inn.input[1:]:
-                if c_inp in node_by_output and node_by_output[c_inp].op_type == "Constant":
+                if (
+                    c_inp in node_by_output
+                    and node_by_output[c_inp].op_type == "Constant"
+                ):
                     nodes_to_remove.add(node_by_output[c_inp].name or c_inp)
             exp_c = reshape_expand.input[1]
             if exp_c in node_by_output and node_by_output[exp_c].op_type == "Constant":
@@ -227,7 +233,9 @@ class NormCanonicalizer(Pass):
     # -------------------------------------------------------------------------
     # RMSNorm Fusion (ReduceL2 and MeanSquare formulations)
     # -------------------------------------------------------------------------
-    def apply_rmsnorm_fusion(self, model: onnx.ModelProto, mode: str = "function_proto") -> onnx.ModelProto:
+    def apply_rmsnorm_fusion(
+        self, model: onnx.ModelProto, mode: str = "function_proto"
+    ) -> onnx.ModelProto:
         """Fuse RMSNorm expansions (ReduceL2 or MeanSq) into RMSNorm."""
         graph = model.graph
         node_by_output: dict[str, onnx.NodeProto] = {
@@ -242,22 +250,36 @@ class NormCanonicalizer(Pass):
             if n.op_type != "ReduceL2":
                 continue
             x = n.input[0]
-            clips = [c for c in graph.node if n.output[0] in c.input and c.op_type == "Clip"]
+            clips = [
+                c for c in graph.node if n.output[0] in c.input and c.op_type == "Clip"
+            ]
             if not clips:
                 continue
             clip = clips[0]
-            expands = [c for c in graph.node if clip.output[0] in c.input and c.op_type == "Expand"]
+            expands = [
+                c
+                for c in graph.node
+                if clip.output[0] in c.input and c.op_type == "Expand"
+            ]
             expand = expands[0] if expands else None
             div_input = expand.output[0] if expand is not None else clip.output[0]
-            divs = [c for c in graph.node if div_input in c.input and c.op_type == "Div"]
+            divs = [
+                c for c in graph.node if div_input in c.input and c.op_type == "Div"
+            ]
             if not divs:
                 continue
             div = divs[0]
-            muls1 = [c for c in graph.node if div.output[0] in c.input and c.op_type == "Mul"]
+            muls1 = [
+                c for c in graph.node if div.output[0] in c.input and c.op_type == "Mul"
+            ]
             if not muls1:
                 continue
             mul1 = muls1[0]
-            muls2 = [c for c in graph.node if mul1.output[0] in c.input and c.op_type == "Mul"]
+            muls2 = [
+                c
+                for c in graph.node
+                if mul1.output[0] in c.input and c.op_type == "Mul"
+            ]
             if not muls2:
                 continue
             mul2 = muls2[0]
@@ -268,10 +290,16 @@ class NormCanonicalizer(Pass):
                 nodes_to_remove.add(expand.name)
 
             # Check if expand's shape input is an isolated Shape node
-            if expand is not None and len(expand.input) > 1 and expand.input[1] in node_by_output:
+            if (
+                expand is not None
+                and len(expand.input) > 1
+                and expand.input[1] in node_by_output
+            ):
                 sh_node = node_by_output[expand.input[1]]
                 if sh_node.op_type == "Shape":
-                    sh_consumers = [c for c in graph.node if sh_node.output[0] in c.input]
+                    sh_consumers = [
+                        c for c in graph.node if sh_node.output[0] in c.input
+                    ]
                     if len(sh_consumers) == 1:
                         nodes_to_remove.add(sh_node.name)
 
@@ -306,45 +334,112 @@ class NormCanonicalizer(Pass):
             # Guard: If x is produced by Sub(inp, mean), this is LayerNorm variance, not RMSNorm
             if x in node_by_output and node_by_output[x].op_type == "Sub":
                 sub_node = node_by_output[x]
-                if any(inp in node_by_output and node_by_output[inp].op_type == "ReduceMean" for inp in sub_node.input):
+                if any(
+                    inp in node_by_output
+                    and node_by_output[inp].op_type == "ReduceMean"
+                    for inp in sub_node.input
+                ):
                     continue
-            rm_candidates = [c for c in graph.node if pow_node.output[0] in c.input and c.op_type == "ReduceMean"]
+            rm_candidates = [
+                c
+                for c in graph.node
+                if pow_node.output[0] in c.input and c.op_type == "ReduceMean"
+            ]
             if not rm_candidates:
                 continue
             rm_node = rm_candidates[0]
-            add_candidates = [c for c in graph.node if rm_node.output[0] in c.input and c.op_type == "Add"]
+            add_candidates = [
+                c
+                for c in graph.node
+                if rm_node.output[0] in c.input and c.op_type == "Add"
+            ]
             if not add_candidates:
                 continue
             add_node = add_candidates[0]
-            sqrt_candidates = [c for c in graph.node if add_node.output[0] in c.input and c.op_type == "Sqrt"]
+            sqrt_candidates = [
+                c
+                for c in graph.node
+                if add_node.output[0] in c.input and c.op_type == "Sqrt"
+            ]
             if not sqrt_candidates:
                 continue
             sqrt_node = sqrt_candidates[0]
-            div_candidates = [c for c in graph.node if sqrt_node.output[0] in c.input and c.op_type == "Div" and c.input[0] == x]
+            div_candidates = [
+                c
+                for c in graph.node
+                if sqrt_node.output[0] in c.input
+                and c.op_type == "Div"
+                and c.input[0] == x
+            ]
             if div_candidates:
                 div_node = div_candidates[0]
-                mul_candidates = [c for c in graph.node if div_node.output[0] in c.input and c.op_type == "Mul"]
+                mul_candidates = [
+                    c
+                    for c in graph.node
+                    if div_node.output[0] in c.input and c.op_type == "Mul"
+                ]
                 if not mul_candidates:
                     continue
                 mul_node = mul_candidates[0]
-                gamma = mul_node.input[1] if mul_node.input[0] == div_node.output[0] else mul_node.input[0]
-                nodes_to_remove.update({pow_node.name, rm_node.name, add_node.name, sqrt_node.name, div_node.name, mul_node.name})
+                gamma = (
+                    mul_node.input[1]
+                    if mul_node.input[0] == div_node.output[0]
+                    else mul_node.input[0]
+                )
+                nodes_to_remove.update(
+                    {
+                        pow_node.name,
+                        rm_node.name,
+                        add_node.name,
+                        sqrt_node.name,
+                        div_node.name,
+                        mul_node.name,
+                    }
+                )
             else:
                 # Reciprocal variant: Sqrt -> Reciprocal -> Mul(x, rsqrt) -> Mul(..., gamma)
-                recip_candidates = [c for c in graph.node if sqrt_node.output[0] in c.input and c.op_type == "Reciprocal"]
+                recip_candidates = [
+                    c
+                    for c in graph.node
+                    if sqrt_node.output[0] in c.input and c.op_type == "Reciprocal"
+                ]
                 if not recip_candidates:
                     continue
                 recip_node = recip_candidates[0]
-                mul1_candidates = [c for c in graph.node if recip_node.output[0] in c.input and c.op_type == "Mul" and x in c.input]
+                mul1_candidates = [
+                    c
+                    for c in graph.node
+                    if recip_node.output[0] in c.input
+                    and c.op_type == "Mul"
+                    and x in c.input
+                ]
                 if not mul1_candidates:
                     continue
                 mul1_node = mul1_candidates[0]
-                mul2_candidates = [c for c in graph.node if mul1_node.output[0] in c.input and c.op_type == "Mul"]
+                mul2_candidates = [
+                    c
+                    for c in graph.node
+                    if mul1_node.output[0] in c.input and c.op_type == "Mul"
+                ]
                 if not mul2_candidates:
                     continue
                 mul_node = mul2_candidates[0]
-                gamma = mul_node.input[1] if mul_node.input[0] == mul1_node.output[0] else mul_node.input[0]
-                nodes_to_remove.update({pow_node.name, rm_node.name, add_node.name, sqrt_node.name, recip_node.name, mul1_node.name, mul_node.name})
+                gamma = (
+                    mul_node.input[1]
+                    if mul_node.input[0] == mul1_node.output[0]
+                    else mul_node.input[0]
+                )
+                nodes_to_remove.update(
+                    {
+                        pow_node.name,
+                        rm_node.name,
+                        add_node.name,
+                        sqrt_node.name,
+                        recip_node.name,
+                        mul1_node.name,
+                        mul_node.name,
+                    }
+                )
             if mode == "modern_onnx":
                 rmsnorm_node = helper.make_node(
                     op_type="RMSNormalization",
@@ -395,10 +490,21 @@ class NormCanonicalizer(Pass):
         if any(f.name == func_name and f.domain == domain for f in model.functions):
             return
         opset_standard = helper.make_opsetid("", 14)
-        r_node = helper.make_node("ReduceL2", inputs=["x"], outputs=["norm"], axes=[-1], keepdims=1)
-        const_eps = helper.make_node("Constant", inputs=[], outputs=["eps"], value=helper.make_tensor("eps", onnx.TensorProto.FLOAT, [], [1e-12]))
-        c_node = helper.make_node("Clip", inputs=["norm", "eps"], outputs=["clipped_norm"])
-        d_node = helper.make_node("Div", inputs=["x", "clipped_norm"], outputs=["normed_x"])
+        r_node = helper.make_node(
+            "ReduceL2", inputs=["x"], outputs=["norm"], axes=[-1], keepdims=1
+        )
+        const_eps = helper.make_node(
+            "Constant",
+            inputs=[],
+            outputs=["eps"],
+            value=helper.make_tensor("eps", onnx.TensorProto.FLOAT, [], [1e-12]),
+        )
+        c_node = helper.make_node(
+            "Clip", inputs=["norm", "eps"], outputs=["clipped_norm"]
+        )
+        d_node = helper.make_node(
+            "Div", inputs=["x", "clipped_norm"], outputs=["normed_x"]
+        )
         m_node = helper.make_node("Mul", inputs=["normed_x", "gamma"], outputs=["y"])
         rms_func = helper.make_function(
             domain=domain,
@@ -414,7 +520,9 @@ class NormCanonicalizer(Pass):
     # -------------------------------------------------------------------------
     # LayerNorm Mean/Var Fusion
     # -------------------------------------------------------------------------
-    def apply_layernorm_fusion(self, model: onnx.ModelProto, mode: str = "function_proto") -> onnx.ModelProto:
+    def apply_layernorm_fusion(
+        self, model: onnx.ModelProto, mode: str = "function_proto"
+    ) -> onnx.ModelProto:
         """Fuses ReduceMean -> Sub -> Pow(2) -> ReduceMean -> Sqrt -> Div -> Mul -> Add into LayerNormalization."""
         graph = model.graph
         consumer_map: dict[str, list[onnx.NodeProto]] = {}
@@ -432,65 +540,109 @@ class NormCanonicalizer(Pass):
             x = rm_mean.input[0]
             mean_out = rm_mean.output[0]
 
-            sub_candidates = [c for c in consumer_map.get(mean_out, []) if c.op_type == "Sub" and c.input[0] == x]
+            sub_candidates = [
+                c
+                for c in consumer_map.get(mean_out, [])
+                if c.op_type == "Sub" and c.input[0] == x
+            ]
             if not sub_candidates:
                 continue
             sub_node = sub_candidates[0]
             x_minus_mean = sub_node.output[0]
 
             pow_candidates = [
-                c for c in consumer_map.get(x_minus_mean, [])
+                c
+                for c in consumer_map.get(x_minus_mean, [])
                 if c.op_type == "Pow"
-                or (c.op_type == "Mul" and len(c.input) == 2 and c.input[0] == x_minus_mean and c.input[1] == x_minus_mean)
+                or (
+                    c.op_type == "Mul"
+                    and len(c.input) == 2
+                    and c.input[0] == x_minus_mean
+                    and c.input[1] == x_minus_mean
+                )
             ]
             if not pow_candidates:
                 continue
             pow_node = pow_candidates[0]
 
-            rm_var_candidates = [c for c in consumer_map.get(pow_node.output[0], []) if c.op_type == "ReduceMean"]
+            rm_var_candidates = [
+                c
+                for c in consumer_map.get(pow_node.output[0], [])
+                if c.op_type == "ReduceMean"
+            ]
             if not rm_var_candidates:
                 continue
             rm_var_node = rm_var_candidates[0]
 
-            add_candidates = [c for c in consumer_map.get(rm_var_node.output[0], []) if c.op_type == "Add"]
+            add_candidates = [
+                c
+                for c in consumer_map.get(rm_var_node.output[0], [])
+                if c.op_type == "Add"
+            ]
             if not add_candidates:
                 continue
             add_node = add_candidates[0]
 
-            sqrt_candidates = [c for c in consumer_map.get(add_node.output[0], []) if c.op_type == "Sqrt"]
+            sqrt_candidates = [
+                c
+                for c in consumer_map.get(add_node.output[0], [])
+                if c.op_type == "Sqrt"
+            ]
             if not sqrt_candidates:
                 continue
             sqrt_node = sqrt_candidates[0]
 
-            div_candidates = [c for c in consumer_map.get(sqrt_node.output[0], []) if c.op_type == "Div" and c.input[0] == x_minus_mean]
+            div_candidates = [
+                c
+                for c in consumer_map.get(sqrt_node.output[0], [])
+                if c.op_type == "Div" and c.input[0] == x_minus_mean
+            ]
             if not div_candidates:
                 continue
             div_node = div_candidates[0]
 
-            mul_candidates = [c for c in consumer_map.get(div_node.output[0], []) if c.op_type == "Mul"]
+            mul_candidates = [
+                c
+                for c in consumer_map.get(div_node.output[0], [])
+                if c.op_type == "Mul"
+            ]
             if not mul_candidates:
                 continue
             mul_node = mul_candidates[0]
-            scale = mul_node.input[1] if mul_node.input[0] == div_node.output[0] else mul_node.input[0]
+            scale = (
+                mul_node.input[1]
+                if mul_node.input[0] == div_node.output[0]
+                else mul_node.input[0]
+            )
 
-            add_bias_candidates = [c for c in consumer_map.get(mul_node.output[0], []) if c.op_type == "Add"]
+            add_bias_candidates = [
+                c
+                for c in consumer_map.get(mul_node.output[0], [])
+                if c.op_type == "Add"
+            ]
             if not add_bias_candidates:
                 continue
             add_bias_node = add_bias_candidates[0]
-            bias = add_bias_node.input[1] if add_bias_node.input[0] == mul_node.output[0] else add_bias_node.input[0]
+            bias = (
+                add_bias_node.input[1]
+                if add_bias_node.input[0] == mul_node.output[0]
+                else add_bias_node.input[0]
+            )
             final_out = add_bias_node.output[0]
 
-            nodes_to_remove.update({
-                rm_mean.name or rm_mean.output[0],
-                sub_node.name or sub_node.output[0],
-                pow_node.name or pow_node.output[0],
-                rm_var_node.name or rm_var_node.output[0],
-                add_node.name or add_node.output[0],
-                sqrt_node.name or sqrt_node.output[0],
-                div_node.name or div_node.output[0],
-                mul_node.name or mul_node.output[0],
-                add_bias_node.name or add_bias_node.output[0],
-            })
+            nodes_to_remove.update(
+                {
+                    rm_mean.name or rm_mean.output[0],
+                    sub_node.name or sub_node.output[0],
+                    pow_node.name or pow_node.output[0],
+                    rm_var_node.name or rm_var_node.output[0],
+                    add_node.name or add_node.output[0],
+                    sqrt_node.name or sqrt_node.output[0],
+                    div_node.name or div_node.output[0],
+                    mul_node.name or mul_node.output[0],
+                    add_bias_node.name or add_bias_node.output[0],
+                }
+            )
 
             ln_node = helper.make_node(
                 "LayerNormalization",
@@ -507,7 +659,11 @@ class NormCanonicalizer(Pass):
         if not new_nodes:
             return model
 
-        kept = [n for n in graph.node if (n.name or (n.output[0] if n.output else "")) not in nodes_to_remove]
+        kept = [
+            n
+            for n in graph.node
+            if (n.name or (n.output[0] if n.output else "")) not in nodes_to_remove
+        ]
         kept.extend(new_nodes)
         del graph.node[:]
         graph.node.extend(kept)
@@ -528,7 +684,9 @@ class NormCanonicalizer(Pass):
     # -------------------------------------------------------------------------
     # SkipNorms (Add + Norm) Fusion
     # -------------------------------------------------------------------------
-    def apply_skip_norm_fusion(self, model: onnx.ModelProto, mode: str = "function_proto") -> onnx.ModelProto:
+    def apply_skip_norm_fusion(
+        self, model: onnx.ModelProto, mode: str = "function_proto"
+    ) -> onnx.ModelProto:
         """Fuses Add(x, residual) followed by RMSNorm / LayerNorm into fused SkipNorm."""
         graph = model.graph
         node_by_output = {out: n for n in graph.node for out in n.output}
@@ -548,18 +706,25 @@ class NormCanonicalizer(Pass):
                 if x_in in node_by_output and node_by_output[x_in].op_type == "Add":
                     add_node = node_by_output[x_in]
                     # Only fuse if Add is consumed solely by this norm and not an output
-                    if len(consumer_map.get(add_node.output[0], [])) == 1 and add_node.output[0] not in graph_outputs:
+                    if (
+                        len(consumer_map.get(add_node.output[0], [])) == 1
+                        and add_node.output[0] not in graph_outputs
+                    ):
                         res0, res1 = add_node.input[0], add_node.input[1]
                         gamma = n.input[1] if len(n.input) > 1 else ""
                         out = n.output[0]
-                        nodes_to_remove.update({add_node.name or add_node.output[0], n.name or n.output[0]})
+                        nodes_to_remove.update(
+                            {add_node.name or add_node.output[0], n.name or n.output[0]}
+                        )
                         skip_inputs = [res0, res1, gamma] if gamma else [res0, res1]
                         skip_node = helper.make_node(
                             "SkipSimplifiedLayerNormalization",
                             inputs=skip_inputs,
                             outputs=[out],
                             name=f"skip_rmsnorm_{count}",
-                            domain="com.microsoft" if mode == "modern_onnx" else "custom.pytorch",
+                            domain="com.microsoft"
+                            if mode == "modern_onnx"
+                            else "custom.pytorch",
                         )
                         new_nodes.append(skip_node)
                         count += 1
@@ -567,12 +732,17 @@ class NormCanonicalizer(Pass):
                 x_in = n.input[0]
                 if x_in in node_by_output and node_by_output[x_in].op_type == "Add":
                     add_node = node_by_output[x_in]
-                    if len(consumer_map.get(add_node.output[0], [])) == 1 and add_node.output[0] not in graph_outputs:
+                    if (
+                        len(consumer_map.get(add_node.output[0], [])) == 1
+                        and add_node.output[0] not in graph_outputs
+                    ):
                         res0, res1 = add_node.input[0], add_node.input[1]
                         scale = n.input[1] if len(n.input) > 1 else ""
                         bias = n.input[2] if len(n.input) > 2 else ""
                         out = n.output[0]
-                        nodes_to_remove.update({add_node.name or add_node.output[0], n.name or n.output[0]})
+                        nodes_to_remove.update(
+                            {add_node.name or add_node.output[0], n.name or n.output[0]}
+                        )
                         skip_inputs = [res0, res1]
                         if scale:
                             skip_inputs.append(scale)
@@ -583,7 +753,9 @@ class NormCanonicalizer(Pass):
                             inputs=skip_inputs,
                             outputs=[out],
                             name=f"skip_layernorm_{count}",
-                            domain="com.microsoft" if mode == "modern_onnx" else "custom.pytorch",
+                            domain="com.microsoft"
+                            if mode == "modern_onnx"
+                            else "custom.pytorch",
                         )
                         new_nodes.append(skip_node)
                         count += 1
@@ -591,7 +763,11 @@ class NormCanonicalizer(Pass):
         if not new_nodes:
             return model
 
-        kept = [n for n in graph.node if (n.name or (n.output[0] if n.output else "")) not in nodes_to_remove]
+        kept = [
+            n
+            for n in graph.node
+            if (n.name or (n.output[0] if n.output else "")) not in nodes_to_remove
+        ]
         kept.extend(new_nodes)
         del graph.node[:]
         graph.node.extend(kept)
@@ -612,23 +788,53 @@ class NormCanonicalizer(Pass):
         if any(f.name == func_name and f.domain == domain for f in model.functions):
             return
         opset_standard = helper.make_opsetid("", 14)
-        rm_m = helper.make_node("ReduceMean", inputs=["x"], outputs=["mean_out"], axes=[-1], keepdims=1)
+        rm_m = helper.make_node(
+            "ReduceMean", inputs=["x"], outputs=["mean_out"], axes=[-1], keepdims=1
+        )
         sub = helper.make_node("Sub", inputs=["x", "mean_out"], outputs=["sub_out"])
         pow_n = helper.make_node("Pow", inputs=["sub_out", "two"], outputs=["pow_out"])
-        rm_v = helper.make_node("ReduceMean", inputs=["pow_out"], outputs=["var_out"], axes=[-1], keepdims=1)
+        rm_v = helper.make_node(
+            "ReduceMean", inputs=["pow_out"], outputs=["var_out"], axes=[-1], keepdims=1
+        )
         add1 = helper.make_node("Add", inputs=["var_out", "eps"], outputs=["var_eps"])
         sqrt = helper.make_node("Sqrt", inputs=["var_eps"], outputs=["std_out"])
-        div = helper.make_node("Div", inputs=["sub_out", "std_out"], outputs=["norm_out"])
-        mul = helper.make_node("Mul", inputs=["norm_out", "scale"], outputs=["scaled_out"])
+        div = helper.make_node(
+            "Div", inputs=["sub_out", "std_out"], outputs=["norm_out"]
+        )
+        mul = helper.make_node(
+            "Mul", inputs=["norm_out", "scale"], outputs=["scaled_out"]
+        )
         add2 = helper.make_node("Add", inputs=["scaled_out", "bias"], outputs=["y"])
-        two_init = helper.make_node("Constant", inputs=[], outputs=["two"], value=helper.make_tensor("two", onnx.TensorProto.FLOAT, [], [2.0]))
-        eps_init = helper.make_node("Constant", inputs=[], outputs=["eps"], value=helper.make_tensor("eps", onnx.TensorProto.FLOAT, [], [1e-5]))
+        two_init = helper.make_node(
+            "Constant",
+            inputs=[],
+            outputs=["two"],
+            value=helper.make_tensor("two", onnx.TensorProto.FLOAT, [], [2.0]),
+        )
+        eps_init = helper.make_node(
+            "Constant",
+            inputs=[],
+            outputs=["eps"],
+            value=helper.make_tensor("eps", onnx.TensorProto.FLOAT, [], [1e-5]),
+        )
         ln_func = helper.make_function(
             domain=domain,
             fname=func_name,
             inputs=["x", "scale", "bias"],
             outputs=["y"],
-            nodes=[two_init, eps_init, rm_m, sub, pow_n, rm_v, add1, sqrt, div, mul, add2],
+            nodes=[
+                two_init,
+                eps_init,
+                rm_m,
+                sub,
+                pow_n,
+                rm_v,
+                add1,
+                sqrt,
+                div,
+                mul,
+                add2,
+            ],
             opset_imports=[opset_standard],
             doc_string="LayerNormalization custom function",
         )
@@ -640,9 +846,14 @@ class NormCanonicalizer(Pass):
         opset_standard = helper.make_opsetid("", 14)
         opset_custom = helper.make_opsetid("custom.pytorch", 1)
 
-        if not any(f.name == "SkipSimplifiedLayerNormalization" and f.domain == domain for f in model.functions):
+        if not any(
+            f.name == "SkipSimplifiedLayerNormalization" and f.domain == domain
+            for f in model.functions
+        ):
             add_n = helper.make_node("Add", inputs=["x1", "x2"], outputs=["res"])
-            norm_n = helper.make_node("RMSNorm", inputs=["res", "gamma"], outputs=["y"], domain=domain)
+            norm_n = helper.make_node(
+                "RMSNorm", inputs=["res", "gamma"], outputs=["y"], domain=domain
+            )
             func_rms = helper.make_function(
                 domain=domain,
                 fname="SkipSimplifiedLayerNormalization",
@@ -655,9 +866,17 @@ class NormCanonicalizer(Pass):
             model.functions.append(func_rms)
             self._attach_rmsnorm_function_def(model)
 
-        if not any(f.name == "SkipLayerNormalization" and f.domain == domain for f in model.functions):
+        if not any(
+            f.name == "SkipLayerNormalization" and f.domain == domain
+            for f in model.functions
+        ):
             add_n = helper.make_node("Add", inputs=["x1", "x2"], outputs=["res"])
-            ln_n = helper.make_node("LayerNormalization", inputs=["res", "scale", "bias"], outputs=["y"], domain=domain)
+            ln_n = helper.make_node(
+                "LayerNormalization",
+                inputs=["res", "scale", "bias"],
+                outputs=["y"],
+                domain=domain,
+            )
             func_ln = helper.make_function(
                 domain=domain,
                 fname="SkipLayerNormalization",

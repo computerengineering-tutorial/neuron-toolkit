@@ -12,13 +12,13 @@ Exports across ONNX Opsets 14, 17, 18, 20.
 
 from __future__ import annotations
 
-from pathlib import Path
 import warnings
+from pathlib import Path
 
 import onnx
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
+from torch import nn
 
 warnings.filterwarnings("ignore")
 
@@ -51,7 +51,9 @@ class GCN_Layer(nn.Module):
 class GAT_Layer(nn.Module):
     """Graph Attention Network with multi-head attention over graph adjacency."""
 
-    def __init__(self, in_features: int = 32, out_features: int = 32, num_heads: int = 4) -> None:
+    def __init__(
+        self, in_features: int = 32, out_features: int = 32, num_heads: int = 4
+    ) -> None:
         super().__init__()
         self.num_heads = num_heads
         self.head_dim = out_features // num_heads
@@ -63,7 +65,9 @@ class GAT_Layer(nn.Module):
     def forward(self, x: torch.Tensor, adj_mask: torch.Tensor) -> torch.Tensor:
         # x: (B, N, D), adj_mask: (B, N, N) (1 for connected, 0 for disconnected)
         B, N, D = x.shape
-        h = self.linear(x).view(B, N, self.num_heads, self.head_dim).transpose(1, 2)  # (B, H, N, D_h)
+        h = (
+            self.linear(x).view(B, N, self.num_heads, self.head_dim).transpose(1, 2)
+        )  # (B, H, N, D_h)
 
         # Compute source and target attention scores
         score_src = (h * self.attn_src).sum(dim=-1, keepdim=True)  # (B, H, N, 1)
@@ -148,7 +152,9 @@ def export_model(
             m_proto = onnx.load(str(out_path))
             onnx.checker.check_model(m_proto)
             size_kb = out_path.stat().st_size / 1024.0
-            print(f"  [OK] Exported {out_path.name:<45} (opset={opset}, nodes={len(m_proto.graph.node):<3}, {size_kb:.1f} KB)")
+            print(
+                f"  [OK] Exported {out_path.name:<45} (opset={opset}, nodes={len(m_proto.graph.node):<3}, {size_kb:.1f} KB)"
+            )
             exported.append(str(out_path))
         except Exception as e:
             print(f"  [FAIL] Failed to export {out_path.name} (opset={opset}): {e}")
@@ -170,16 +176,32 @@ def main() -> None:
     adj_norm = raw_adj / row_sum
 
     print("\n1. GCN_Layer")
-    export_model(GCN_Layer(32, 32), (dummy_x, adj_norm), ["x", "adj_norm"], ["out"], "gcn_layer")
+    export_model(
+        GCN_Layer(32, 32), (dummy_x, adj_norm), ["x", "adj_norm"], ["out"], "gcn_layer"
+    )
 
     print("\n2. GAT_Layer")
-    export_model(GAT_Layer(32, 32, num_heads=4), (dummy_x, raw_adj), ["x", "adj_mask"], ["out"], "gat_layer")
+    export_model(
+        GAT_Layer(32, 32, num_heads=4),
+        (dummy_x, raw_adj),
+        ["x", "adj_mask"],
+        ["out"],
+        "gat_layer",
+    )
 
     print("\n3. GraphSAGE_MeanLayer")
-    export_model(GraphSAGE_MeanLayer(32, 32), (dummy_x, adj_norm), ["x", "adj_mean"], ["out"], "graphsage_layer")
+    export_model(
+        GraphSAGE_MeanLayer(32, 32),
+        (dummy_x, adj_norm),
+        ["x", "adj_mean"],
+        ["out"],
+        "graphsage_layer",
+    )
 
     print("\n4. GIN_Layer")
-    export_model(GIN_Layer(32, 32), (dummy_x, raw_adj), ["x", "adj"], ["out"], "gin_layer")
+    export_model(
+        GIN_Layer(32, 32), (dummy_x, raw_adj), ["x", "adj"], ["out"], "gin_layer"
+    )
 
     print("\n==================================================================")
     print(f"GNN ONNX suite complete in: {OUT_DIR.resolve()}")

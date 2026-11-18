@@ -52,7 +52,9 @@ class AxialSynthesizer(Pass):
     # -------------------------------------------------------------------------
     # Index Tensor Routing
     # -------------------------------------------------------------------------
-    def apply_index_tensor_routing(self, model: onnx.ModelProto, mode: str = "function_proto") -> onnx.ModelProto:
+    def apply_index_tensor_routing(
+        self, model: onnx.ModelProto, mode: str = "function_proto"
+    ) -> onnx.ModelProto:
         """Fuse Gather on constant index and dynamic slice chains into TensorRoute."""
         graph = model.graph
         node_by_output: dict[str, onnx.NodeProto] = {
@@ -103,15 +105,9 @@ class AxialSynthesizer(Pass):
             slice_candidates = [c for c in consumers if c.op_type == "Slice"]
             if slice_candidates:
                 slice_node = slice_candidates[0]
-                starts_name = (
-                    slice_node.input[1] if len(slice_node.input) > 1 else None
-                )
-                ends_name = (
-                    slice_node.input[2] if len(slice_node.input) > 2 else None
-                )
-                axes_name = (
-                    slice_node.input[3] if len(slice_node.input) > 3 else None
-                )
+                starts_name = slice_node.input[1] if len(slice_node.input) > 1 else None
+                ends_name = slice_node.input[2] if len(slice_node.input) > 2 else None
+                axes_name = slice_node.input[3] if len(slice_node.input) > 3 else None
 
                 slice_axis = (
                     int(constant_values[axes_name][0])
@@ -172,7 +168,10 @@ class AxialSynthesizer(Pass):
                 new_route_nodes.append(new_route)
                 route_count += 1
 
-                if len(consumer_map.get(gather_out, [])) <= 1 and gather_out not in graph_outputs:
+                if (
+                    len(consumer_map.get(gather_out, [])) <= 1
+                    and gather_out not in graph_outputs
+                ):
                     nodes_to_remove.add(gather_node.name or gather_out)
                 nodes_to_remove.add(slice_node.name or final_out)
 
@@ -240,7 +239,9 @@ class AxialSynthesizer(Pass):
     # -------------------------------------------------------------------------
     # Unbind Fusion
     # -------------------------------------------------------------------------
-    def apply_unbind_fusion(self, model: onnx.ModelProto, mode: str = "function_proto") -> onnx.ModelProto:
+    def apply_unbind_fusion(
+        self, model: onnx.ModelProto, mode: str = "function_proto"
+    ) -> onnx.ModelProto:
         """Fuse Split into multiple singletons followed by Squeeze nodes into a single Unbind."""
         graph = model.graph
         nodes_to_remove: set[str] = set()
@@ -251,7 +252,11 @@ class AxialSynthesizer(Pass):
             if s.op_type == "Split" and len(s.output) > 1:
                 squeezes = []
                 for out in s.output:
-                    c = [cn for cn in graph.node if out in cn.input and cn.op_type == "Squeeze"]
+                    c = [
+                        cn
+                        for cn in graph.node
+                        if out in cn.input and cn.op_type == "Squeeze"
+                    ]
                     if len(c) == 1:
                         squeezes.append(c[0])
                 if len(squeezes) == len(s.output):
@@ -288,13 +293,22 @@ class AxialSynthesizer(Pass):
         log.info("Unbind Fusion: Fused %d Unbind instances", unbind_count)
         return ShapeCanonicalizer().apply_dead_code_elimination(model)
 
-    def _attach_unbind_function_def(self, model: onnx.ModelProto, num_outputs: int = 3) -> None:
+    def _attach_unbind_function_def(
+        self, model: onnx.ModelProto, num_outputs: int = 3
+    ) -> None:
         """Attach formal ONNX FunctionProto definition for Unbind."""
         func_name = "Unbind"
         domain = "custom.pytorch"
-        if any(f.name == func_name and f.domain == domain and len(f.output) == num_outputs for f in model.functions):
+        if any(
+            f.name == func_name and f.domain == domain and len(f.output) == num_outputs
+            for f in model.functions
+        ):
             return
-        surviving = [f for f in model.functions if not (f.name == func_name and f.domain == domain)]
+        surviving = [
+            f
+            for f in model.functions
+            if not (f.name == func_name and f.domain == domain)
+        ]
         del model.functions[:]
         model.functions.extend(surviving)
 
@@ -320,7 +334,9 @@ class AxialSynthesizer(Pass):
     # -------------------------------------------------------------------------
     # Axial Conformer Rearrange Fusion
     # -------------------------------------------------------------------------
-    def apply_axial_rearrange_fusion(self, model: onnx.ModelProto, mode: str = "function_proto") -> onnx.ModelProto:
+    def apply_axial_rearrange_fusion(
+        self, model: onnx.ModelProto, mode: str = "function_proto"
+    ) -> onnx.ModelProto:
         """Fuse Conformer axial rearrangements (freq_in, freq_to_time, time_to_conv, add_channel)."""
         graph = model.graph
         node_by_output: dict[str, onnx.NodeProto] = {
@@ -370,7 +386,12 @@ class AxialSynthesizer(Pass):
                 if perm and list(perm[0]) == [0, 2, 1, 3]:
                     prod = node_by_output.get(n.input[0])
                     consumers = [cn for cn in graph.node if n.output[0] in cn.input]
-                    if prod and prod.op_type == "Reshape" and len(consumers) == 1 and consumers[0].op_type == "Reshape":
+                    if (
+                        prod
+                        and prod.op_type == "Reshape"
+                        and len(consumers) == 1
+                        and consumers[0].op_type == "Reshape"
+                    ):
                         r1 = prod
                         r2 = consumers[0]
                         nodes_to_drop.update({r1.name, n.name, r2.name})
@@ -396,7 +417,9 @@ class AxialSynthesizer(Pass):
                         r3 = prod
                         target_shape = []
                         if len(r3.input) > 1 and r3.input[1] in constant_values:
-                            target_shape = [int(v) for v in constant_values[r3.input[1]].flatten()]
+                            target_shape = [
+                                int(v) for v in constant_values[r3.input[1]].flatten()
+                            ]
                         nodes_to_drop.update({r3.name, n.name})
                         kwargs = {"mode": "time_to_conv", "batch_size": 1}
                         if target_shape:
@@ -438,11 +461,21 @@ class AxialSynthesizer(Pass):
             if n.op_type == "Reshape" and n.name not in nodes_to_drop:
                 consumers = [cn for cn in graph.node if n.output[0] in cn.input]
                 prod = node_by_output.get(n.input[0])
-                if prod and any(c.op_type in ("Conv", "ConvTranspose") for c in consumers):
+                if prod and any(
+                    c.op_type in ("Conv", "ConvTranspose") for c in consumers
+                ):
                     shape_node = node_by_output.get(n.input[1])
-                    if shape_node and shape_node.op_type == "Concat" and len(shape_node.input) == 4:
+                    if (
+                        shape_node
+                        and shape_node.op_type == "Concat"
+                        and len(shape_node.input) == 4
+                    ):
                         dim1_const = constant_values.get(shape_node.input[1])
-                        if dim1_const is not None and dim1_const.size == 1 and int(dim1_const.item()) == 1:
+                        if (
+                            dim1_const is not None
+                            and dim1_const.size == 1
+                            and int(dim1_const.item()) == 1
+                        ):
                             nodes_to_drop.add(n.name)
                             new_nodes.append(
                                 helper.make_node(
@@ -460,7 +493,9 @@ class AxialSynthesizer(Pass):
         if not new_nodes:
             return model
 
-        surviving = [node for node in graph.node if node.name not in nodes_to_drop] + new_nodes
+        surviving = [
+            node for node in graph.node if node.name not in nodes_to_drop
+        ] + new_nodes
         del graph.node[:]
         graph.node.extend(surviving)
 
@@ -471,7 +506,9 @@ class AxialSynthesizer(Pass):
         if mode == "function_proto":
             self._attach_axial_rearrange_function_def(model)
 
-        log.info("AxialRearrange Fusion: Fused %d AxialRearrange instances", rearrange_count)
+        log.info(
+            "AxialRearrange Fusion: Fused %d AxialRearrange instances", rearrange_count
+        )
         return ShapeCanonicalizer().apply_dead_code_elimination(model)
 
     def _attach_axial_rearrange_function_def(self, model: onnx.ModelProto) -> None:

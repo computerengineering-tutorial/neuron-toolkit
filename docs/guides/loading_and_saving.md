@@ -23,6 +23,11 @@ with open("model.onnx", "rb") as f:
 import onnx
 model_proto = onnx.load("model.onnx")
 graph_from_proto = NeuronGraph(model_proto)
+
+# 4. Large Models with External Data
+# NeuronGraph automatically handles models with external data buffers. If the external file
+# is detached or missing, it gracefully falls back to topology parsing without crashing:
+large_graph = NeuronGraph.load("huge_model.onnx", load_external_data=False)
 ```
 
 ---
@@ -35,15 +40,21 @@ Once loaded, inspect graph properties directly:
 # Access nodes in graph
 print(f"Total nodes: {len(graph.nodes)}")
 
-# Inspect weight / initializer tensors (returns LazyTensorMap)
+# Inspect weight / initializer tensors (returns LazyTensorMap with zero-copy eviction)
 weights = graph.get_weights()
 for name, tensor in weights.items():
     print(f"Tensor: {name:<30} Shape: {tensor.shape} Dtype: {tensor.dtype}")
 
+# High-speed cached dictionary export (ideal for fast JSON serialization or UI tooling)
+graph_dict = graph.to_dict()  # Memoized: subsequent calls return in O(1) time
+```
+
 # Access shape and dtype information
+
 shapes = graph.shape_info
 for name, (rank, dtype) in list(shapes.items())[:5]:
     print(f"{name}: Rank {rank}, Dtype {dtype}")
+
 ```
 
 ---
@@ -122,10 +133,24 @@ rebuilt_graph.save("rebuilt_model.onnx")
 
 ---
 
-## 5. Saving Models
+## 5. Saving & Exporting Models
 
 Save modified models back to disk:
 
 ```python
+# Standard ONNX / TFLite save
 graph.save("optimized_model.onnx")
+
+# Dual-Mode Netron Export:
+# Serializes the graph with formal ONNX FunctionProto definitions attached.
+# Clicking fused nodes (e.g., ScaledDotProductAttention, SwiGLU, RMSNorm) in Netron
+# lets you expand and view the full underlying sub-nodes!
+from neuron_toolkit.rules import export_simplified_onnx
+
+export_simplified_onnx(
+    model_or_graph=graph,
+    output_path="model_netron_expandable.onnx",
+    mode="function_proto",
+    metadata={"optimizer": "NeuronCompiler", "version": "2.0"}
+)
 ```

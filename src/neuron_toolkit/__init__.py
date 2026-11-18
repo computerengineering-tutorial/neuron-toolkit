@@ -75,6 +75,8 @@ __all__ = [
     "BasePass",
     "CommonSubexpressionElimination",
     "ConstantFolding",
+    "CrossVerificationReport",
+    "CrossVerifier",
     "DeadCodeElimination",
     "EClass",
     "EGraph",
@@ -134,6 +136,4 @@ __all__ = [
     "to_json",
     "to_mermaid",
     "toposort_graph",
-    "CrossVerificationReport",
-    "CrossVerifier",
 ]

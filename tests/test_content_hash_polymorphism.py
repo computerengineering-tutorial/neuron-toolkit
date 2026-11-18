@@ -7,13 +7,13 @@ the compiler generates distinct, content-hashed FunctionProtos without collision
 
 from __future__ import annotations
 
-import io
 import os
 import tempfile
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
+
 import onnx
+import torch
+import torch.nn.functional as F
+from torch import nn
 
 from neuron_toolkit.compiler import NeuronCompiler
 from neuron_toolkit.runtime.cross_verifier import CrossVerifier
@@ -98,7 +98,9 @@ class AlternatingDeepMLPModel(nn.Module):
         return h2
 
 
-def _export_to_onnx(torch_model: nn.Module, dummy_input: torch.Tensor) -> onnx.ModelProto:
+def _export_to_onnx(
+    torch_model: nn.Module, dummy_input: torch.Tensor
+) -> onnx.ModelProto:
     torch_model.eval()
     with tempfile.NamedTemporaryFile(suffix=".onnx", delete=False) as tmp:
         tmp_path = tmp.name
@@ -152,7 +154,9 @@ def test_content_hashed_feedforward_polymorphism():
 
     # Exactly 3 distinct FFN FunctionProtos should be registered
     ff_funcs = [name for name in fn_map if name.startswith("FeedForward_")]
-    assert len(ff_funcs) == 3, f"Expected 3 distinct FFN FunctionProtos, got {len(ff_funcs)}: {ff_funcs}"
+    assert len(ff_funcs) == 3, (
+        f"Expected 3 distinct FFN FunctionProtos, got {len(ff_funcs)}: {ff_funcs}"
+    )
 
     # Verify inner nodes inside the FunctionProtos
     gelu_fn_nodes = [n.op_type for n in fn_map[ff_nodes[0].op_type].node]
@@ -169,7 +173,9 @@ def test_content_hashed_feedforward_polymorphism():
     report = verifier.verify({"input": dummy_input.numpy()})
     assert report.all_passed, f"Cross-verification failed: {report.summary()}"
     for metric in report.metrics.values():
-        assert metric.cosine_similarity >= 0.999999, f"Cosine similarity too low: {metric.cosine_similarity}"
+        assert metric.cosine_similarity >= 0.999999, (
+            f"Cosine similarity too low: {metric.cosine_similarity}"
+        )
 
 
 def test_content_hashed_gated_unit_polymorphism():
@@ -199,7 +205,9 @@ def test_content_hashed_gated_unit_polymorphism():
     report = verifier.verify({"input": dummy_input.numpy()})
     assert report.all_passed, f"Cross-verification failed: {report.summary()}"
     for metric in report.metrics.values():
-        assert metric.cosine_similarity >= 0.999999, f"Cosine similarity: {metric.cosine_similarity}"
+        assert metric.cosine_similarity >= 0.999999, (
+            f"Cosine similarity: {metric.cosine_similarity}"
+        )
 
 
 def test_content_hashed_deep_mlp_polymorphism():
@@ -209,7 +217,9 @@ def test_content_hashed_deep_mlp_polymorphism():
     dummy_input = torch.randn(2, 8, 64)
     raw_onnx = _export_to_onnx(py_model, dummy_input)
 
-    opt_onnx = NeuronCompiler.compile(raw_onnx, mode="function_proto", options={"enable_macro_blocks": True})
+    opt_onnx = NeuronCompiler.compile(
+        raw_onnx, mode="function_proto", options={"enable_macro_blocks": True}
+    )
 
     mlp_nodes = [n for n in opt_onnx.graph.node if n.op_type.startswith("DeepMLP_")]
     assert len(mlp_nodes) == 2, f"Expected 2 DeepMLP nodes, got {len(mlp_nodes)}"
@@ -223,4 +233,6 @@ def test_content_hashed_deep_mlp_polymorphism():
     report = verifier.verify({"input": dummy_input.numpy()})
     assert report.all_passed, f"Cross-verification failed: {report.summary()}"
     for metric in report.metrics.values():
-        assert metric.cosine_similarity >= 0.999999, f"Cosine similarity: {metric.cosine_similarity}"
+        assert metric.cosine_similarity >= 0.999999, (
+            f"Cosine similarity: {metric.cosine_similarity}"
+        )

@@ -3,10 +3,8 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
 
 import onnx
-import torch
 
 from neuron_toolkit.compiler.base import CompilerContext
 from neuron_toolkit.compiler.exporters.onnx_exporter import OnnxExporter
@@ -36,5 +34,8 @@ class PyTorchExporter:
         clean_model = onnx_exporter.export(model, context)
 
         runner = PyTorchRunner(clean_model, registry=self.registry)
-        log.info("Initialized PyTorchRunner for model with %d nodes", len(clean_model.graph.node))
+        log.info(
+            "Initialized PyTorchRunner for model with %d nodes",
+            len(clean_model.graph.node),
+        )
         return runner

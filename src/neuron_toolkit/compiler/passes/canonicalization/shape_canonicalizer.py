@@ -15,7 +15,7 @@ from typing import Any
 
 import numpy as np
 import onnx
-from onnx import helper, numpy_helper
+from onnx import numpy_helper
 
 from neuron_toolkit.compiler.base import CompilerContext, Pass
 
@@ -71,7 +71,11 @@ class ShapeCanonicalizer(Pass):
         modified = False
 
         for node in graph.node:
-            if node.op_type == "Cast" and len(node.input) == 1 and len(node.output) == 1:
+            if (
+                node.op_type == "Cast"
+                and len(node.input) == 1
+                and len(node.output) == 1
+            ):
                 raw_in = node.input[0]
                 if raw_in in init_arrays:
                     to_type = 1
@@ -128,7 +132,8 @@ class ShapeCanonicalizer(Pass):
 
         if hasattr(graph, "input"):
             retained_inputs = [
-                inp for inp in graph.input
+                inp
+                for inp in graph.input
                 if inp.name in consumed_raw or inp.name not in init_arrays
             ]
             del graph.input[:]
@@ -139,15 +144,15 @@ class ShapeCanonicalizer(Pass):
             for n in graph.node
             if (n.name or n.output[0] if n.output else "") not in nodes_to_remove
             and not (
-                n.op_type == "Cast"
-                and n.output
-                and n.output[0] in new_initializers
+                n.op_type == "Cast" and n.output and n.output[0] in new_initializers
             )
         ]
         del graph.node[:]
         graph.node.extend(filtered_nodes)
 
-        log.info("Cast-Initializer Folding: Removed %d Cast nodes", len(nodes_to_remove))
+        log.info(
+            "Cast-Initializer Folding: Removed %d Cast nodes", len(nodes_to_remove)
+        )
         return model
 
     def apply_cast_conv_weight_folding(self, model: onnx.ModelProto) -> onnx.ModelProto:
@@ -180,10 +185,18 @@ class ShapeCanonicalizer(Pass):
         graph_outputs = {o.name for o in graph.output}
 
         for n in graph.node:
-            if n.op_type == "Identity" and len(n.input) == 1 and n.output[0] not in graph_outputs:
+            if (
+                n.op_type == "Identity"
+                and len(n.input) == 1
+                and n.output[0] not in graph_outputs
+            ):
                 rewrites[n.output[0]] = n.input[0]
                 identity_drops.add(n.name or n.output[0])
-            elif n.op_type == "Mul" and len(n.input) == 2 and n.output[0] not in graph_outputs:
+            elif (
+                n.op_type == "Mul"
+                and len(n.input) == 2
+                and n.output[0] not in graph_outputs
+            ):
                 for i in (0, 1):
                     inp, other = n.input[i], n.input[1 - i]
                     if inp in const_map:
@@ -192,7 +205,11 @@ class ShapeCanonicalizer(Pass):
                             rewrites[n.output[0]] = other
                             identity_drops.add(n.name or n.output[0])
                             break
-            elif n.op_type == "Add" and len(n.input) == 2 and n.output[0] not in graph_outputs:
+            elif (
+                n.op_type == "Add"
+                and len(n.input) == 2
+                and n.output[0] not in graph_outputs
+            ):
                 for i in (0, 1):
                     inp, other = n.input[i], n.input[1 - i]
                     if inp in const_map:
@@ -201,14 +218,22 @@ class ShapeCanonicalizer(Pass):
                             rewrites[n.output[0]] = other
                             identity_drops.add(n.name or n.output[0])
                             break
-            elif n.op_type == "Sub" and len(n.input) == 2 and n.output[0] not in graph_outputs:
+            elif (
+                n.op_type == "Sub"
+                and len(n.input) == 2
+                and n.output[0] not in graph_outputs
+            ):
                 inp, other = n.input[1], n.input[0]
                 if inp in const_map:
                     v = const_map[inp]
                     if v.size == 1 and float(v.item()) == 0.0:
                         rewrites[n.output[0]] = other
                         identity_drops.add(n.name or n.output[0])
-            elif n.op_type == "Div" and len(n.input) == 2 and n.output[0] not in graph_outputs:
+            elif (
+                n.op_type == "Div"
+                and len(n.input) == 2
+                and n.output[0] not in graph_outputs
+            ):
                 inp, other = n.input[1], n.input[0]
                 if inp in const_map:
                     v = const_map[inp]
@@ -278,11 +303,10 @@ class ShapeCanonicalizer(Pass):
                         nodes_to_drop.add(n.name or n.output[0])
                         modified = True
                         continue
-                    else:
-                        n.op_type = "Identity"
-                        del n.attribute[:]
-                        modified = True
-                        continue
+                    n.op_type = "Identity"
+                    del n.attribute[:]
+                    modified = True
+                    continue
 
                 # Case 2: Consecutive Transpose nodes
                 prev_node = node_by_output.get(n.input[0])
@@ -301,32 +325,44 @@ class ShapeCanonicalizer(Pass):
                             if n.output[0] not in graph_outputs:
                                 rewrites[n.output[0]] = prev_node.input[0]
                                 nodes_to_drop.add(n.name or n.output[0])
-                                if len(consumer_map.get(prev_node.output[0], [])) <= 1 and prev_node.output[0] not in graph_outputs:
-                                    nodes_to_drop.add(prev_node.name or prev_node.output[0])
+                                if (
+                                    len(consumer_map.get(prev_node.output[0], [])) <= 1
+                                    and prev_node.output[0] not in graph_outputs
+                                ):
+                                    nodes_to_drop.add(
+                                        prev_node.name or prev_node.output[0]
+                                    )
                                 modified = True
                             else:
                                 n.op_type = "Identity"
                                 n.input[0] = prev_node.input[0]
                                 del n.attribute[:]
-                                if len(consumer_map.get(prev_node.output[0], [])) <= 1 and prev_node.output[0] not in graph_outputs:
-                                    nodes_to_drop.add(prev_node.name or prev_node.output[0])
+                                if (
+                                    len(consumer_map.get(prev_node.output[0], [])) <= 1
+                                    and prev_node.output[0] not in graph_outputs
+                                ):
+                                    nodes_to_drop.add(
+                                        prev_node.name or prev_node.output[0]
+                                    )
                                 modified = True
-                        else:
-                            if len(consumer_map.get(prev_node.output[0], [])) <= 1 and prev_node.output[0] not in graph_outputs:
-                                n.input[0] = prev_node.input[0]
-                                for a in n.attribute:
-                                    if a.name == "perm":
-                                        del a.ints[:]
-                                        a.ints.extend(p_comp)
-                                nodes_to_drop.add(prev_node.name or prev_node.output[0])
-                                modified = True
+                        elif (
+                            len(consumer_map.get(prev_node.output[0], [])) <= 1
+                            and prev_node.output[0] not in graph_outputs
+                        ):
+                            n.input[0] = prev_node.input[0]
+                            for a in n.attribute:
+                                if a.name == "perm":
+                                    del a.ints[:]
+                                    a.ints.extend(p_comp)
+                            nodes_to_drop.add(prev_node.name or prev_node.output[0])
+                            modified = True
 
             if not modified:
                 break
 
-            def canonical(name: str) -> str:
-                while name in rewrites:
-                    name = rewrites[name]
+            def canonical(name: str, rewrites_map: dict[str, str] = rewrites) -> str:
+                while name in rewrites_map:
+                    name = rewrites_map[name]
                 return name
 
             new_nodes: list[onnx.NodeProto] = []
@@ -346,7 +382,9 @@ class ShapeCanonicalizer(Pass):
     # -------------------------------------------------------------------------
     # Rule: Common Subexpression Elimination (CSE)
     # -------------------------------------------------------------------------
-    def apply_common_subexpression_elimination(self, model: onnx.ModelProto) -> onnx.ModelProto:
+    def apply_common_subexpression_elimination(
+        self, model: onnx.ModelProto
+    ) -> onnx.ModelProto:
         """Deduplicate identical deterministic subexpressions across the graph."""
         graph = model.graph
         rewrites: dict[str, str] = {}
@@ -388,7 +426,9 @@ class ShapeCanonicalizer(Pass):
             "Reshape",
         }
         for _ in range(5):
-            sig_map: dict[tuple[str, tuple[str, ...], tuple[tuple[str, Any], ...]], str] = {}
+            sig_map: dict[
+                tuple[str, tuple[str, ...], tuple[tuple[str, Any], ...]], str
+            ] = {}
             new_drops = 0
             for n in graph.node:
                 if (n.name or n.output[0]) in nodes_to_drop:
@@ -440,7 +480,10 @@ class ShapeCanonicalizer(Pass):
 
         del graph.node[:]
         graph.node.extend(rewritten_nodes)
-        log.info("Common Subexpression Elimination: Removed %d duplicate ops", len(nodes_to_drop))
+        log.info(
+            "Common Subexpression Elimination: Removed %d duplicate ops",
+            len(nodes_to_drop),
+        )
         return self.apply_dead_code_elimination(model)
 
     # -------------------------------------------------------------------------

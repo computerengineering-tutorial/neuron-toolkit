@@ -24,12 +24,11 @@ import argparse
 import collections
 import json
 import logging
-from pathlib import Path
 import sys
 import time
+from pathlib import Path
 from typing import Any
 
-import numpy as np
 import onnx
 
 # Ensure src is in sys.path
@@ -42,13 +41,17 @@ logging.basicConfig(level=logging.WARNING, format="%(levelname)s: %(message)s")
 log = logging.getLogger("eval_engine")
 
 
-def evaluate_single_model(model_path: Path, mode: str = "function_proto") -> dict[str, Any]:
+def evaluate_single_model(
+    model_path: Path, mode: str = "function_proto"
+) -> dict[str, Any]:
     """Run optimization and cross-verification on a single ONNX model."""
     t0 = time.perf_counter()
     res = {
         "path": str(model_path),
         "name": model_path.name,
-        "category": model_path.parent.name if model_path.parent.name != "models" else "root",
+        "category": model_path.parent.name
+        if model_path.parent.name != "models"
+        else "root",
         "passed": False,
         "error": None,
         "original_nodes": 0,
@@ -70,7 +73,9 @@ def evaluate_single_model(model_path: Path, mode: str = "function_proto") -> dic
     try:
         orig_model = onnx.load(str(model_path), load_external_data=True)
         res["original_nodes"] = len(orig_model.graph.node)
-        res["opset"] = orig_model.opset_import[0].version if orig_model.opset_import else -1
+        res["opset"] = (
+            orig_model.opset_import[0].version if orig_model.opset_import else -1
+        )
 
         t_opt_start = time.perf_counter()
         opt_model = NeuronCompiler.compile(orig_model, mode=mode)
@@ -87,9 +92,21 @@ def evaluate_single_model(model_path: Path, mode: str = "function_proto") -> dic
         standard_breakdown = collections.Counter()
         for node in opt_model.graph.node:
             if getattr(node, "domain", "") == "custom.pytorch" or node.op_type in {
-                "Linear", "Gelu", "RotaryEmbedding", "RMSNorm", "GroupNorm", "SplitQKV",
-                "ScaledDotProductAttention", "GatedUnit", "MergeHeads", "FeedForward",
-                "AxialRearrange", "SoftmaxMatMul", "TensorRoute", "Unbind", "SiLU"
+                "Linear",
+                "Gelu",
+                "RotaryEmbedding",
+                "RMSNorm",
+                "GroupNorm",
+                "SplitQKV",
+                "ScaledDotProductAttention",
+                "GatedUnit",
+                "MergeHeads",
+                "FeedForward",
+                "AxialRearrange",
+                "SoftmaxMatMul",
+                "TensorRoute",
+                "Unbind",
+                "SiLU",
             }:
                 custom_breakdown[node.op_type] += 1
             else:
@@ -159,13 +176,24 @@ def run_evaluation(
     passed_count = 0
     failed_count = 0
 
-    cat_stats: dict[str, dict[str, Any]] = collections.defaultdict(lambda: {
-        "total": 0, "passed": 0, "failed": 0, "orig_nodes": 0, "opt_nodes": 0, "custom_ops": collections.Counter()
-    })
+    cat_stats: dict[str, dict[str, Any]] = collections.defaultdict(
+        lambda: {
+            "total": 0,
+            "passed": 0,
+            "failed": 0,
+            "orig_nodes": 0,
+            "opt_nodes": 0,
+            "custom_ops": collections.Counter(),
+        }
+    )
 
     for idx, m_path in enumerate(filtered_models, 1):
         rel_path = m_path.relative_to(models_dir)
-        print(f"[{idx:3d}/{len(filtered_models):3d}] Evaluating {str(rel_path):<50} ... ", end="", flush=True)
+        print(
+            f"[{idx:3d}/{len(filtered_models):3d}] Evaluating {rel_path!s:<50} ... ",
+            end="",
+            flush=True,
+        )
 
         res = evaluate_single_model(m_path)
         results.append(res)
@@ -183,7 +211,9 @@ def run_evaluation(
             total_orig_nodes += res["original_nodes"]
             total_opt_nodes += res["simplified_nodes"]
             total_eliminated += res["eliminated_nodes"]
-            print(f"PASS (cos={res['min_cosine_sim']:.6f}, diff={res['max_abs_diff']:.1e}, {res['original_nodes']}->{res['simplified_nodes']} nodes, -{res['reduction_pct']}%)")
+            print(
+                f"PASS (cos={res['min_cosine_sim']:.6f}, diff={res['max_abs_diff']:.1e}, {res['original_nodes']}->{res['simplified_nodes']} nodes, -{res['reduction_pct']}%)"
+            )
         else:
             failed_count += 1
             cat_stats[cat]["failed"] += 1
@@ -193,7 +223,11 @@ def run_evaluation(
     # Aggregate Summary
     total_tested = len(filtered_models)
     pass_rate = (passed_count / max(1, total_tested)) * 100.0
-    overall_red_pct = (total_eliminated / max(1, total_orig_nodes)) * 100.0 if total_orig_nodes > 0 else 0.0
+    overall_red_pct = (
+        (total_eliminated / max(1, total_orig_nodes)) * 100.0
+        if total_orig_nodes > 0
+        else 0.0
+    )
 
     summary = {
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -210,7 +244,12 @@ def run_evaluation(
     }
 
     for cat, data in cat_stats.items():
-        c_red = ((data["orig_nodes"] - data["opt_nodes"]) / max(1, data["orig_nodes"])) * 100.0 if data["orig_nodes"] > 0 else 0.0
+        c_red = (
+            ((data["orig_nodes"] - data["opt_nodes"]) / max(1, data["orig_nodes"]))
+            * 100.0
+            if data["orig_nodes"] > 0
+            else 0.0
+        )
         summary["category_summary"][cat] = {
             "total": data["total"],
             "passed": data["passed"],
@@ -227,15 +266,23 @@ def run_evaluation(
 
     # Print Final Summary Table
     print("\n" + "=" * 90)
-    print("                       CONSOLIDATED DL ZOO EVALUATION MATRIX                          ")
+    print(
+        "                       CONSOLIDATED DL ZOO EVALUATION MATRIX                          "
+    )
     print("=" * 90)
-    print(f"{'Category':<24} | {'Total':<6} | {'Pass':<5} | {'Fail':<5} | {'Orig Nodes':<10} | {'Opt Nodes':<10} | {'Reduction %':<11} | {'Status'}")
+    print(
+        f"{'Category':<24} | {'Total':<6} | {'Pass':<5} | {'Fail':<5} | {'Orig Nodes':<10} | {'Opt Nodes':<10} | {'Reduction %':<11} | {'Status'}"
+    )
     print("-" * 90)
     for cat, data in summary["category_summary"].items():
         st = "ALL PASS" if data["failed"] == 0 else f"{data['failed']} FAIL"
-        print(f"{cat:<24} | {data['total']:<6} | {data['passed']:<5} | {data['failed']:<5} | {data['orig_nodes']:<10} | {data['opt_nodes']:<10} | {data['reduction_pct']:<10.1f}% | {st}")
+        print(
+            f"{cat:<24} | {data['total']:<6} | {data['passed']:<5} | {data['failed']:<5} | {data['orig_nodes']:<10} | {data['opt_nodes']:<10} | {data['reduction_pct']:<10.1f}% | {st}"
+        )
     print("=" * 90)
-    print(f"TOTAL: {passed_count} / {total_tested} PASSED ({pass_rate:.1f}% Pass Rate) | Overall Node Reduction: {overall_red_pct:.1f}%")
+    print(
+        f"TOTAL: {passed_count} / {total_tested} PASSED ({pass_rate:.1f}% Pass Rate) | Overall Node Reduction: {overall_red_pct:.1f}%"
+    )
     print(f"Full benchmark results written to: {output_json.resolve()}")
     print("=" * 90)
 
@@ -243,11 +290,27 @@ def run_evaluation(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Evaluate DL Model Zoo against Neuron Toolkit")
-    parser.add_argument("--models-dir", type=Path, default=Path(".helper/models"), help="Path to models root")
-    parser.add_argument("--category", type=str, default=None, help="Filter by category folder name")
-    parser.add_argument("--opset", type=int, default=None, help="Filter by opset version")
-    parser.add_argument("--output-json", type=Path, default=Path(".helper/evals/benchmark_results.json"), help="Output JSON path")
+    parser = argparse.ArgumentParser(
+        description="Evaluate DL Model Zoo against Neuron Toolkit"
+    )
+    parser.add_argument(
+        "--models-dir",
+        type=Path,
+        default=Path(".helper/models"),
+        help="Path to models root",
+    )
+    parser.add_argument(
+        "--category", type=str, default=None, help="Filter by category folder name"
+    )
+    parser.add_argument(
+        "--opset", type=int, default=None, help="Filter by opset version"
+    )
+    parser.add_argument(
+        "--output-json",
+        type=Path,
+        default=Path(".helper/evals/benchmark_results.json"),
+        help="Output JSON path",
+    )
     args = parser.parse_args()
 
     run_evaluation(

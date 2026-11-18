@@ -14,8 +14,7 @@ import json
 from pathlib import Path
 
 import torch
-import torch.nn as nn
-import onnx
+from torch import nn
 
 
 class LinearMatMulAdd(nn.Module):
@@ -94,7 +93,10 @@ def generate_all() -> None:
         str(comb_path),
         input_names=["input"],
         output_names=["output"],
-        dynamic_axes={"input": {0: "batch", 1: "time"}, "output": {0: "batch", 1: "time"}},
+        dynamic_axes={
+            "input": {0: "batch", 1: "time"},
+            "output": {0: "batch", 1: "time"},
+        },
         opset_version=14,
         dynamo=False,
     )

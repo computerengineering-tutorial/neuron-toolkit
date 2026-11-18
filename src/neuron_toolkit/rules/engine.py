@@ -8,11 +8,10 @@ Stage 3: Target Exporters (ONNX / Netron FunctionProto / PyTorch)
 
 from __future__ import annotations
 
-import copy
 import json
 import logging
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 import onnx
 
@@ -52,7 +51,9 @@ class JSONRuleEngine:
         self.rules.append(rule)
         return rule
 
-    def load_rules_from_dir(self, directory: str | Path | None = None) -> list[JSONRule]:
+    def load_rules_from_dir(
+        self, directory: str | Path | None = None
+    ) -> list[JSONRule]:
         """Load all JSON rules from a directory (defaults to built-in definitions)."""
         if directory is None:
             directory = Path(__file__).parent / "definitions"
@@ -75,7 +76,9 @@ class JSONRuleEngine:
         """
         context = CompilerContext(
             mode=self.mode,
-            rule_ids=rule_ids if rule_ids is not None else ([r.rule_id for r in self.rules] if self.rules else None),
+            rule_ids=rule_ids
+            if rule_ids is not None
+            else ([r.rule_id for r in self.rules] if self.rules else None),
         )
         return self.pipeline.run(target, context)
 
@@ -141,7 +144,9 @@ class JSONRuleEngine:
 
     def apply_index_tensor_routing(self, model: onnx.ModelProto) -> onnx.ModelProto:
         """Fuse index routing."""
-        return self.pipeline.axial_pass.apply_index_tensor_routing(model, mode=self.mode)
+        return self.pipeline.axial_pass.apply_index_tensor_routing(
+            model, mode=self.mode
+        )
 
     def _attach_tensor_route_function_def(self, model: onnx.ModelProto) -> None:
         self.pipeline.axial_pass._attach_tensor_route_function_def(model)
@@ -166,14 +171,20 @@ class JSONRuleEngine:
 
     def apply_softmax_matmul_fusion(self, model: onnx.ModelProto) -> onnx.ModelProto:
         """Fuse SoftmaxMatMul."""
-        return self.pipeline.attn_pass.apply_softmax_matmul_fusion(model, mode=self.mode)
+        return self.pipeline.attn_pass.apply_softmax_matmul_fusion(
+            model, mode=self.mode
+        )
 
     def _attach_softmax_matmul_function_def(self, model: onnx.ModelProto) -> None:
         self.pipeline.attn_pass._attach_softmax_matmul_function_def(model)
 
-    def apply_scaled_dot_product_attention_fusion(self, model: onnx.ModelProto) -> onnx.ModelProto:
+    def apply_scaled_dot_product_attention_fusion(
+        self, model: onnx.ModelProto
+    ) -> onnx.ModelProto:
         """Fuse SDPA."""
-        return self.pipeline.attn_pass.apply_scaled_dot_product_attention_fusion(model, mode=self.mode)
+        return self.pipeline.attn_pass.apply_scaled_dot_product_attention_fusion(
+            model, mode=self.mode
+        )
 
     def _attach_sdpa_function_def(self, model: onnx.ModelProto) -> None:
         self.pipeline.attn_pass._attach_sdpa_function_def(model)
@@ -192,9 +203,13 @@ class JSONRuleEngine:
     def _attach_feedforward_function_def(self, model: onnx.ModelProto) -> None:
         self.pipeline.ffn_pass._attach_feedforward_function_def(model)
 
-    def apply_feedforward_swiglu_fusion(self, model: onnx.ModelProto) -> onnx.ModelProto:
+    def apply_feedforward_swiglu_fusion(
+        self, model: onnx.ModelProto
+    ) -> onnx.ModelProto:
         """Fuse FeedForward SwiGLU."""
-        return self.pipeline.ffn_pass.apply_feedforward_swiglu_fusion(model, mode=self.mode)
+        return self.pipeline.ffn_pass.apply_feedforward_swiglu_fusion(
+            model, mode=self.mode
+        )
 
     def apply_merge_heads_fusion(self, model: onnx.ModelProto) -> onnx.ModelProto:
         """Fuse MergeHeads."""
@@ -205,7 +220,9 @@ class JSONRuleEngine:
 
     def apply_axial_rearrange_fusion(self, model: onnx.ModelProto) -> onnx.ModelProto:
         """Fuse AxialRearrange."""
-        return self.pipeline.axial_pass.apply_axial_rearrange_fusion(model, mode=self.mode)
+        return self.pipeline.axial_pass.apply_axial_rearrange_fusion(
+            model, mode=self.mode
+        )
 
     def _attach_axial_rearrange_function_def(self, model: onnx.ModelProto) -> None:
         self.pipeline.axial_pass._attach_axial_rearrange_function_def(model)
@@ -224,7 +241,9 @@ class JSONRuleEngine:
     def _attach_split_qkv_function_def(self, model: onnx.ModelProto) -> None:
         self.pipeline.attn_pass._attach_split_qkv_function_def(model)
 
-    def apply_common_subexpression_elimination(self, model: onnx.ModelProto) -> onnx.ModelProto:
+    def apply_common_subexpression_elimination(
+        self, model: onnx.ModelProto
+    ) -> onnx.ModelProto:
         """Eliminate duplicate subexpressions."""
         return self.pipeline.shape_pass.apply_common_subexpression_elimination(model)
 

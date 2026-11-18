@@ -1,136 +1,176 @@
-# System Architecture
+# System Architecture & Technical Design
 
-## Overview
-
-`neuron-toolkit` is built as a **decoupled, 6-layer architecture** for inspecting, analyzing, optimizing, and transforming neural network computational graphs across formats (ONNX, TFLite, and custom IR).
+`neuron-toolkit` is built as an extensible, decoupled multi-layer compiler and graph transformation platform. It bridges neural computational graph formats (ONNX, TFLite, Safetensors, and custom IR), providing tools for pattern recognition, optimization, hardware profiling, native execution, and numerical verification.
 
 ---
 
-## 6-Layer Decoupled Architecture
+## High-Level Architecture Diagram
 
 ```mermaid
 flowchart TD
-    subgraph Layer1["Layer 1: Frontend Adapters & Ingestion"]
-        P_ONNX["ONNXParser\n(.onnx, ModelProto)"]
-        P_TFL["TFLiteParser\n(.tflite, bytes)"]
-        P_JSON["JSON Graph Loader\n(Netron JSON)"]
+    subgraph Layer1["Layer 1: Frontend Adapters & Memory Management"]
+        P_ONNX["ONNXParser\n(LazyTensorMap, External Data Fallback)"]
+        P_TFL["TFLiteParser\n(FlatBuffer Schema, Quantization, Signatures)"]
+        P_JSON["Netron JSON Loader\n(Statistical Weights & Random Seed Ingestion)"]
     end
 
     subgraph Layer2["Layer 2: Unified Intermediate Representation (IR)"]
-        IR["IRGraph\n(Framework-agnostic DAG)"]
-        IR_N["IRNode (op_type, inputs, outputs, attrs)"]
-        IR_T["IRTensor (name, shape, dtype, data, quant)"]
+        IR["IRGraph\n(Framework-Agnostic Computational DAG)"]
+        IR_N["IRNode (op_type, inputs, outputs, attributes, domain)"]
+        IR_T["IRTensor (name, shape, dtype, data, quant_params)"]
         IR --- IR_N
         IR --- IR_T
     end
 
-    subgraph Layer3["Layer 3: Query & Pattern Engine"]
-        Q["NeuronQuery\n(Composable traversal, filters, sets, BFS)"]
-        P["Pattern Engine\n(Pattern DSL, Commutative Matcher, Captures)"]
+    subgraph Layer3["Layer 3: Query & Pattern Matching Engine"]
+        Q["NeuronQuery\n(BFS/DFS, Set Operations, Backend Graph Memoization)"]
+        P["Pattern Engine\n(Pattern DSL, Commutative Permutations, Root-Op Indexing)"]
     end
 
-    subgraph Layer4["Layer 4: Transformations & Passes"]
-        PM["PassManager\n(Pass pipeline & statistics)"]
-        RW["NeuronRewriter\n(Transactional graph surgery & Kahn's sorting)"]
-        RR["RewriteRule Engine\n(Declarative pattern -> replacement)"]
-        EG["Equality Saturation\n(E-Graph, Congruence Closure & DP Extractor)"]
-        TP["Transformer Passes\n(RMSNorm, SwiGLU, SDPA, RoPE)"]
+    subgraph Layer4["Layer 4: Transformation Passes & Equality Saturation"]
+        PM["PassManager\n(run & run_until_fixed_point)"]
+        RW["NeuronRewriter\n(Transactional AST Surgery & Kahn's Topological Sorter)"]
+        EG["Equality Saturation\n(EGraph, Congruence Closure, Cost-Model DP Extractor)"]
+        TP["Transformer Standard Passes\n(RMSNorm, SwiGLU, SDPA, RoPE)"]
         PM --- RW
-        PM --- RR
         PM --- TP
         EG --- RW
     end
 
-    subgraph Layer5["Layer 5: Serialization & Interchange"]
-        E_JSON["Netron Graph JSON"]
-        E_SAFE["Zero-Dependency Safetensors"]
-        E_VIZ["Visualization Engine\n(Mermaid & Standalone HTML)"]
+    subgraph Layer5["Layer 5: 3-Stage Universal Compiler Pipeline"]
+        NC["NeuronCompiler & OptimizationPipeline"]
+        S1["Stage 1: Micro-Canonicalization\n(Activation, Math, Norm, Shape, StaticFolder)"]
+        S2["Stage 2: Macro-Block Synthesis\n(Attention, FeedForward, MacroBlock, Axial)"]
+        S3["Stage 3: Target Exporters\n(Netron FunctionProto Dual-Mode & PyTorch Exporter)"]
+        NC --> S1 --> S2 --> S3
     end
 
-    subgraph Layer6["Layer 6: Verification & Developer Tooling"]
-        VER["GraphVerifier\n(Differential PyTorch/ORT/LiteRT execution)"]
-        PROF["Hardware Profiler\n(FLOPs, Working Set Memory, Roofline Model)"]
-        CLI["Neuron Developer CLI\n(inspect, profile, optimize, diff, export)"]
+    subgraph Layer6["Layer 6: Architecture Recognition & Subgraph Fingerprinting"]
+        ABP["ArchitectureBlockPredictor\n(Heuristic & Signature-based DL Topology Matcher)"]
+        AC["ArchitectureCatalog\n(Declarative JSON Macro Block Signatures)"]
+        FP["Polymorphic Fingerprinter\n(Deterministic 8-char SHA-256 Monomorphization)"]
+        ABP --- AC
+        ABP --- FP
+    end
+
+    subgraph Layer7["Layer 7: Declarative JSON Rules Engine"]
+        JRE["JSONRuleEngine\n(Declarative Rule Loading, Filtering, & Execution)"]
+        JRS["JSONRule Schema\n(NodePattern, RuleCondition, RuleAction)"]
+        JRD["Built-in Rules Catalog\n(29+ Declarative Rewrite Descriptors)"]
+        JRE --- JRS
+        JRE --- JRD
+    end
+
+    subgraph Layer8["Layer 8: Native PyTorch Runtime & Cross-Verification"]
+        PR["PyTorchRunner\n(Standalone Graph Execution Engine, Topo-sorted)"]
+        REG["OpRegistry\n(Standard ONNX & Custom Operators, AST Safe Math)"]
+        CV["CrossVerifier\n(Differential Parity: ORT vs PyTorchRunner)"]
+        PR --- REG
+        CV --- PR
+    end
+
+    subgraph Layer9["Layer 9: Profiling, Verification & Interchange"]
+        PROF["Hardware Profiler\n(FLOPs/MACs, Memory Lifetimes, Roofline Latency)"]
+        SAFE["Zero-Dependency Safetensors\n(Serialization & In-Place Weight Replacement)"]
+        VIZ["Visualizers\n(Mermaid Flowcharts & Zero-Dependency Interactive HTML)"]
     end
 
     Layer1 --> Layer2
     Layer2 --> Layer3
     Layer3 --> Layer4
-    Layer4 --> Layer2
-    Layer2 --> Layer5
-    Layer2 --> Layer6
+    Layer4 --> Layer5
+    Layer5 --> Layer6
+    Layer5 --> Layer7
+    Layer5 --> Layer8
+    Layer2 --> Layer9
+    Layer8 --> Layer9
 ```
 
 ---
 
-## Subsystem Internals
+## Subsystem Details & Technical Deep Dive
 
-### 1. Unified Intermediate Representation (`neuron_toolkit.ir`)
+### 1. Ingestion & Frontend Parsers (`neuron_toolkit.backends`)
 
-`neuron-toolkit` decouples analysis and optimization algorithms from proprietary binary protobuf and flatbuffer definitions:
+`neuron-toolkit` decouples analysis and optimization algorithms from underlying file formats:
 
-- **`IRTensor`**: Strongly-typed dataclass representing activation tensors or static initializers with symbolic/dynamic shapes, numerical data types, and quantization parameters.
-- **`IRNode`**: Strongly-typed dataclass encapsulating operator type, name, ordered input/output tensor references, domain, and normalized attribute dictionaries.
-- **`IRGraph`**: Unified Directed Acyclic Graph (DAG) with $O(1)$ producer and consumer lookups, topological order validation, and JSON serialization.
-- **`BackendAdapter`**: SPI protocol implemented by `ONNXAdapter` and `TFLiteAdapter` for format ingestion and emission.
-
----
-
-### 2. Query Engine (`NeuronQuery`)
-
-`NeuronQuery` provides an immutable, fluent builder for querying nodes. Every filtering operation (`.op()`, `.filter()`, `.name()`) returns a cloned `NeuronQuery` instance.
-
-- **True BFS & Multi-Source Traversals**: Computes `ancestors()` and `descendants()` using double-ended queues (`collections.deque`) with unbounded maximum traversal limits (`max_depth=None`).
-- **Evaluation Terminals**: Terminate queries with `.all()`, `.to_list()`, `.first()`, `.last()`, or `.count()`.
+- **`ONNXParser`**: Parses `.onnx` models with automatic shape inference. Includes graceful degradation for detached external data buffers (`load_external_data=False`) to allow inspecting giant multi-gigabyte models without requiring raw tensor storage.
+- **`LazyTensorMap`**: Memory-efficient dictionary mapping weight names to NumPy arrays with on-demand zero-copy array decoding and automatic memory eviction.
+- **`TFLiteParser` & `TFLiteRewriter`**: Deep FlatBuffer ingestion and serialization supporting quantization parameters, sparsity descriptors, metadata blocks, signature defs, and custom operator options.
+- **`Netron JSON Loader`**: Reconstructs complete computational DAGs from Netron-compatible JSON files, with weight buffer generation using reproducible seeds or HuggingFace Safetensors.
 
 ---
 
-### 3. Pattern Matching Engine (`PatternDetector`)
+### 2. High-Performance Query Engine (`neuron_toolkit.query`)
 
-- **Extensible Commutative Matching**: Automatically permutes inputs for all commutative operators (`Add`, `Mul`, `And`, `Or`, `Xor`, `Equal`, `Min`, `Max`, `Bitwise*`) or nodes explicitly tagged with `.commutative()`.
-- **Referential Consistency**: Guarantees multi-reference variables bind to identical node instances.
-- **Declarative `RewriteRule`**: Pairs a symbolic `Pattern` with transformation callbacks or operator replacements.
+The `NeuronQuery` fluent builder provides SQL-like filtering and traversal over graph nodes:
 
----
-
-### 4. Transformation Passes (`PassManager`)
-
-- **`PassManager`**: Orchestrates pipelines of `BasePass` instances, validating graph invariants, handling rollback on error, and reporting node reduction statistics.
-- **Standard & Transformer Passes**:
-  - `FuseConvBN`: Fuses BatchNormalization scale, bias, mean, and variance into preceding Convolution weights.
-  - `DeadCodeElimination`: Recursively eliminates unconsumed orphan nodes that do not contribute to graph outputs.
-  - `ConstantFolding`: Statically evaluates operations whose inputs are constant initializers at compile-time (supports Add, Sub, Mul, Div, Neg, Relu).
-  - `CommonSubexpressionElimination` (`CSE`): Identifies and eliminates redundant operations consuming identical inputs.
-  - `FuseGELU`: Fuses Erf-based or Tanh-approximated GELU subgraphs into a unified `Gelu` operator.
-  - `FuseLayerNorm`: Fuses 7-op normalization subgraphs (ReduceMean, Sub, Pow, Div, Sqrt, Add, Mul) into `LayerNormalization`.
-  - `FuseConvActivation`: Combines `Conv` followed by `Relu`, `LeakyRelu`, or `Clip` into a single `FusedConv` operator.
-  - `FuseRMSNorm`: Fuses multi-op RMSNorm subgraphs into unified `RMSNorm`.
-  - `FuseSwiGLU`: Fuses SiLU/Sigmoid gating branches and projections into `SwiGLU` / `GeGLU`.
-  - `FuseAttention`: Fuses Scaled Dot-Product Attention into `ScaledDotProductAttention`.
-  - `FuseRotaryEmbedding`: Fuses RoPE slicing, negation, and rotation into `RotaryEmbedding`.
+- **Backend Memoization**: Caches topological dependency DAGs (`_cached_nx_graph`, `_cached_rx_graph`, `_cached_output_map`, `_cached_node_to_idx`) directly on the backend parser. Subsequent queries reuse graphs in $O(1)$ time without rebuilding.
+- **Optimized Traversal**: Fast multi-source Breadth-First Search (BFS) using double-ended queues (`collections.deque`) with early termination and NetworkX `descendants()` / `ancestors()` delegation for unbounded traversals.
+- **Set Operations**: First-class support for boolean set algebra (`q1 | q2`, `q1 & q2`, `q1 - q2`).
 
 ---
 
-### 5. Equality Saturation & E-Graphs (`neuron_toolkit.egraph`)
+### 3. Pattern Matching Engine (`neuron_toolkit.pattern`)
 
-Solves the compiler phase ordering problem by applying rewrites non-destructively:
-
-- **`EGraph`**: Manages equivalence classes (`EClass`) containing equivalent operator nodes (`ENode`).
-- **Incremental Congruence Closure (`rebuild()`)**: Propagates equivalences upward to parent expressions using union-find with path compression.
-- **Optimal Extraction (`Extractor`)**: Uses dynamic programming / Dijkstra on the e-graph using `CostModel` (`NodeCountCostModel` or `ComputeCostModel`) to extract the globally optimal DAG.
+- **Root-Op Indexing**: The `PatternDetector` indexes all graph nodes by opcode (`op_to_nodes`). Pattern searches immediately filter candidates down to matching root operators, eliminating expensive full-graph traversals.
+- **Commutative Input Permutations**: Automatically tests permutations for commutative operations (`Add`, `Mul`, `Min`, `Max`, `Equal`, `LogicalAnd`, `LogicalOr`).
+- **Declarative Constraints**: Match constraints on tensor shapes, ranks, numerical dtypes, and attribute dictionaries.
 
 ---
 
-### 6. Hardware-Aware Profiling & Memory Planning (`neuron_toolkit.profiler`)
+### 4. 3-Stage Universal Compiler Pipeline (`neuron_toolkit.compiler`)
 
-- **`FLOPsProfiler`**: Analytical FLOPs and MACs calculation for Convolutions, MatMuls, Attention, Normalization, and elementwise activations.
-- **`MemoryTimelineSimulator`**: Simulates activation tensor lifetimes, evaluates peak working set vs naive memory, and calculates buffer reuse potential via greedy interval coloring.
-- **`RooflineAnalysis`**: Evaluates Arithmetic Intensity against hardware Ridge Points (`A100`, `H100`, `RTX_4090`, `M3_MAX`, `ARM_CORTEX`) and predicts lower-bound latency.
+The compiler layer introduces an enterprise-grade, sequential 3-stage optimization pipeline:
+
+```
+Stage 1: Micro-Canonicalization -> Stage 2: Macro-Block Synthesis -> Stage 3: Target Exporters
+```
+
+#### Stage 1: Micro-Canonicalization
+
+Standardizes low-level operator expressions and eliminates redundancies:
+
+- **`ActivationCanonicalizer`**: Canonicalizes ERF GELU, Tanh GELU, SiLU, HardSwish, Mish, Relu6, and Softmax.
+- **`MathCanonicalizer`**: Continuous constant arithmetic collapse and Linear Gemm fusion. Deduplicates transposed initializers on shared weight matrices.
+- **`NormCanonicalizer`**: Opset-compatible LayerNorm, RMSNorm, GroupNorm, and SkipNorm fusions with version-dependent upgrades (Opset 17, 21, 23).
+- **`ShapeCanonicalizer`**: Traverses control-flow subgraphs (`If`, `Loop`) to fold Cast initializers, perform DCE, and apply CSE while safeguarding exposed graph output constants.
+- **`StaticFolder`**: Statically folds constant shapes, slice expressions, and identity ScatterND updates.
+
+#### Stage 2: Macro-Block Synthesis
+
+Synthesizes high-level neural building blocks:
+
+- **`AttentionSynthesizer`**: Fuses ScaledDotProductAttention, SplitQKV, MergeHeads, RoPE, and GatedAttention.
+- **`FeedForwardSynthesizer`**: Fuses monolithic MLP and SwiGLU FFN blocks with content-hashed FunctionProtos.
+- **`MacroBlockSynthesizer`**: Fuses SpatialGatingUnit (gMLP), Highway networks, Squeeze-and-Excitation (3D sequence and 4D spatial), and DeepMLP blocks.
+- **`AxialSynthesizer`**: Fuses Conformer multi-dimensional tensor rearrangements and tensor unbinding.
+
+#### Stage 3: Target Exporters
+
+- **`OnnxExporter`**: Dual-mode export generating either Netron-expandable `FunctionProto` graphs or plain custom ops.
+- **`PyTorchExporter`**: Lowers optimized graphs directly into executable `PyTorchRunner` objects.
 
 ---
 
-### 7. Visualization & Developer Tooling
+### 5. Semantic Architecture Recognition & Fingerprinting
 
-- **`to_mermaid()`**: Emits standard GitHub-flavored Mermaid flowchart diagrams.
-- **`to_html()`**: Generates standalone, interactive HTML graph visualizations without external dependencies.
-- **CLI (`neuron`)**: Command-line tool with `inspect`, `profile`, `optimize`, `diff`, and `export` subcommands.
+- **`ArchitectureBlockPredictor`**: Automatically infers neural architecture family (Transformer, Diffusion DiT, Mamba SSM, ConvNeXt, GNN, ResMLP, RNN) and structural block confidence scores directly from graph topology.
+- **Polymorphic Subgraph Fingerprinting (`compute_subgraph_fingerprint`)**: Computes deterministic SHA-256 content hashes of subgraphs to allow **polymorphic function monomorphization** (`FeedForward_swiglu_a1b2c3d4`). Solves the ONNX FunctionProto collision problem when structurally identical subnets have different inner hyperparameters.
+- **`ArchitectureCatalog` & `SignatureEngine`**: Loads and matches declarative JSON block signatures from catalog files.
+
+---
+
+### 6. Declarative JSON Rules Engine (`neuron_toolkit.rules`)
+
+- **`JSONRuleEngine`**: Loads declarative JSON rules from `definitions/` to transform computational graphs without writing imperative Python logic.
+- **Declarative Schema**: Encapsulates `NodePattern`, topological predicates (`RuleCondition`), and rewriting targets (`RuleAction`).
+- **`export_simplified_onnx`**: Serializes transformed graphs into Netron-compatible dual-mode ONNX representations with attached `FunctionProto` subroutines.
+
+---
+
+### 7. PyTorch Native Runtime & Differential Cross-Verification (`neuron_toolkit.runtime`)
+
+- **`PyTorchRunner`**: Standalone, vectorized execution engine for standard ONNX graphs and custom operators without requiring compilation of C++ ONNX Runtime kernels.
+- **`OpRegistry`**: Extensible registry mapping ONNX standard ops and custom operators (`custom.pytorch`) to PyTorch implementations. Includes an AST-based safe math evaluator (`_safe_eval_math`) for continuous math expressions stored in node docstrings.
+- **`CrossVerifier`**: Differential testing harness running the unoptimized model on ONNX Runtime and the optimized model on `PyTorchRunner` to guarantee numerical equivalence across outputs using Mean Absolute Error, Max Absolute Error, Mean Squared Error, and Cosine Similarity.

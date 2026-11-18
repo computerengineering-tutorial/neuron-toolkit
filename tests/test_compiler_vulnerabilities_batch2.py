@@ -1,18 +1,27 @@
-import collections
 import numpy as np
 import onnx
-from onnx import helper, numpy_helper, TensorProto
-import pytest
 import torch
-import torch.nn.functional as F
+from onnx import TensorProto, helper, numpy_helper
 
-from neuron_toolkit.compiler.passes.canonicalization.math_canonicalizer import MathCanonicalizer
-from neuron_toolkit.compiler.passes.canonicalization.norm_canonicalizer import NormCanonicalizer
-from neuron_toolkit.compiler.passes.canonicalization.shape_canonicalizer import ShapeCanonicalizer
+from neuron_toolkit.compiler.passes.canonicalization.activation_canonicalizer import (
+    ActivationCanonicalizer,
+)
+from neuron_toolkit.compiler.passes.canonicalization.math_canonicalizer import (
+    MathCanonicalizer,
+)
+from neuron_toolkit.compiler.passes.canonicalization.norm_canonicalizer import (
+    NormCanonicalizer,
+)
+from neuron_toolkit.compiler.passes.canonicalization.shape_canonicalizer import (
+    ShapeCanonicalizer,
+)
 from neuron_toolkit.compiler.passes.canonicalization.static_folder import StaticFolder
-from neuron_toolkit.compiler.passes.canonicalization.activation_canonicalizer import ActivationCanonicalizer
-from neuron_toolkit.compiler.passes.synthesis.attention_synthesizer import AttentionSynthesizer
-from neuron_toolkit.compiler.passes.synthesis.macro_block_synthesizer import MacroBlockSynthesizer
+from neuron_toolkit.compiler.passes.synthesis.attention_synthesizer import (
+    AttentionSynthesizer,
+)
+from neuron_toolkit.compiler.passes.synthesis.macro_block_synthesizer import (
+    MacroBlockSynthesizer,
+)
 from neuron_toolkit.runtime.registry import OpRegistry
 
 
@@ -24,8 +33,18 @@ def test_vuln_19_continuous_math_illegal_folded_expr_attribute():
 
     folded_expr attribute to standard ONNX Constant node, violating ONNX schema.
     """
-    c1 = helper.make_node("Constant", inputs=[], outputs=["c1"], value=numpy_helper.from_array(np.array([1.0], dtype=np.float32), name="c1"))
-    c2 = helper.make_node("Constant", inputs=[], outputs=["c2"], value=numpy_helper.from_array(np.array([2.0], dtype=np.float32), name="c2"))
+    c1 = helper.make_node(
+        "Constant",
+        inputs=[],
+        outputs=["c1"],
+        value=numpy_helper.from_array(np.array([1.0], dtype=np.float32), name="c1"),
+    )
+    c2 = helper.make_node(
+        "Constant",
+        inputs=[],
+        outputs=["c2"],
+        value=numpy_helper.from_array(np.array([2.0], dtype=np.float32), name="c2"),
+    )
     add = helper.make_node("Add", inputs=["c1", "c2"], outputs=["sum_out"])
     x = helper.make_tensor_value_info("X", TensorProto.FLOAT, [1])
     y = helper.make_tensor_value_info("Y", TensorProto.FLOAT, [1])
@@ -57,17 +76,25 @@ def test_vuln_20_linear_fusion_shared_weight_duplicate_initializer():
     y1 = helper.make_tensor_value_info("Y1", TensorProto.FLOAT, [1, 16])
     y2 = helper.make_tensor_value_info("Y2", TensorProto.FLOAT, [1, 16])
 
-    gemm1 = helper.make_node("Gemm", inputs=["X1", "W_shared"], outputs=["Y1"], transB=1)
-    gemm2 = helper.make_node("Gemm", inputs=["X2", "W_shared"], outputs=["Y2"], transB=1)
+    gemm1 = helper.make_node(
+        "Gemm", inputs=["X1", "W_shared"], outputs=["Y1"], transB=1
+    )
+    gemm2 = helper.make_node(
+        "Gemm", inputs=["X2", "W_shared"], outputs=["Y2"], transB=1
+    )
 
-    graph = helper.make_graph([gemm1, gemm2], "test_graph", [x1, x2], [y1, y2], initializer=[w_init])
+    graph = helper.make_graph(
+        [gemm1, gemm2], "test_graph", [x1, x2], [y1, y2], initializer=[w_init]
+    )
     model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 14)])
 
     pass_obj = MathCanonicalizer()
     optimized = pass_obj.apply_linear_fusion(model)
 
     init_names = [init.name for init in optimized.graph.initializer]
-    assert len(init_names) == len(set(init_names)), f"Duplicate initializers found: {init_names}"
+    assert len(init_names) == len(set(init_names)), (
+        f"Duplicate initializers found: {init_names}"
+    )
     onnx.checker.check_model(optimized)
 
 
@@ -82,18 +109,30 @@ def test_vuln_21_groupnorm_opset_version_guard_violation():
     x = helper.make_tensor_value_info("X", TensorProto.FLOAT, [1, 4, 8])
     y = helper.make_tensor_value_info("Y", TensorProto.FLOAT, [1, 4, 8])
 
-    sh_exp = numpy_helper.from_array(np.array([1, 2, 2, 8], dtype=np.int64), name="sh_exp")
-    sh_rest = numpy_helper.from_array(np.array([1, 4, 8], dtype=np.int64), name="sh_rest")
+    sh_exp = numpy_helper.from_array(
+        np.array([1, 2, 2, 8], dtype=np.int64), name="sh_exp"
+    )
+    sh_rest = numpy_helper.from_array(
+        np.array([1, 4, 8], dtype=np.int64), name="sh_rest"
+    )
     scale = numpy_helper.from_array(np.ones((4, 1), dtype=np.float32), name="scale")
     bias = numpy_helper.from_array(np.zeros((4, 1), dtype=np.float32), name="bias")
 
     r1 = helper.make_node("Reshape", inputs=["X", "sh_exp"], outputs=["r1_out"])
-    inn = helper.make_node("InstanceNormalization", inputs=["r1_out", "scale", "bias"], outputs=["inn_out"])
+    inn = helper.make_node(
+        "InstanceNormalization", inputs=["r1_out", "scale", "bias"], outputs=["inn_out"]
+    )
     r2 = helper.make_node("Reshape", inputs=["inn_out", "sh_rest"], outputs=["r2_out"])
     mul = helper.make_node("Mul", inputs=["r2_out", "scale"], outputs=["mul_out"])
     add = helper.make_node("Add", inputs=["mul_out", "bias"], outputs=["Y"])
 
-    graph = helper.make_graph([r1, inn, r2, mul, add], "test_graph", [x], [y], initializer=[sh_exp, sh_rest, scale, bias])
+    graph = helper.make_graph(
+        [r1, inn, r2, mul, add],
+        "test_graph",
+        [x],
+        [y],
+        initializer=[sh_exp, sh_rest, scale, bias],
+    )
     model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 17)])
 
     pass_obj = NormCanonicalizer()
@@ -118,14 +157,37 @@ def test_vuln_22_rmsnorm_opset_version_guard_violation():
     gamma = numpy_helper.from_array(np.ones((8,), dtype=np.float32), name="gamma")
 
     pow_n = helper.make_node("Pow", inputs=["X", "two"], outputs=["p_out"], name="pow1")
-    rm = helper.make_node("ReduceMean", inputs=["p_out"], outputs=["rm_out"], axes=[-1], keepdims=1, name="rm1")
-    add = helper.make_node("Add", inputs=["rm_out", "eps"], outputs=["add_out"], name="add1")
-    sqrt = helper.make_node("Sqrt", inputs=["add_out"], outputs=["sqrt_out"], name="sqrt1")
-    recip = helper.make_node("Reciprocal", inputs=["sqrt_out"], outputs=["recip_out"], name="recip1")
-    mul1 = helper.make_node("Mul", inputs=["X", "recip_out"], outputs=["mul1_out"], name="mul1")
-    mul2 = helper.make_node("Mul", inputs=["mul1_out", "gamma"], outputs=["Y"], name="mul2")
+    rm = helper.make_node(
+        "ReduceMean",
+        inputs=["p_out"],
+        outputs=["rm_out"],
+        axes=[-1],
+        keepdims=1,
+        name="rm1",
+    )
+    add = helper.make_node(
+        "Add", inputs=["rm_out", "eps"], outputs=["add_out"], name="add1"
+    )
+    sqrt = helper.make_node(
+        "Sqrt", inputs=["add_out"], outputs=["sqrt_out"], name="sqrt1"
+    )
+    recip = helper.make_node(
+        "Reciprocal", inputs=["sqrt_out"], outputs=["recip_out"], name="recip1"
+    )
+    mul1 = helper.make_node(
+        "Mul", inputs=["X", "recip_out"], outputs=["mul1_out"], name="mul1"
+    )
+    mul2 = helper.make_node(
+        "Mul", inputs=["mul1_out", "gamma"], outputs=["Y"], name="mul2"
+    )
 
-    graph = helper.make_graph([pow_n, rm, add, sqrt, recip, mul1, mul2], "test_graph", [x], [y], initializer=[two, eps, gamma])
+    graph = helper.make_graph(
+        [pow_n, rm, add, sqrt, recip, mul1, mul2],
+        "test_graph",
+        [x],
+        [y],
+        initializer=[two, eps, gamma],
+    )
     model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 17)])
 
     pass_obj = NormCanonicalizer()
@@ -150,17 +212,51 @@ def test_vuln_23_layernorm_opset_version_guard_violation():
     scale = numpy_helper.from_array(np.ones((8,), dtype=np.float32), name="scale")
     bias = numpy_helper.from_array(np.zeros((8,), dtype=np.float32), name="bias")
 
-    rm_m = helper.make_node("ReduceMean", inputs=["X"], outputs=["mean_out"], axes=[-1], keepdims=1, name="rm_m")
-    sub = helper.make_node("Sub", inputs=["X", "mean_out"], outputs=["sub_out"], name="sub")
-    pow_n = helper.make_node("Pow", inputs=["sub_out", "two"], outputs=["pow_out"], name="pow")
-    rm_v = helper.make_node("ReduceMean", inputs=["pow_out"], outputs=["var_out"], axes=[-1], keepdims=1, name="rm_v")
-    add1 = helper.make_node("Add", inputs=["var_out", "eps"], outputs=["var_eps"], name="add1")
-    sqrt = helper.make_node("Sqrt", inputs=["var_eps"], outputs=["std_out"], name="sqrt")
-    div = helper.make_node("Div", inputs=["sub_out", "std_out"], outputs=["norm_out"], name="div")
-    mul = helper.make_node("Mul", inputs=["norm_out", "scale"], outputs=["scaled_out"], name="mul")
-    add2 = helper.make_node("Add", inputs=["scaled_out", "bias"], outputs=["Y"], name="add2")
+    rm_m = helper.make_node(
+        "ReduceMean",
+        inputs=["X"],
+        outputs=["mean_out"],
+        axes=[-1],
+        keepdims=1,
+        name="rm_m",
+    )
+    sub = helper.make_node(
+        "Sub", inputs=["X", "mean_out"], outputs=["sub_out"], name="sub"
+    )
+    pow_n = helper.make_node(
+        "Pow", inputs=["sub_out", "two"], outputs=["pow_out"], name="pow"
+    )
+    rm_v = helper.make_node(
+        "ReduceMean",
+        inputs=["pow_out"],
+        outputs=["var_out"],
+        axes=[-1],
+        keepdims=1,
+        name="rm_v",
+    )
+    add1 = helper.make_node(
+        "Add", inputs=["var_out", "eps"], outputs=["var_eps"], name="add1"
+    )
+    sqrt = helper.make_node(
+        "Sqrt", inputs=["var_eps"], outputs=["std_out"], name="sqrt"
+    )
+    div = helper.make_node(
+        "Div", inputs=["sub_out", "std_out"], outputs=["norm_out"], name="div"
+    )
+    mul = helper.make_node(
+        "Mul", inputs=["norm_out", "scale"], outputs=["scaled_out"], name="mul"
+    )
+    add2 = helper.make_node(
+        "Add", inputs=["scaled_out", "bias"], outputs=["Y"], name="add2"
+    )
 
-    graph = helper.make_graph([rm_m, sub, pow_n, rm_v, add1, sqrt, div, mul, add2], "test_graph", [x], [y], initializer=[two, eps, scale, bias])
+    graph = helper.make_graph(
+        [rm_m, sub, pow_n, rm_v, add1, sqrt, div, mul, add2],
+        "test_graph",
+        [x],
+        [y],
+        initializer=[two, eps, scale, bias],
+    )
     model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 14)])
 
     pass_obj = NormCanonicalizer()
@@ -177,8 +273,18 @@ def test_vuln_24_cse_drops_constant_graph_outputs():
 
     the constant's output is an exposed graph.output.
     """
-    c1 = helper.make_node("Constant", inputs=[], outputs=["c1_out"], value=numpy_helper.from_array(np.array([42.0], dtype=np.float32), name="c1"))
-    c2 = helper.make_node("Constant", inputs=[], outputs=["c2_out"], value=numpy_helper.from_array(np.array([42.0], dtype=np.float32), name="c2"))
+    c1 = helper.make_node(
+        "Constant",
+        inputs=[],
+        outputs=["c1_out"],
+        value=numpy_helper.from_array(np.array([42.0], dtype=np.float32), name="c1"),
+    )
+    c2 = helper.make_node(
+        "Constant",
+        inputs=[],
+        outputs=["c2_out"],
+        value=numpy_helper.from_array(np.array([42.0], dtype=np.float32), name="c2"),
+    )
 
     x = helper.make_tensor_value_info("X", TensorProto.FLOAT, [1])
     y = helper.make_tensor_value_info("Y", TensorProto.FLOAT, [1])
@@ -203,27 +309,50 @@ def test_vuln_25_cast_folding_drops_control_flow_subgraph_initializers():
 
     graph.node inputs, wiping out initializers needed inside nested If/Loop subgraphs.
     """
-    init_top = numpy_helper.from_array(np.array([1.0], dtype=np.float32), name="init_top")
-    init_sub = numpy_helper.from_array(np.array([10.0], dtype=np.float32), name="init_sub")
+    init_top = numpy_helper.from_array(
+        np.array([1.0], dtype=np.float32), name="init_top"
+    )
+    init_sub = numpy_helper.from_array(
+        np.array([10.0], dtype=np.float32), name="init_sub"
+    )
 
-    cast = helper.make_node("Cast", inputs=["init_top"], outputs=["cast_out"], to=TensorProto.FLOAT)
-    sub_node = helper.make_node("Add", inputs=["sub_in", "init_sub"], outputs=["sub_out"])
-    sub_graph = helper.make_graph([sub_node], "then_branch", [helper.make_tensor_value_info("sub_in", TensorProto.FLOAT, [1])], [helper.make_tensor_value_info("sub_out", TensorProto.FLOAT, [1])])
+    cast = helper.make_node(
+        "Cast", inputs=["init_top"], outputs=["cast_out"], to=TensorProto.FLOAT
+    )
+    sub_node = helper.make_node(
+        "Add", inputs=["sub_in", "init_sub"], outputs=["sub_out"]
+    )
+    sub_graph = helper.make_graph(
+        [sub_node],
+        "then_branch",
+        [helper.make_tensor_value_info("sub_in", TensorProto.FLOAT, [1])],
+        [helper.make_tensor_value_info("sub_out", TensorProto.FLOAT, [1])],
+    )
 
     cond = helper.make_tensor_value_info("cond", TensorProto.BOOL, [])
     x = helper.make_tensor_value_info("X", TensorProto.FLOAT, [1])
     y = helper.make_tensor_value_info("Y", TensorProto.FLOAT, [1])
 
-    if_node = helper.make_node("If", inputs=["cond"], outputs=["Y"], then_branch=sub_graph, else_branch=sub_graph)
+    if_node = helper.make_node(
+        "If",
+        inputs=["cond"],
+        outputs=["Y"],
+        then_branch=sub_graph,
+        else_branch=sub_graph,
+    )
 
-    graph = helper.make_graph([cast, if_node], "test_graph", [cond, x], [y], initializer=[init_top, init_sub])
+    graph = helper.make_graph(
+        [cast, if_node], "test_graph", [cond, x], [y], initializer=[init_top, init_sub]
+    )
     model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 14)])
 
     pass_obj = ShapeCanonicalizer()
     optimized = pass_obj.apply_cast_initializer_folding(model)
 
     init_names = [i.name for i in optimized.graph.initializer]
-    assert "init_sub" in init_names, f"'init_sub' was erroneously pruned from graph initializers: {init_names}"
+    assert "init_sub" in init_names, (
+        f"'init_sub' was erroneously pruned from graph initializers: {init_names}"
+    )
 
 
 # ==============================================================================
@@ -234,24 +363,34 @@ def test_vuln_26_static_subgraph_folding_is_unimplemented_noop():
 
     evaluates them or replaces them with initializers, leaving static arithmetic uncollapsed.
     """
-    arr_a = numpy_helper.from_array(np.array([2.0, 3.0], dtype=np.float32), name="static_a")
-    arr_b = numpy_helper.from_array(np.array([4.0, 5.0], dtype=np.float32), name="static_b")
+    arr_a = numpy_helper.from_array(
+        np.array([2.0, 3.0], dtype=np.float32), name="static_a"
+    )
+    arr_b = numpy_helper.from_array(
+        np.array([4.0, 5.0], dtype=np.float32), name="static_b"
+    )
 
     add = helper.make_node("Add", inputs=["static_a", "static_b"], outputs=["static_c"])
     x = helper.make_tensor_value_info("X", TensorProto.FLOAT, [2])
     y = helper.make_tensor_value_info("Y", TensorProto.FLOAT, [2])
     mul = helper.make_node("Mul", inputs=["X", "static_c"], outputs=["Y"])
 
-    graph = helper.make_graph([add, mul], "test_graph", [x], [y], initializer=[arr_a, arr_b])
+    graph = helper.make_graph(
+        [add, mul], "test_graph", [x], [y], initializer=[arr_a, arr_b]
+    )
     model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 14)])
 
     pass_obj = StaticFolder()
     optimized = pass_obj.apply_static_subgraph_folding(model)
 
     remaining_ops = [n.op_type for n in optimized.graph.node]
-    assert "Add" not in remaining_ops, f"Static 'Add' node was not folded into an initializer: {remaining_ops}"
+    assert "Add" not in remaining_ops, (
+        f"Static 'Add' node was not folded into an initializer: {remaining_ops}"
+    )
     init_names = [i.name for i in optimized.graph.initializer]
-    assert "static_c" in init_names, f"Folded tensor 'static_c' not present in initializers: {init_names}"
+    assert "static_c" in init_names, (
+        f"Folded tensor 'static_c' not present in initializers: {init_names}"
+    )
 
 
 # ==============================================================================
@@ -268,21 +407,88 @@ def test_vuln_27_gated_attention_input_count_mismatch():
     model.opset_import.append(helper.make_opsetid("custom.pytorch", 1))
 
     # Synthetic block representing constituent nodes of GatedAttention
-    norm = helper.make_node("RMSNorm", inputs=["X", "gamma"], outputs=["x_norm"], name="norm1", domain="custom.pytorch")
-    to_qkv = helper.make_node("Linear", inputs=["x_norm", "qkv_w"], outputs=["qkv"], name="to_qkv", domain="custom.pytorch")
-    to_gates = helper.make_node("Linear", inputs=["x_norm", "gate_w"], outputs=["gates"], name="to_gates", domain="custom.pytorch")
-    split = helper.make_node("SplitQKV", inputs=["qkv"], outputs=["q", "k", "v"], name="split", domain="custom.pytorch", num_heads=4)
-    rope_q = helper.make_node("RotaryEmbedding", inputs=["q", "theta"], outputs=["q_rot"], name="rope_q", domain="custom.pytorch")
-    rope_k = helper.make_node("RotaryEmbedding", inputs=["k", "theta"], outputs=["k_rot"], name="rope_k", domain="custom.pytorch")
-    sdpa = helper.make_node("ScaledDotProductAttention", inputs=["q_rot", "k_rot", "v"], outputs=["attn_out"], name="sdpa", domain="custom.pytorch")
-    gate_unit = helper.make_node("GatedUnit", inputs=["attn_out", "gates"], outputs=["gated_out"], name="gate_unit", domain="custom.pytorch", activation="silu")
-    merge = helper.make_node("MergeHeads", inputs=["gated_out"], outputs=["merged"], name="merge", domain="custom.pytorch")
-    to_out = helper.make_node("Linear", inputs=["merged", "out_w"], outputs=["Y"], name="to_out", domain="custom.pytorch")  # NO out_b
+    norm = helper.make_node(
+        "RMSNorm",
+        inputs=["X", "gamma"],
+        outputs=["x_norm"],
+        name="norm1",
+        domain="custom.pytorch",
+    )
+    to_qkv = helper.make_node(
+        "Linear",
+        inputs=["x_norm", "qkv_w"],
+        outputs=["qkv"],
+        name="to_qkv",
+        domain="custom.pytorch",
+    )
+    to_gates = helper.make_node(
+        "Linear",
+        inputs=["x_norm", "gate_w"],
+        outputs=["gates"],
+        name="to_gates",
+        domain="custom.pytorch",
+    )
+    split = helper.make_node(
+        "SplitQKV",
+        inputs=["qkv"],
+        outputs=["q", "k", "v"],
+        name="split",
+        domain="custom.pytorch",
+        num_heads=4,
+    )
+    rope_q = helper.make_node(
+        "RotaryEmbedding",
+        inputs=["q", "theta"],
+        outputs=["q_rot"],
+        name="rope_q",
+        domain="custom.pytorch",
+    )
+    rope_k = helper.make_node(
+        "RotaryEmbedding",
+        inputs=["k", "theta"],
+        outputs=["k_rot"],
+        name="rope_k",
+        domain="custom.pytorch",
+    )
+    sdpa = helper.make_node(
+        "ScaledDotProductAttention",
+        inputs=["q_rot", "k_rot", "v"],
+        outputs=["attn_out"],
+        name="sdpa",
+        domain="custom.pytorch",
+    )
+    gate_unit = helper.make_node(
+        "GatedUnit",
+        inputs=["attn_out", "gates"],
+        outputs=["gated_out"],
+        name="gate_unit",
+        domain="custom.pytorch",
+        activation="silu",
+    )
+    merge = helper.make_node(
+        "MergeHeads",
+        inputs=["gated_out"],
+        outputs=["merged"],
+        name="merge",
+        domain="custom.pytorch",
+    )
+    to_out = helper.make_node(
+        "Linear",
+        inputs=["merged", "out_w"],
+        outputs=["Y"],
+        name="to_out",
+        domain="custom.pytorch",
+    )  # NO out_b
 
     x_info = helper.make_tensor_value_info("X", TensorProto.FLOAT, [1, 4, 16])
     y_info = helper.make_tensor_value_info("Y", TensorProto.FLOAT, [1, 4, 16])
 
-    graph = helper.make_graph([norm, to_qkv, to_gates, split, rope_q, rope_k, sdpa, gate_unit, merge, to_out], "test_graph", [x_info], [y_info])
+    graph = helper.make_graph(
+        [norm, to_qkv, to_gates, split, rope_q, rope_k, sdpa, gate_unit, merge, to_out],
+        "test_graph",
+        [x_info],
+        [y_info],
+    )
     model.graph.CopyFrom(graph)
 
     pass_obj = AttentionSynthesizer()
@@ -337,7 +543,9 @@ def test_vuln_29_rotary_embedding_crashes_on_partial_head_dim():
 
     fn = registry.get("custom.pytorch", "RotaryEmbedding")
     out = fn([x, cos, sin], {})
-    assert out.shape == x.shape, f"Rotary output shape mismatch: {out.shape} vs {x.shape}"
+    assert out.shape == x.shape, (
+        f"Rotary output shape mismatch: {out.shape} vs {x.shape}"
+    )
     # Verify untouched channels are preserved
     torch.testing.assert_close(out[..., 32:], x[..., 32:])
 
@@ -460,7 +668,9 @@ def test_vuln_35_activation_canonicalizer_missing_function_protos():
     optimized = pass_obj.apply_silu_fusion(model, mode="function_proto")
 
     func_names = [f.name for f in optimized.functions]
-    assert "SiLU" in func_names, f"SiLU FunctionProto missing from model.functions: {func_names}"
+    assert "SiLU" in func_names, (
+        f"SiLU FunctionProto missing from model.functions: {func_names}"
+    )
 
 
 # ==============================================================================
@@ -477,16 +687,22 @@ def test_vuln_36_skip_norm_fusion_missing_function_protos():
     gamma = numpy_helper.from_array(np.ones((8,), dtype=np.float32), name="gamma")
 
     add = helper.make_node("Add", inputs=["X1", "X2"], outputs=["add_out"])
-    norm = helper.make_node("RMSNorm", inputs=["add_out", "gamma"], outputs=["Y"], domain="custom.pytorch")
+    norm = helper.make_node(
+        "RMSNorm", inputs=["add_out", "gamma"], outputs=["Y"], domain="custom.pytorch"
+    )
 
-    graph = helper.make_graph([add, norm], "test_graph", [x1, x2], [y], initializer=[gamma])
+    graph = helper.make_graph(
+        [add, norm], "test_graph", [x1, x2], [y], initializer=[gamma]
+    )
     model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 14)])
 
     pass_obj = NormCanonicalizer()
     optimized = pass_obj.apply_skip_norm_fusion(model, mode="function_proto")
 
     func_names = [f.name for f in optimized.functions]
-    assert "SkipSimplifiedLayerNormalization" in func_names, f"SkipSimplifiedLayerNormalization missing from functions: {func_names}"
+    assert "SkipSimplifiedLayerNormalization" in func_names, (
+        f"SkipSimplifiedLayerNormalization missing from functions: {func_names}"
+    )
 
 
 # ==============================================================================
@@ -502,33 +718,65 @@ def test_vuln_37_groupnorm_shared_weight_duplicate_initializer():
     y1 = helper.make_tensor_value_info("Y1", TensorProto.FLOAT, [1, 4, 8])
     y2 = helper.make_tensor_value_info("Y2", TensorProto.FLOAT, [1, 4, 8])
 
-    sh_exp = numpy_helper.from_array(np.array([1, 2, 2, 8], dtype=np.int64), name="sh_exp")
-    sh_rest = numpy_helper.from_array(np.array([1, 4, 8], dtype=np.int64), name="sh_rest")
-    scale = numpy_helper.from_array(np.ones((4, 1), dtype=np.float32), name="scale_shared")
-    bias = numpy_helper.from_array(np.zeros((4, 1), dtype=np.float32), name="bias_shared")
+    sh_exp = numpy_helper.from_array(
+        np.array([1, 2, 2, 8], dtype=np.int64), name="sh_exp"
+    )
+    sh_rest = numpy_helper.from_array(
+        np.array([1, 4, 8], dtype=np.int64), name="sh_rest"
+    )
+    scale = numpy_helper.from_array(
+        np.ones((4, 1), dtype=np.float32), name="scale_shared"
+    )
+    bias = numpy_helper.from_array(
+        np.zeros((4, 1), dtype=np.float32), name="bias_shared"
+    )
 
     # Instance 1
     r1_1 = helper.make_node("Reshape", inputs=["X1", "sh_exp"], outputs=["r1_1_out"])
-    inn1 = helper.make_node("InstanceNormalization", inputs=["r1_1_out", "scale_shared", "bias_shared"], outputs=["inn1_out"])
-    r2_1 = helper.make_node("Reshape", inputs=["inn1_out", "sh_rest"], outputs=["r2_1_out"])
-    mul1 = helper.make_node("Mul", inputs=["r2_1_out", "scale_shared"], outputs=["mul1_out"])
+    inn1 = helper.make_node(
+        "InstanceNormalization",
+        inputs=["r1_1_out", "scale_shared", "bias_shared"],
+        outputs=["inn1_out"],
+    )
+    r2_1 = helper.make_node(
+        "Reshape", inputs=["inn1_out", "sh_rest"], outputs=["r2_1_out"]
+    )
+    mul1 = helper.make_node(
+        "Mul", inputs=["r2_1_out", "scale_shared"], outputs=["mul1_out"]
+    )
     add1 = helper.make_node("Add", inputs=["mul1_out", "bias_shared"], outputs=["Y1"])
 
     # Instance 2 (Sharing scale_shared and bias_shared)
     r1_2 = helper.make_node("Reshape", inputs=["X2", "sh_exp"], outputs=["r1_2_out"])
-    inn2 = helper.make_node("InstanceNormalization", inputs=["r1_2_out", "scale_shared", "bias_shared"], outputs=["inn2_out"])
-    r2_2 = helper.make_node("Reshape", inputs=["inn2_out", "sh_rest"], outputs=["r2_2_out"])
-    mul2 = helper.make_node("Mul", inputs=["r2_2_out", "scale_shared"], outputs=["mul2_out"])
+    inn2 = helper.make_node(
+        "InstanceNormalization",
+        inputs=["r1_2_out", "scale_shared", "bias_shared"],
+        outputs=["inn2_out"],
+    )
+    r2_2 = helper.make_node(
+        "Reshape", inputs=["inn2_out", "sh_rest"], outputs=["r2_2_out"]
+    )
+    mul2 = helper.make_node(
+        "Mul", inputs=["r2_2_out", "scale_shared"], outputs=["mul2_out"]
+    )
     add2 = helper.make_node("Add", inputs=["mul2_out", "bias_shared"], outputs=["Y2"])
 
-    graph = helper.make_graph([r1_1, inn1, r2_1, mul1, add1, r1_2, inn2, r2_2, mul2, add2], "test_graph", [x1, x2], [y1, y2], initializer=[sh_exp, sh_rest, scale, bias])
+    graph = helper.make_graph(
+        [r1_1, inn1, r2_1, mul1, add1, r1_2, inn2, r2_2, mul2, add2],
+        "test_graph",
+        [x1, x2],
+        [y1, y2],
+        initializer=[sh_exp, sh_rest, scale, bias],
+    )
     model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 14)])
 
     pass_obj = NormCanonicalizer()
     optimized = pass_obj.apply_groupnorm_fusion(model)
 
     init_names = [i.name for i in optimized.graph.initializer]
-    assert len(init_names) == len(set(init_names)), f"Duplicate initializers: {init_names}"
+    assert len(init_names) == len(set(init_names)), (
+        f"Duplicate initializers: {init_names}"
+    )
     onnx.checker.check_model(optimized)
 
 
@@ -543,14 +791,32 @@ def test_vuln_38_sgu_function_proto_param_mismatch():
     x = helper.make_tensor_value_info("X", TensorProto.FLOAT, [2, 8, 64])
     y = helper.make_tensor_value_info("Y", TensorProto.FLOAT, [2, 8, 32])
     gamma = numpy_helper.from_array(np.ones((32,), dtype=np.float32), name="sgu_gamma")
-    w = numpy_helper.from_array(np.random.randn(32, 32).astype(np.float32), name="sgu_w")
+    w = numpy_helper.from_array(
+        np.random.randn(32, 32).astype(np.float32), name="sgu_w"
+    )
 
-    split = helper.make_node("Split", inputs=["X"], outputs=["u", "v"], axis=-1, name="split1")
-    norm = helper.make_node("RMSNorm", inputs=["v", "sgu_gamma"], outputs=["v_norm"], name="norm1", domain="custom.pytorch")
-    lin = helper.make_node("Linear", inputs=["v_norm", "sgu_w"], outputs=["gate"], name="lin1", domain="custom.pytorch")
+    split = helper.make_node(
+        "Split", inputs=["X"], outputs=["u", "v"], axis=-1, name="split1"
+    )
+    norm = helper.make_node(
+        "RMSNorm",
+        inputs=["v", "sgu_gamma"],
+        outputs=["v_norm"],
+        name="norm1",
+        domain="custom.pytorch",
+    )
+    lin = helper.make_node(
+        "Linear",
+        inputs=["v_norm", "sgu_w"],
+        outputs=["gate"],
+        name="lin1",
+        domain="custom.pytorch",
+    )
     mul = helper.make_node("Mul", inputs=["u", "gate"], outputs=["Y"], name="mul1")
 
-    graph = helper.make_graph([split, norm, lin, mul], "test_graph", [x], [y], initializer=[gamma, w])
+    graph = helper.make_graph(
+        [split, norm, lin, mul], "test_graph", [x], [y], initializer=[gamma, w]
+    )
     model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 14)])
 
     pass_obj = MacroBlockSynthesizer()

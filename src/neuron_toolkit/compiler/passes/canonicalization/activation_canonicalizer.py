@@ -12,9 +12,7 @@ Canonicalizes non-linear activation patterns into standard or custom ops:
 from __future__ import annotations
 
 import logging
-from typing import Any
 
-import numpy as np
 import onnx
 from onnx import helper, numpy_helper
 
@@ -59,7 +57,9 @@ class ActivationCanonicalizer(Pass):
     # -------------------------------------------------------------------------
     # ERF-GELU Fusion
     # -------------------------------------------------------------------------
-    def apply_erf_gelu_fusion(self, model: onnx.ModelProto, mode: str = "function_proto") -> onnx.ModelProto:
+    def apply_erf_gelu_fusion(
+        self, model: onnx.ModelProto, mode: str = "function_proto"
+    ) -> onnx.ModelProto:
         """Fuses 7-node standard GELU expansion (Div -> Erf -> Add -> Mul -> Mul) into Gelu."""
         graph = model.graph
         node_by_output: dict[str, onnx.NodeProto] = {}
@@ -204,7 +204,10 @@ class ActivationCanonicalizer(Pass):
                 final_output = mul2_node.output[0]
                 for n in (div_node, erf_node, add_node, mul1_node, mul2_node):
                     nodes_to_remove.add(n.name or n.output[0])
-            elif other_input in node_by_output and node_by_output[other_input].op_type == "Mul":
+            elif (
+                other_input in node_by_output
+                and node_by_output[other_input].op_type == "Mul"
+            ):
                 # Form 2: Mul(x, 0.5) -> Mul(half_x, add_out)
                 half_mul = node_by_output[other_input]
                 h0, h1 = half_mul.input[0], half_mul.input[1]
@@ -222,7 +225,10 @@ class ActivationCanonicalizer(Pass):
             for c_tensor in (sqrt2_tensor, c_one_tensor, c_half_tensor):
                 if c_tensor in constant_node_names:
                     consumers = consumer_map.get(c_tensor, [])
-                    if all((c.name or (c.output[0] if c.output else "")) in nodes_to_remove for c in consumers):
+                    if all(
+                        (c.name or (c.output[0] if c.output else "")) in nodes_to_remove
+                        for c in consumers
+                    ):
                         nodes_to_remove.add(constant_node_names[c_tensor])
                         nodes_to_remove.add(c_tensor)
 
@@ -324,7 +330,9 @@ class ActivationCanonicalizer(Pass):
     # -------------------------------------------------------------------------
     # Tanh GELU Fusion
     # -------------------------------------------------------------------------
-    def apply_tanh_gelu_fusion(self, model: onnx.ModelProto, mode: str = "function_proto") -> onnx.ModelProto:
+    def apply_tanh_gelu_fusion(
+        self, model: onnx.ModelProto, mode: str = "function_proto"
+    ) -> onnx.ModelProto:
         """Fuses Tanh-based GELU polynomial approximation into Gelu(approximate='tanh')."""
         graph = model.graph
         node_by_output = {out: n for n in graph.node for out in n.output}
@@ -344,26 +352,36 @@ class ActivationCanonicalizer(Pass):
 
             # Check consumer: Add 1.0 -> Mul x -> Mul 0.5
             tanh_out = tanh_node.output[0]
-            add_candidates = [c for c in consumer_map.get(tanh_out, []) if c.op_type == "Add"]
+            add_candidates = [
+                c for c in consumer_map.get(tanh_out, []) if c.op_type == "Add"
+            ]
             if not add_candidates:
                 continue
             add_node = add_candidates[0]
             add_out = add_node.output[0]
 
-            mul_x_candidates = [c for c in consumer_map.get(add_out, []) if c.op_type == "Mul"]
+            mul_x_candidates = [
+                c for c in consumer_map.get(add_out, []) if c.op_type == "Mul"
+            ]
             if not mul_x_candidates:
                 continue
             mul_x_node = mul_x_candidates[0]
             mul_x_out = mul_x_node.output[0]
 
-            mul_half_candidates = [c for c in consumer_map.get(mul_x_out, []) if c.op_type == "Mul"]
+            mul_half_candidates = [
+                c for c in consumer_map.get(mul_x_out, []) if c.op_type == "Mul"
+            ]
             if not mul_half_candidates:
                 continue
             mul_half_node = mul_half_candidates[0]
             final_out = mul_half_node.output[0]
 
             # Determine x_in
-            x_in = mul_x_node.input[0] if mul_x_node.input[1] == add_out else mul_x_node.input[1]
+            x_in = (
+                mul_x_node.input[0]
+                if mul_x_node.input[1] == add_out
+                else mul_x_node.input[1]
+            )
 
             # Collect intermediate nodes connected to tanh input
             tanh_in = tanh_node.input[0]
@@ -403,7 +421,11 @@ class ActivationCanonicalizer(Pass):
         if not fused_nodes:
             return model
 
-        kept = [n for n in graph.node if (n.name or (n.output[0] if n.output else "")) not in nodes_to_remove]
+        kept = [
+            n
+            for n in graph.node
+            if (n.name or (n.output[0] if n.output else "")) not in nodes_to_remove
+        ]
         kept.extend(fused_nodes)
         del graph.node[:]
         graph.node.extend(kept)
@@ -422,20 +444,29 @@ class ActivationCanonicalizer(Pass):
             model.opset_import.append(helper.make_opsetid(custom_domain, 1))
 
         # Check if a tanh-specific function or Gelu function already exists with Tanh
-        if any("Gelu" in f.name and f.domain == domain and any(n.op_type == "Tanh" for n in f.node) for f in model.functions):
+        if any(
+            "Gelu" in f.name
+            and f.domain == domain
+            and any(n.op_type == "Tanh" for n in f.node)
+            for f in model.functions
+        ):
             return
 
         c_sqrt = helper.make_node(
             "Constant",
             inputs=[],
             outputs=["c_sqrt"],
-            value=helper.make_tensor("c_sqrt_t", onnx.TensorProto.FLOAT, [1], [0.79788456]),
+            value=helper.make_tensor(
+                "c_sqrt_t", onnx.TensorProto.FLOAT, [1], [0.79788456]
+            ),
         )
         c_coeff = helper.make_node(
             "Constant",
             inputs=[],
             outputs=["c_coeff"],
-            value=helper.make_tensor("c_coeff_t", onnx.TensorProto.FLOAT, [1], [0.044715]),
+            value=helper.make_tensor(
+                "c_coeff_t", onnx.TensorProto.FLOAT, [1], [0.044715]
+            ),
         )
         c_three = helper.make_node(
             "Constant",
@@ -456,21 +487,47 @@ class ActivationCanonicalizer(Pass):
             value=helper.make_tensor("c_half_t", onnx.TensorProto.FLOAT, [1], [0.5]),
         )
         pow3 = helper.make_node("Pow", inputs=["x", "c_three"], outputs=["x_cubed"])
-        mul_c = helper.make_node("Mul", inputs=["x_cubed", "c_coeff"], outputs=["mul_c_out"])
-        add_x = helper.make_node("Add", inputs=["x", "mul_c_out"], outputs=["add_x_out"])
-        mul_sqrt = helper.make_node("Mul", inputs=["add_x_out", "c_sqrt"], outputs=["mul_sqrt_out"])
+        mul_c = helper.make_node(
+            "Mul", inputs=["x_cubed", "c_coeff"], outputs=["mul_c_out"]
+        )
+        add_x = helper.make_node(
+            "Add", inputs=["x", "mul_c_out"], outputs=["add_x_out"]
+        )
+        mul_sqrt = helper.make_node(
+            "Mul", inputs=["add_x_out", "c_sqrt"], outputs=["mul_sqrt_out"]
+        )
         tanh_n = helper.make_node("Tanh", inputs=["mul_sqrt_out"], outputs=["tanh_out"])
-        add1 = helper.make_node("Add", inputs=["tanh_out", "c_one"], outputs=["add1_out"])
+        add1 = helper.make_node(
+            "Add", inputs=["tanh_out", "c_one"], outputs=["add1_out"]
+        )
         mul_x = helper.make_node("Mul", inputs=["x", "add1_out"], outputs=["mul_x_out"])
         mul_h = helper.make_node("Mul", inputs=["mul_x_out", "c_half"], outputs=["y"])
 
-        fname = "Gelu" if not any(f.name == "Gelu" and f.domain == domain for f in model.functions) else "Gelu_tanh"
+        fname = (
+            "Gelu"
+            if not any(f.name == "Gelu" and f.domain == domain for f in model.functions)
+            else "Gelu_tanh"
+        )
         func = helper.make_function(
             domain=domain,
             fname=fname,
             inputs=["x"],
             outputs=["y"],
-            nodes=[c_sqrt, c_coeff, c_three, c_one, c_half, pow3, mul_c, add_x, mul_sqrt, tanh_n, add1, mul_x, mul_h],
+            nodes=[
+                c_sqrt,
+                c_coeff,
+                c_three,
+                c_one,
+                c_half,
+                pow3,
+                mul_c,
+                add_x,
+                mul_sqrt,
+                tanh_n,
+                add1,
+                mul_x,
+                mul_h,
+            ],
             opset_imports=[opset_standard],
             doc_string="Formal FunctionProto definition of Tanh-approximated GELU",
         )
@@ -479,7 +536,9 @@ class ActivationCanonicalizer(Pass):
     # -------------------------------------------------------------------------
     # SiLU / Swish Fusion
     # -------------------------------------------------------------------------
-    def apply_silu_fusion(self, model: onnx.ModelProto, mode: str = "function_proto") -> onnx.ModelProto:
+    def apply_silu_fusion(
+        self, model: onnx.ModelProto, mode: str = "function_proto"
+    ) -> onnx.ModelProto:
         """Fuses x * Sigmoid(x) into SiLU."""
         graph = model.graph
         node_by_output = {out: n for n in graph.node for out in n.output}
@@ -525,7 +584,11 @@ class ActivationCanonicalizer(Pass):
         if not new_nodes:
             return model
 
-        kept = [n for n in graph.node if (n.name or (n.output[0] if n.output else "")) not in nodes_to_remove]
+        kept = [
+            n
+            for n in graph.node
+            if (n.name or (n.output[0] if n.output else "")) not in nodes_to_remove
+        ]
         kept.extend(new_nodes)
         del graph.node[:]
         graph.node.extend(kept)
@@ -542,7 +605,9 @@ class ActivationCanonicalizer(Pass):
     # -------------------------------------------------------------------------
     # HardSwish Fusion
     # -------------------------------------------------------------------------
-    def apply_hardswish_fusion(self, model: onnx.ModelProto, mode: str = "function_proto") -> onnx.ModelProto:
+    def apply_hardswish_fusion(
+        self, model: onnx.ModelProto, mode: str = "function_proto"
+    ) -> onnx.ModelProto:
         """Fuses x * Clip(x + 3, 0, 6) / 6 into HardSwish."""
         graph = model.graph
         node_by_output = {out: n for n in graph.node for out in n.output}
@@ -580,18 +645,22 @@ class ActivationCanonicalizer(Pass):
                         if div_candidates:
                             div_node = div_candidates[0]
                             final_out = div_node.output[0]
-                            nodes_to_remove.update({
-                                add_node.name or add_node.output[0],
-                                clip_node.name or clip_node.output[0],
-                                c.name or c.output[0],
-                                div_node.name or div_node.output[0],
-                            })
+                            nodes_to_remove.update(
+                                {
+                                    add_node.name or add_node.output[0],
+                                    clip_node.name or clip_node.output[0],
+                                    c.name or c.output[0],
+                                    div_node.name or div_node.output[0],
+                                }
+                            )
                             hswish = helper.make_node(
                                 "HardSwish",
                                 inputs=[x_in],
                                 outputs=[final_out],
                                 name=f"hardswish_{count}",
-                                domain="" if mode == "modern_onnx" else "custom.pytorch",
+                                domain=""
+                                if mode == "modern_onnx"
+                                else "custom.pytorch",
                             )
                             new_nodes.append(hswish)
                             count += 1
@@ -601,7 +670,11 @@ class ActivationCanonicalizer(Pass):
         if not new_nodes:
             return model
 
-        kept = [n for n in graph.node if (n.name or (n.output[0] if n.output else "")) not in nodes_to_remove]
+        kept = [
+            n
+            for n in graph.node
+            if (n.name or (n.output[0] if n.output else "")) not in nodes_to_remove
+        ]
         kept.extend(new_nodes)
         del graph.node[:]
         graph.node.extend(kept)
@@ -618,7 +691,9 @@ class ActivationCanonicalizer(Pass):
     # -------------------------------------------------------------------------
     # Relu6 Fusion
     # -------------------------------------------------------------------------
-    def apply_relu6_fusion(self, model: onnx.ModelProto, mode: str = "function_proto") -> onnx.ModelProto:
+    def apply_relu6_fusion(
+        self, model: onnx.ModelProto, mode: str = "function_proto"
+    ) -> onnx.ModelProto:
         """Fuses Clip(min=0, max=6) into Relu6."""
         graph = model.graph
         inits = {i.name: numpy_helper.to_array(i) for i in graph.initializer}
@@ -659,7 +734,9 @@ class ActivationCanonicalizer(Pass):
 
         if mode != "modern_onnx":
             custom_domain = "custom.pytorch"
-            if any(n.op_type == "Relu6" and n.domain == custom_domain for n in graph.node):
+            if any(
+                n.op_type == "Relu6" and n.domain == custom_domain for n in graph.node
+            ):
                 if not any(op.domain == custom_domain for op in model.opset_import):
                     model.opset_import.append(helper.make_opsetid(custom_domain, 1))
                 if mode == "function_proto":
@@ -670,7 +747,9 @@ class ActivationCanonicalizer(Pass):
     # -------------------------------------------------------------------------
     # Mish Fusion
     # -------------------------------------------------------------------------
-    def apply_mish_fusion(self, model: onnx.ModelProto, mode: str = "function_proto") -> onnx.ModelProto:
+    def apply_mish_fusion(
+        self, model: onnx.ModelProto, mode: str = "function_proto"
+    ) -> onnx.ModelProto:
         """Fuses x * Tanh(Softplus(x)) into Mish."""
         graph = model.graph
         node_by_output = {out: n for n in graph.node for out in n.output}
@@ -688,23 +767,31 @@ class ActivationCanonicalizer(Pass):
                 continue
             x_in = sp_node.input[0]
             sp_out = sp_node.output[0]
-            tanh_candidates = [c for c in consumer_map.get(sp_out, []) if c.op_type == "Tanh"]
+            tanh_candidates = [
+                c for c in consumer_map.get(sp_out, []) if c.op_type == "Tanh"
+            ]
             if not tanh_candidates:
                 continue
             tanh_node = tanh_candidates[0]
             tanh_out = tanh_node.output[0]
 
-            mul_candidates = [c for c in consumer_map.get(tanh_out, []) if c.op_type == "Mul" and x_in in c.input]
+            mul_candidates = [
+                c
+                for c in consumer_map.get(tanh_out, [])
+                if c.op_type == "Mul" and x_in in c.input
+            ]
             if not mul_candidates:
                 continue
             mul_node = mul_candidates[0]
             final_out = mul_node.output[0]
 
-            nodes_to_remove.update({
-                sp_node.name or sp_node.output[0],
-                tanh_node.name or tanh_node.output[0],
-                mul_node.name or mul_node.output[0],
-            })
+            nodes_to_remove.update(
+                {
+                    sp_node.name or sp_node.output[0],
+                    tanh_node.name or tanh_node.output[0],
+                    mul_node.name or mul_node.output[0],
+                }
+            )
             mish = helper.make_node(
                 "Mish",
                 inputs=[x_in],
@@ -718,7 +805,11 @@ class ActivationCanonicalizer(Pass):
         if not new_nodes:
             return model
 
-        kept = [n for n in graph.node if (n.name or (n.output[0] if n.output else "")) not in nodes_to_remove]
+        kept = [
+            n
+            for n in graph.node
+            if (n.name or (n.output[0] if n.output else "")) not in nodes_to_remove
+        ]
         kept.extend(new_nodes)
         del graph.node[:]
         graph.node.extend(kept)
@@ -801,7 +892,12 @@ class ActivationCanonicalizer(Pass):
             if sub_node and sub_node.op_type == "Sub" and len(sub_node.input) >= 2:
                 cand_x = sub_node.input[0]
                 cand_max = node_by_output.get(sub_node.input[1])
-                if cand_max and cand_max.op_type == "ReduceMax" and cand_max.input and cand_max.input[0] == cand_x:
+                if (
+                    cand_max
+                    and cand_max.op_type == "ReduceMax"
+                    and cand_max.input
+                    and cand_max.input[0] == cand_x
+                ):
                     x_tensor = cand_x
                     max_node = cand_max
 
@@ -820,24 +916,42 @@ class ActivationCanonicalizer(Pass):
             count += 1
 
             nodes_to_remove.add(div_node.name or div_node.output[0])
-            if len(consumer_map.get(sum_node.output[0], [])) <= 1 and sum_node.output[0] not in graph_outputs:
+            if (
+                len(consumer_map.get(sum_node.output[0], [])) <= 1
+                and sum_node.output[0] not in graph_outputs
+            ):
                 nodes_to_remove.add(sum_node.name or sum_node.output[0])
-            if len(consumer_map.get(exp_node.output[0], [])) <= 2 and exp_node.output[0] not in graph_outputs:
+            if (
+                len(consumer_map.get(exp_node.output[0], [])) <= 2
+                and exp_node.output[0] not in graph_outputs
+            ):
                 nodes_to_remove.add(exp_node.name or exp_node.output[0])
             if sub_node and max_node:
-                if len(consumer_map.get(sub_node.output[0], [])) <= 1 and sub_node.output[0] not in graph_outputs:
+                if (
+                    len(consumer_map.get(sub_node.output[0], [])) <= 1
+                    and sub_node.output[0] not in graph_outputs
+                ):
                     nodes_to_remove.add(sub_node.name or sub_node.output[0])
-                if len(consumer_map.get(max_node.output[0], [])) <= 1 and max_node.output[0] not in graph_outputs:
+                if (
+                    len(consumer_map.get(max_node.output[0], [])) <= 1
+                    and max_node.output[0] not in graph_outputs
+                ):
                     nodes_to_remove.add(max_node.name or max_node.output[0])
 
         if not new_nodes:
             return model
 
-        kept = [n for n in graph.node if (n.name or (n.output[0] if n.output else "")) not in nodes_to_remove]
+        kept = [
+            n
+            for n in graph.node
+            if (n.name or (n.output[0] if n.output else "")) not in nodes_to_remove
+        ]
         kept.extend(new_nodes)
         del graph.node[:]
         graph.node.extend(kept)
-        log.info("Softmax Canonicalization: Fused %d decomposed Softmax instances", count)
+        log.info(
+            "Softmax Canonicalization: Fused %d decomposed Softmax instances", count
+        )
         return model
 
     def _attach_silu_function_def(self, model: onnx.ModelProto) -> None:
@@ -867,7 +981,9 @@ class ActivationCanonicalizer(Pass):
         if any(f.name == func_name and f.domain == domain for f in model.functions):
             return
         opset_standard = helper.make_opsetid("", 14)
-        hsig = helper.make_node("HardSigmoid", inputs=["x"], outputs=["hsig_out"], alpha=1.0 / 6.0, beta=0.5)
+        hsig = helper.make_node(
+            "HardSigmoid", inputs=["x"], outputs=["hsig_out"], alpha=1.0 / 6.0, beta=0.5
+        )
         mul = helper.make_node("Mul", inputs=["x", "hsig_out"], outputs=["y"])
         func = helper.make_function(
             domain=domain,
@@ -887,8 +1003,18 @@ class ActivationCanonicalizer(Pass):
         if any(f.name == func_name and f.domain == domain for f in model.functions):
             return
         opset_standard = helper.make_opsetid("", 14)
-        zero = helper.make_node("Constant", inputs=[], outputs=["zero"], value=helper.make_tensor("zero", onnx.TensorProto.FLOAT, [], [0.0]))
-        six = helper.make_node("Constant", inputs=[], outputs=["six"], value=helper.make_tensor("six", onnx.TensorProto.FLOAT, [], [6.0]))
+        zero = helper.make_node(
+            "Constant",
+            inputs=[],
+            outputs=["zero"],
+            value=helper.make_tensor("zero", onnx.TensorProto.FLOAT, [], [0.0]),
+        )
+        six = helper.make_node(
+            "Constant",
+            inputs=[],
+            outputs=["six"],
+            value=helper.make_tensor("six", onnx.TensorProto.FLOAT, [], [6.0]),
+        )
         clip = helper.make_node("Clip", inputs=["x", "zero", "six"], outputs=["y"])
         func = helper.make_function(
             domain=domain,

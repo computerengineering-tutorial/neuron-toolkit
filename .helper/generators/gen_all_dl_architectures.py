@@ -16,20 +16,32 @@ Maintains model catalog index in .helper/models/model_catalog.json.
 from __future__ import annotations
 
 import json
-from pathlib import Path
 import subprocess
 import sys
 import time
+from pathlib import Path
 
 import onnx
 
 GENERATORS = [
     (".helper/generators/gen_recurrent_zoo.py", "Recurrent RNN/LSTM/GRU Family"),
-    (".helper/generators/gen_vision_cnn_zoo.py", "Convolutional & Computer Vision Family"),
-    (".helper/generators/gen_vanilla_mlp_zoo.py", "Vanilla MLP & Gated Feedforward Family"),
+    (
+        ".helper/generators/gen_vision_cnn_zoo.py",
+        "Convolutional & Computer Vision Family",
+    ),
+    (
+        ".helper/generators/gen_vanilla_mlp_zoo.py",
+        "Vanilla MLP & Gated Feedforward Family",
+    ),
     (".helper/generators/gen_gnn_zoo.py", "Graph Neural Network (GNN) Family"),
-    (".helper/generators/gen_transformer_advanced_zoo.py", "Advanced Transformer & MoE Family"),
-    (".helper/generators/gen_comprehensive_attentions.py", "Comprehensive Attention Family"),
+    (
+        ".helper/generators/gen_transformer_advanced_zoo.py",
+        "Advanced Transformer & MoE Family",
+    ),
+    (
+        ".helper/generators/gen_comprehensive_attentions.py",
+        "Comprehensive Attention Family",
+    ),
 ]
 
 
@@ -58,32 +70,40 @@ def build_catalog() -> dict:
             inputs = [
                 {
                     "name": inp.name,
-                    "shape": [d.dim_value if d.dim_value > 0 else -1 for d in inp.type.tensor_type.shape.dim],
+                    "shape": [
+                        d.dim_value if d.dim_value > 0 else -1
+                        for d in inp.type.tensor_type.shape.dim
+                    ],
                 }
                 for inp in m.graph.input
             ]
             outputs = [
                 {
                     "name": out.name,
-                    "shape": [d.dim_value if d.dim_value > 0 else -1 for d in out.type.tensor_type.shape.dim],
+                    "shape": [
+                        d.dim_value if d.dim_value > 0 else -1
+                        for d in out.type.tensor_type.shape.dim
+                    ],
                 }
                 for out in m.graph.output
             ]
-        except Exception as e:
+        except Exception:
             opset = -1
             node_count = -1
             inputs, outputs = [], []
 
-        catalog["models"].append({
-            "path": str(p),
-            "name": p.name,
-            "category": cat,
-            "opset": opset,
-            "nodes": node_count,
-            "size_kb": round(p.stat().st_size / 1024.0, 2),
-            "inputs": inputs,
-            "outputs": outputs,
-        })
+        catalog["models"].append(
+            {
+                "path": str(p),
+                "name": p.name,
+                "category": cat,
+                "opset": opset,
+                "nodes": node_count,
+                "size_kb": round(p.stat().st_size / 1024.0, 2),
+                "inputs": inputs,
+                "outputs": outputs,
+            }
+        )
 
     catalog["breakdown_by_category"] = by_category
     catalog["breakdown_by_opset"] = by_opset
@@ -102,18 +122,22 @@ def main() -> None:
 
     for script_path, desc in GENERATORS:
         print(f"\n>>> Running Generator: {desc} ({script_path})")
-        res = subprocess.run([sys.executable, script_path], capture_output=True, text=True)
+        res = subprocess.run(
+            [sys.executable, script_path], capture_output=True, text=True
+        )
         if res.returncode != 0:
             print(f"Error running {script_path}:\n{res.stderr}")
         else:
             # Print last few lines of output
-            lines = [l for l in res.stdout.strip().split("\n") if l.startswith("  [OK]")]
+            lines = [
+                l for l in res.stdout.strip().split("\n") if l.startswith("  [OK]")
+            ]
             print(f"  Successfully exported {len(lines)} models.")
 
     print("\nIndexing and cataloging all models...")
     catalog = build_catalog()
     print("==================================================================")
-    print(f"Catalog generated at .helper/models/model_catalog.json")
+    print("Catalog generated at .helper/models/model_catalog.json")
     print(f"Total Exported Models: {catalog['total_models']}")
     print("Breakdown by Category:")
     for cat, count in catalog["breakdown_by_category"].items():

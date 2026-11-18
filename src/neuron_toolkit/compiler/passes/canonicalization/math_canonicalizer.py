@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import collections
 import logging
-from typing import Any
 
 import numpy as np
 import onnx
@@ -48,7 +47,9 @@ class MathCanonicalizer(Pass):
     # -------------------------------------------------------------------------
     # Linear Fusion (MatMul + Add, Gemm, Einsum -> Linear)
     # -------------------------------------------------------------------------
-    def apply_linear_fusion(self, model: onnx.ModelProto, mode: str = "function_proto") -> onnx.ModelProto:
+    def apply_linear_fusion(
+        self, model: onnx.ModelProto, mode: str = "function_proto"
+    ) -> onnx.ModelProto:
         """Fuse MatMul(X, W) + bias or Gemm into custom.pytorch::Linear(X, W, bias)."""
         graph = model.graph
         inits = {t.name for t in graph.initializer}
@@ -79,12 +80,24 @@ class MathCanonicalizer(Pass):
             if n.op_type == "Add" and len(n.input) == 2:
                 inp0, inp1 = n.input[0], n.input[1]
                 mm_node, bias_name = None, None
-                if inp0 in inits and inp1 in node_by_output and node_by_output[inp1].op_type == "MatMul":
+                if (
+                    inp0 in inits
+                    and inp1 in node_by_output
+                    and node_by_output[inp1].op_type == "MatMul"
+                ):
                     bias_name, mm_node = inp0, node_by_output[inp1]
-                elif inp1 in inits and inp0 in node_by_output and node_by_output[inp0].op_type == "MatMul":
+                elif (
+                    inp1 in inits
+                    and inp0 in node_by_output
+                    and node_by_output[inp0].op_type == "MatMul"
+                ):
                     bias_name, mm_node = inp1, node_by_output[inp0]
 
-                if mm_node and len(consumer_map.get(mm_node.output[0], [])) == 1 and mm_node.output[0] not in graph_outputs:
+                if (
+                    mm_node
+                    and len(consumer_map.get(mm_node.output[0], [])) == 1
+                    and mm_node.output[0] not in graph_outputs
+                ):
                     lin = helper.make_node(
                         "Linear",
                         inputs=[mm_node.input[0], mm_node.input[1], bias_name],
@@ -128,7 +141,9 @@ class MathCanonicalizer(Pass):
                             trans_name = f"{w_name}_transposed"
                             if trans_name not in init_arrays:
                                 init_arrays[trans_name] = w_trans
-                                graph.initializer.append(numpy_helper.from_array(w_trans, name=trans_name))
+                                graph.initializer.append(
+                                    numpy_helper.from_array(w_trans, name=trans_name)
+                                )
                             w_name = trans_name
                         else:
                             # Dynamic tensor with transB=1 cannot be fused directly into standard Linear
@@ -186,7 +201,11 @@ class MathCanonicalizer(Pass):
             return
         opset_standard = helper.make_opsetid("", 14)
 
-        lin_nodes = [n for n in model.graph.node if n.op_type == "Linear" and (n.domain == domain or not n.domain)]
+        lin_nodes = [
+            n
+            for n in model.graph.node
+            if n.op_type == "Linear" and (n.domain == domain or not n.domain)
+        ]
         has_biased = any(len(n.input) >= 3 and n.input[2] for n in lin_nodes)
 
         if has_biased:
@@ -263,7 +282,9 @@ class MathCanonicalizer(Pass):
                                 res = val1 * val2
                                 expr_str = f"({in1} * {in2})"
                             elif node.op_type == "Div":
-                                if np.issubdtype(val1.dtype, np.integer) and np.issubdtype(val2.dtype, np.integer):
+                                if np.issubdtype(
+                                    val1.dtype, np.integer
+                                ) and np.issubdtype(val2.dtype, np.integer):
                                     res = np.trunc(val1 / val2).astype(val1.dtype)
                                 else:
                                     res = val1 / val2
@@ -289,10 +310,13 @@ class MathCanonicalizer(Pass):
                                 if in_tensor in constant_node_names:
                                     consumers = consumer_map.get(in_tensor, [])
                                     if all(
-                                        (c.name or (c.output[0] if c.output else "")) in nodes_to_remove
+                                        (c.name or (c.output[0] if c.output else ""))
+                                        in nodes_to_remove
                                         for c in consumers
                                     ):
-                                        nodes_to_remove.add(constant_node_names[in_tensor])
+                                        nodes_to_remove.add(
+                                            constant_node_names[in_tensor]
+                                        )
                                         nodes_to_remove.add(in_tensor)
 
                             new_nodes.append(new_const)
@@ -311,5 +335,7 @@ class MathCanonicalizer(Pass):
         del graph.node[:]
         graph.node.extend(kept_nodes)
 
-        log.info("Continuous Math Collapse: Folded %d constant math operations", math_count)
+        log.info(
+            "Continuous Math Collapse: Folded %d constant math operations", math_count
+        )
         return model

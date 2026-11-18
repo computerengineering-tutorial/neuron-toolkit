@@ -33,12 +33,16 @@ def export_simplified_onnx(
     Returns:
         The validated onnx.ModelProto.
     """
-    if hasattr(model_or_graph, "_backend") and hasattr(model_or_graph._backend, "model"):
+    if hasattr(model_or_graph, "_backend") and hasattr(
+        model_or_graph._backend, "model"
+    ):
         model = copy.deepcopy(model_or_graph._backend.model)
     elif isinstance(model_or_graph, onnx.ModelProto):
         model = copy.deepcopy(model_or_graph)
     else:
-        msg = f"Unsupported input type for export_simplified_onnx: {type(model_or_graph)}"
+        msg = (
+            f"Unsupported input type for export_simplified_onnx: {type(model_or_graph)}"
+        )
         raise TypeError(msg)
 
     if mode == "plain_custom_op":
@@ -65,5 +69,10 @@ def export_simplified_onnx(
 
     # Save to disk
     onnx.save(model, output_path)
-    log.info("Successfully exported %s model with %d nodes to %s", mode, len(model.graph.node), output_path)
+    log.info(
+        "Successfully exported %s model with %d nodes to %s",
+        mode,
+        len(model.graph.node),
+        output_path,
+    )
     return model

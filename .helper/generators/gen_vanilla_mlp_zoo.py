@@ -16,13 +16,13 @@ Exports across ONNX Opsets 14, 17, 18, 20.
 
 from __future__ import annotations
 
-from pathlib import Path
 import warnings
+from pathlib import Path
 
 import onnx
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
+from torch import nn
 
 warnings.filterwarnings("ignore")
 
@@ -34,7 +34,9 @@ OUT_DIR.mkdir(parents=True, exist_ok=True)
 # 1. Deep MLP with LayerNorm & GELU
 # =============================================================================
 class DeepMLP_Norm_Act(nn.Module):
-    def __init__(self, in_features: int = 64, hidden_features: int = 256, out_features: int = 64) -> None:
+    def __init__(
+        self, in_features: int = 64, hidden_features: int = 256, out_features: int = 64
+    ) -> None:
         super().__init__()
         self.fc1 = nn.Linear(in_features, hidden_features)
         self.norm1 = nn.LayerNorm(hidden_features)
@@ -79,7 +81,13 @@ class ResMLP_Block(nn.Module):
 # 3. MLP-Mixer Block
 # =============================================================================
 class MLPMixer_Block(nn.Module):
-    def __init__(self, num_patches: int = 16, num_channels: int = 64, tokens_mlp_dim: int = 32, channels_mlp_dim: int = 256) -> None:
+    def __init__(
+        self,
+        num_patches: int = 16,
+        num_channels: int = 64,
+        tokens_mlp_dim: int = 32,
+        channels_mlp_dim: int = 256,
+    ) -> None:
         super().__init__()
         self.norm1 = nn.LayerNorm(num_channels)
         self.token_mlp = nn.Sequential(
@@ -218,7 +226,9 @@ def export_model(
             m_proto = onnx.load(str(out_path))
             onnx.checker.check_model(m_proto)
             size_kb = out_path.stat().st_size / 1024.0
-            print(f"  [OK] Exported {out_path.name:<45} (opset={opset}, nodes={len(m_proto.graph.node):<3}, {size_kb:.1f} KB)")
+            print(
+                f"  [OK] Exported {out_path.name:<45} (opset={opset}, nodes={len(m_proto.graph.node):<3}, {size_kb:.1f} KB)"
+            )
             exported.append(str(out_path))
         except Exception as e:
             print(f"  [FAIL] Failed to export {out_path.name} (opset={opset}): {e}")
@@ -245,7 +255,9 @@ def main() -> None:
 
     for name, module in registry:
         print(f"\nModel: {name}")
-        export_model(module, (dummy_x,), ["x"], ["out"], name, opset_versions=[14, 17, 18, 20])
+        export_model(
+            module, (dummy_x,), ["x"], ["out"], name, opset_versions=[14, 17, 18, 20]
+        )
 
     print("\n==================================================================")
     print(f"Vanilla MLP & Feedforward ONNX suite complete in: {OUT_DIR.resolve()}")

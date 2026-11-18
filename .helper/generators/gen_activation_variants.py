@@ -15,10 +15,8 @@ import json
 from pathlib import Path
 
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
-import onnx
-from onnx import helper, TensorProto, numpy_helper
+from torch import nn
 
 
 class ErfGeluModule(nn.Module):
@@ -33,7 +31,9 @@ class TanhGeluModule(nn.Module):
     """Explicit Tanh approximation GELU formulation."""
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return 0.5 * x * (1.0 + torch.tanh(0.79788456 * (x + 0.044715 * torch.pow(x, 3))))
+        return (
+            0.5 * x * (1.0 + torch.tanh(0.79788456 * (x + 0.044715 * torch.pow(x, 3))))
+        )
 
 
 class SiluModule(nn.Module):

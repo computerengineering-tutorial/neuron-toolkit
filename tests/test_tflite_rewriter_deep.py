@@ -11,12 +11,12 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 import flatbuffers
-import networkx as nx
 import pytest
 import tflite
 
 from neuron_toolkit.backends.tflite.parser import TFLiteParser
 from neuron_toolkit.backends.tflite.rewriter import (
+    TFLiteRewriter,
     _copy_metadata,
     _copy_quantization,
     _copy_signature_def,
@@ -28,7 +28,6 @@ from neuron_toolkit.backends.tflite.rewriter import (
     _serialize_ReshapeOptions,
     _serialize_SoftmaxOptions,
     _serialize_SubOptions,
-    TFLiteRewriter,
 )
 from neuron_toolkit.pattern import MatchResult
 

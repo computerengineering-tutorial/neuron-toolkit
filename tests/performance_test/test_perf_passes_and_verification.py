@@ -83,7 +83,9 @@ def test_perf_compare_outputs_pytorch_verification():
     y_info = helper.make_tensor_value_info("output", TensorProto.FLOAT, [1, 3, 32, 32])
     relu_node = helper.make_node("Relu", ["input"], ["output"], name="relu0")
     graph_proto = helper.make_graph([relu_node], "relu_verify", [x_info], [y_info])
-    onnx_model = helper.make_model(graph_proto, ir_version=10, opset_imports=[helper.make_opsetid("", 17)])
+    onnx_model = helper.make_model(
+        graph_proto, ir_version=10, opset_imports=[helper.make_opsetid("", 17)]
+    )
 
     graph = NeuronGraph(onnx_model)
 

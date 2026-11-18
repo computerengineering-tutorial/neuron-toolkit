@@ -5,14 +5,13 @@ Exports models to ONNX across opset versions 14, 17, 18, and 20.
 
 from __future__ import annotations
 
-import math
 from pathlib import Path
 from typing import Any
 
 import onnx
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
+from torch import nn
 
 OUT_DIR = Path(".helper/models/ssm_mamba")
 OUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -48,7 +47,13 @@ class Mamba_SelectiveScanBlock(nn.Module):
         self.dt_proj = nn.Linear(1, self.d_inner, bias=True)
 
         # A parameter (log-space initialization)
-        self.A_log = nn.Parameter(torch.log(torch.arange(1, d_state + 1, dtype=torch.float32).repeat(self.d_inner, 1)))
+        self.A_log = nn.Parameter(
+            torch.log(
+                torch.arange(1, d_state + 1, dtype=torch.float32).repeat(
+                    self.d_inner, 1
+                )
+            )
+        )
 
         # D skip parameter
         self.D = nn.Parameter(torch.ones(self.d_inner))
@@ -167,10 +172,22 @@ class RWKV_ChannelMix(nn.Module):
 # =============================================================================
 def export_ssm_zoo() -> list[dict[str, Any]]:
     models: dict[str, tuple[nn.Module, tuple[torch.Tensor, ...], list[str]]] = {
-        "mamba_selective_scan": (Mamba_SelectiveScanBlock(64, 16), (torch.randn(2, 16, 64),), ["x"]),
-        "s4_state_space": (S4_StructuredStateSpace(64, 16), (torch.randn(2, 16, 64),), ["x"]),
+        "mamba_selective_scan": (
+            Mamba_SelectiveScanBlock(64, 16),
+            (torch.randn(2, 16, 64),),
+            ["x"],
+        ),
+        "s4_state_space": (
+            S4_StructuredStateSpace(64, 16),
+            (torch.randn(2, 16, 64),),
+            ["x"],
+        ),
         "rwkv_time_mix": (RWKV_TimeMix(64), (torch.randn(2, 16, 64),), ["x"]),
-        "rwkv_channel_mix": (RWKV_ChannelMix(64, 128), (torch.randn(2, 16, 64),), ["x"]),
+        "rwkv_channel_mix": (
+            RWKV_ChannelMix(64, 128),
+            (torch.randn(2, 16, 64),),
+            ["x"],
+        ),
     }
 
     opsets = [14, 17, 18, 20]
@@ -193,8 +210,17 @@ def export_ssm_zoo() -> list[dict[str, Any]]:
                 m = onnx.load(str(out_path))
                 m.ir_version = min(m.ir_version, 10)
                 onnx.save(m, str(out_path))
-                catalog.append({"name": name, "opset": opset, "path": str(out_path), "nodes": len(m.graph.node)})
-                print(f"[SSM Zoo] Exported {out_path.name} (opset {opset}, {len(m.graph.node)} nodes)")
+                catalog.append(
+                    {
+                        "name": name,
+                        "opset": opset,
+                        "path": str(out_path),
+                        "nodes": len(m.graph.node),
+                    }
+                )
+                print(
+                    f"[SSM Zoo] Exported {out_path.name} (opset {opset}, {len(m.graph.node)} nodes)"
+                )
             except Exception as e:
                 print(f"[SSM Zoo] Failed to export {name} for opset {opset}: {e}")
 

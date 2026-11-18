@@ -81,6 +81,54 @@ opt_graph, stats = graph.optimize()
 opt_graph.save("optimized.onnx")
 ```
 
+### Iterative Fixed-Point Optimization (`run_until_fixed_point`)
+
+Many passes enable further opportunities for subsequent passes (for example, constant folding creates dead nodes, and inlining operations produces redundant common subexpressions). To guarantee complete graph minification, run passes iteratively until node counts stabilize:
+
+```python
+pm = PassManager([
+    ConstantFolding(),
+    CommonSubexpressionElimination(),
+    DeadCodeElimination(),
+])
+
+# Runs the pipeline in a loop until no more nodes change or max_iterations reached:
+stabilized_graph, stats = pm.run_until_fixed_point(graph, max_iterations=10)
+print(f"Initial: {stats.initial_nodes} -> Final: {stats.final_nodes}")
+```
+
+### Declarative High-Level Graph Transformations (`graph.apply_json_rules`)
+
+`NeuronGraph` provides a first-class bridge to the declarative JSON pattern rules engine:
+
+```python
+# Apply all built-in declarative JSON rewrite rules (Cast folding, GELU, RMSNorm, SDPA, SwiGLU)
+opt_graph = graph.apply_json_rules(mode="function_proto")
+
+# Or selectively apply a targeted subset of rules by ID
+opt_graph = graph.apply_json_rules(
+    rules=["erf_gelu_canonicalization", "feedforward_swiglu_fusion"],
+    mode="function_proto"
+)
+```
+
+### Native PyTorch Execution & Differential Verification on `NeuronGraph`
+
+Verify numerical equivalence between the unoptimized graph and optimized graph in a single line:
+
+```python
+import numpy as np
+
+# 1. Execute graph directly using native PyTorch runtime:
+inputs = {"x": np.random.randn(1, 4, 400, 32).astype(np.float32)}
+outputs = opt_graph.run_pytorch(inputs, device="cpu")
+
+# 2. Cross-verify against ONNX Runtime reference:
+report = graph.cross_verify(opt_graph, inputs=inputs, rtol=1e-4, atol=1e-4)
+print(report.summary())
+assert report.all_passed
+```
+
 ---
 
 ## 2. Declarative Transformation Engine (`RewriteRule`)

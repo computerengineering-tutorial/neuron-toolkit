@@ -19,13 +19,12 @@ Exports across ONNX Opsets 14, 17, 18, 20.
 
 from __future__ import annotations
 
-from pathlib import Path
 import warnings
+from pathlib import Path
 
 import onnx
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
+from torch import nn
 
 warnings.filterwarnings("ignore")
 
@@ -98,7 +97,9 @@ class MobileNetV2_InvertedResidual(nn.Module):
         super().__init__()
         self.expand = nn.Conv2d(in_c, expand_c, kernel_size=1, bias=False)
         self.bn_exp = nn.BatchNorm2d(expand_c)
-        self.depthwise = nn.Conv2d(expand_c, expand_c, kernel_size=3, padding=1, groups=expand_c, bias=False)
+        self.depthwise = nn.Conv2d(
+            expand_c, expand_c, kernel_size=3, padding=1, groups=expand_c, bias=False
+        )
         self.bn_dw = nn.BatchNorm2d(expand_c)
         self.project = nn.Conv2d(expand_c, out_c, kernel_size=1, bias=False)
         self.bn_proj = nn.BatchNorm2d(out_c)
@@ -116,11 +117,15 @@ class MobileNetV2_InvertedResidual(nn.Module):
 # 5. MobileNetV3 Block with Squeeze-and-Excitation & Hardswish
 # =============================================================================
 class MobileNetV3_Block(nn.Module):
-    def __init__(self, in_c: int = 32, expand_c: int = 64, out_c: int = 32, se_reduce: int = 8) -> None:
+    def __init__(
+        self, in_c: int = 32, expand_c: int = 64, out_c: int = 32, se_reduce: int = 8
+    ) -> None:
         super().__init__()
         self.expand = nn.Conv2d(in_c, expand_c, kernel_size=1, bias=False)
         self.bn_exp = nn.BatchNorm2d(expand_c)
-        self.depthwise = nn.Conv2d(expand_c, expand_c, kernel_size=3, padding=1, groups=expand_c, bias=False)
+        self.depthwise = nn.Conv2d(
+            expand_c, expand_c, kernel_size=3, padding=1, groups=expand_c, bias=False
+        )
         self.bn_dw = nn.BatchNorm2d(expand_c)
 
         # Squeeze-and-Excitation
@@ -198,7 +203,14 @@ class ResNeXt_GroupedConvBlock(nn.Module):
         hidden_dim = cardinality * group_w
         self.conv1 = nn.Conv2d(in_c, hidden_dim, kernel_size=1, bias=False)
         self.bn1 = nn.BatchNorm2d(hidden_dim)
-        self.conv2 = nn.Conv2d(hidden_dim, hidden_dim, kernel_size=3, padding=1, groups=cardinality, bias=False)
+        self.conv2 = nn.Conv2d(
+            hidden_dim,
+            hidden_dim,
+            kernel_size=3,
+            padding=1,
+            groups=cardinality,
+            bias=False,
+        )
         self.bn2 = nn.BatchNorm2d(hidden_dim)
         self.conv3 = nn.Conv2d(hidden_dim, in_c, kernel_size=1, bias=False)
         self.bn3 = nn.BatchNorm2d(in_c)
@@ -220,7 +232,9 @@ class TCN_DilatedConvBlock(nn.Module):
         super().__init__()
         self.dilation = dilation
         self.pad = (3 - 1) * dilation
-        self.conv = nn.Conv1d(in_c, out_c, kernel_size=3, padding=self.pad, dilation=dilation)
+        self.conv = nn.Conv1d(
+            in_c, out_c, kernel_size=3, padding=self.pad, dilation=dilation
+        )
         self.norm = nn.BatchNorm1d(out_c)
         self.relu = nn.ReLU(inplace=True)
 
@@ -239,7 +253,9 @@ class WaveNet_GatedDilatedConv(nn.Module):
     def __init__(self, in_c: int = 32, dilation: int = 2) -> None:
         super().__init__()
         self.pad = (2 - 1) * dilation
-        self.conv = nn.Conv1d(in_c, 2 * in_c, kernel_size=2, padding=self.pad, dilation=dilation)
+        self.conv = nn.Conv1d(
+            in_c, 2 * in_c, kernel_size=2, padding=self.pad, dilation=dilation
+        )
         self.res_proj = nn.Conv1d(in_c, in_c, kernel_size=1)
         self.skip_proj = nn.Conv1d(in_c, in_c, kernel_size=1)
 
@@ -295,7 +311,9 @@ def export_model(
             m_proto = onnx.load(str(out_path))
             onnx.checker.check_model(m_proto)
             size_kb = out_path.stat().st_size / 1024.0
-            print(f"  [OK] Exported {out_path.name:<45} (opset={opset}, nodes={len(m_proto.graph.node):<3}, {size_kb:.1f} KB)")
+            print(
+                f"  [OK] Exported {out_path.name:<45} (opset={opset}, nodes={len(m_proto.graph.node):<3}, {size_kb:.1f} KB)"
+            )
             exported.append(str(out_path))
         except Exception as e:
             print(f"  [FAIL] Failed to export {out_path.name} (opset={opset}): {e}")
@@ -315,7 +333,9 @@ def main() -> None:
 
     # 1. StandardConv2D_BN_ReLU
     print("\n1. StandardConv2D_BN_ReLU")
-    export_model(StandardConv2D_BN_ReLU(16, 32), (dummy_2d_16,), ["x"], ["out"], "conv2d_bn_relu")
+    export_model(
+        StandardConv2D_BN_ReLU(16, 32), (dummy_2d_16,), ["x"], ["out"], "conv2d_bn_relu"
+    )
 
     # 2. ResNetBasicBlock
     print("\n2. ResNetBasicBlock")
@@ -323,15 +343,33 @@ def main() -> None:
 
     # 3. ResNetBottleneckBlock
     print("\n3. ResNetBottleneckBlock")
-    export_model(ResNetBottleneckBlock(64, 16, 64), (dummy_2d_64,), ["x"], ["out"], "resnet_bottleneck")
+    export_model(
+        ResNetBottleneckBlock(64, 16, 64),
+        (dummy_2d_64,),
+        ["x"],
+        ["out"],
+        "resnet_bottleneck",
+    )
 
     # 4. MobileNetV2_InvertedResidual
     print("\n4. MobileNetV2_InvertedResidual")
-    export_model(MobileNetV2_InvertedResidual(32, 64, 32), (dummy_2d_32,), ["x"], ["out"], "mobilenetv2_invres")
+    export_model(
+        MobileNetV2_InvertedResidual(32, 64, 32),
+        (dummy_2d_32,),
+        ["x"],
+        ["out"],
+        "mobilenetv2_invres",
+    )
 
     # 5. MobileNetV3_Block
     print("\n5. MobileNetV3_Block")
-    export_model(MobileNetV3_Block(32, 64, 32), (dummy_2d_32,), ["x"], ["out"], "mobilenetv3_block")
+    export_model(
+        MobileNetV3_Block(32, 64, 32),
+        (dummy_2d_32,),
+        ["x"],
+        ["out"],
+        "mobilenetv3_block",
+    )
 
     # 6. ConvNeXt_Block
     print("\n6. ConvNeXt_Block")
@@ -339,23 +377,49 @@ def main() -> None:
 
     # 7. DenseNet_Block
     print("\n7. DenseNet_Block")
-    export_model(DenseNet_Block(16, 16), (dummy_2d_16,), ["x"], ["out"], "densenet_block")
+    export_model(
+        DenseNet_Block(16, 16), (dummy_2d_16,), ["x"], ["out"], "densenet_block"
+    )
 
     # 8. ResNeXt_GroupedConvBlock
     print("\n8. ResNeXt_GroupedConvBlock")
-    export_model(ResNeXt_GroupedConvBlock(64, 8, 8), (dummy_2d_64,), ["x"], ["out"], "resnext_block")
+    export_model(
+        ResNeXt_GroupedConvBlock(64, 8, 8),
+        (dummy_2d_64,),
+        ["x"],
+        ["out"],
+        "resnext_block",
+    )
 
     # 9. TCN_DilatedConvBlock
     print("\n9. TCN_DilatedConvBlock")
-    export_model(TCN_DilatedConvBlock(32, 32, dilation=2), (dummy_1d,), ["x"], ["out"], "tcn_dilated")
+    export_model(
+        TCN_DilatedConvBlock(32, 32, dilation=2),
+        (dummy_1d,),
+        ["x"],
+        ["out"],
+        "tcn_dilated",
+    )
 
     # 10. WaveNet_GatedDilatedConv
     print("\n10. WaveNet_GatedDilatedConv")
-    export_model(WaveNet_GatedDilatedConv(32, dilation=2), (dummy_1d,), ["x"], ["res", "skip"], "wavenet_gated")
+    export_model(
+        WaveNet_GatedDilatedConv(32, dilation=2),
+        (dummy_1d,),
+        ["x"],
+        ["res", "skip"],
+        "wavenet_gated",
+    )
 
     # 11. Conv3D_SpatioTemporalBlock
     print("\n11. Conv3D_SpatioTemporalBlock")
-    export_model(Conv3D_SpatioTemporalBlock(8, 16), (dummy_3d,), ["x"], ["out"], "conv3d_spatiotemporal")
+    export_model(
+        Conv3D_SpatioTemporalBlock(8, 16),
+        (dummy_3d,),
+        ["x"],
+        ["out"],
+        "conv3d_spatiotemporal",
+    )
 
     print("\n==================================================================")
     print(f"CNN & Computer Vision ONNX suite complete in: {OUT_DIR.resolve()}")

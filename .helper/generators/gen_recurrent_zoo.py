@@ -18,14 +18,12 @@ Exports across ONNX Opsets 14, 17, 18, 20.
 
 from __future__ import annotations
 
-import math
-from pathlib import Path
 import warnings
+from pathlib import Path
 
 import onnx
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
+from torch import nn
 
 warnings.filterwarnings("ignore")
 
@@ -39,7 +37,12 @@ OUT_DIR.mkdir(parents=True, exist_ok=True)
 class VanillaRNN_Single(nn.Module):
     def __init__(self, input_size: int = 32, hidden_size: int = 32) -> None:
         super().__init__()
-        self.rnn = nn.RNN(input_size=input_size, hidden_size=hidden_size, batch_first=True, nonlinearity="tanh")
+        self.rnn = nn.RNN(
+            input_size=input_size,
+            hidden_size=hidden_size,
+            batch_first=True,
+            nonlinearity="tanh",
+        )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         out, _ = self.rnn(x)
@@ -47,9 +50,17 @@ class VanillaRNN_Single(nn.Module):
 
 
 class VanillaRNN_Multi(nn.Module):
-    def __init__(self, input_size: int = 32, hidden_size: int = 32, num_layers: int = 2) -> None:
+    def __init__(
+        self, input_size: int = 32, hidden_size: int = 32, num_layers: int = 2
+    ) -> None:
         super().__init__()
-        self.rnn = nn.RNN(input_size=input_size, hidden_size=hidden_size, num_layers=num_layers, batch_first=True, nonlinearity="relu")
+        self.rnn = nn.RNN(
+            input_size=input_size,
+            hidden_size=hidden_size,
+            num_layers=num_layers,
+            batch_first=True,
+            nonlinearity="relu",
+        )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         out, _ = self.rnn(x)
@@ -62,7 +73,12 @@ class VanillaRNN_Multi(nn.Module):
 class StandardLSTM_Uni(nn.Module):
     def __init__(self, input_size: int = 32, hidden_size: int = 32) -> None:
         super().__init__()
-        self.lstm = nn.LSTM(input_size=input_size, hidden_size=hidden_size, batch_first=True, bidirectional=False)
+        self.lstm = nn.LSTM(
+            input_size=input_size,
+            hidden_size=hidden_size,
+            batch_first=True,
+            bidirectional=False,
+        )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         out, (h_n, c_n) = self.lstm(x)
@@ -72,7 +88,12 @@ class StandardLSTM_Uni(nn.Module):
 class StandardLSTM_Bi(nn.Module):
     def __init__(self, input_size: int = 32, hidden_size: int = 32) -> None:
         super().__init__()
-        self.lstm = nn.LSTM(input_size=input_size, hidden_size=hidden_size, batch_first=True, bidirectional=True)
+        self.lstm = nn.LSTM(
+            input_size=input_size,
+            hidden_size=hidden_size,
+            batch_first=True,
+            bidirectional=True,
+        )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         out, _ = self.lstm(x)
@@ -85,7 +106,12 @@ class StandardLSTM_Bi(nn.Module):
 class StandardGRU_Uni(nn.Module):
     def __init__(self, input_size: int = 32, hidden_size: int = 32) -> None:
         super().__init__()
-        self.gru = nn.GRU(input_size=input_size, hidden_size=hidden_size, batch_first=True, bidirectional=False)
+        self.gru = nn.GRU(
+            input_size=input_size,
+            hidden_size=hidden_size,
+            batch_first=True,
+            bidirectional=False,
+        )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         out, _ = self.gru(x)
@@ -95,7 +121,12 @@ class StandardGRU_Uni(nn.Module):
 class StandardGRU_Bi(nn.Module):
     def __init__(self, input_size: int = 32, hidden_size: int = 32) -> None:
         super().__init__()
-        self.gru = nn.GRU(input_size=input_size, hidden_size=hidden_size, batch_first=True, bidirectional=True)
+        self.gru = nn.GRU(
+            input_size=input_size,
+            hidden_size=hidden_size,
+            batch_first=True,
+            bidirectional=True,
+        )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         out, _ = self.gru(x)
@@ -167,10 +198,17 @@ class CustomCellGRU(nn.Module):
 class QuasiRNN_QRNN(nn.Module):
     """Quasi-RNN: Convolutional feature extraction followed by f-pooling."""
 
-    def __init__(self, input_size: int = 32, hidden_size: int = 32, kernel_size: int = 3) -> None:
+    def __init__(
+        self, input_size: int = 32, hidden_size: int = 32, kernel_size: int = 3
+    ) -> None:
         super().__init__()
         self.hidden_size = hidden_size
-        self.conv = nn.Conv1d(input_size, 3 * hidden_size, kernel_size=kernel_size, padding=kernel_size - 1)
+        self.conv = nn.Conv1d(
+            input_size,
+            3 * hidden_size,
+            kernel_size=kernel_size,
+            padding=kernel_size - 1,
+        )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # x: (B, S, D) -> (B, D, S)
@@ -246,7 +284,9 @@ def export_model(
             m_proto = onnx.load(str(out_path))
             onnx.checker.check_model(m_proto)
             size_kb = out_path.stat().st_size / 1024.0
-            print(f"  [OK] Exported {out_path.name:<45} (opset={opset}, nodes={len(m_proto.graph.node):<3}, {size_kb:.1f} KB)")
+            print(
+                f"  [OK] Exported {out_path.name:<45} (opset={opset}, nodes={len(m_proto.graph.node):<3}, {size_kb:.1f} KB)"
+            )
             exported.append(str(out_path))
         except Exception as e:
             print(f"  [FAIL] Failed to export {out_path.name} (opset={opset}): {e}")

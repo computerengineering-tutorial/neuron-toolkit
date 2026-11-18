@@ -18,6 +18,7 @@ from neuron_toolkit.egraph.rules import saturate
 from neuron_toolkit.pattern.detector import PatternDetector
 from neuron_toolkit.pattern.dsl import Pattern
 from neuron_toolkit.runtime.runner import PyTorchRunner
+
 from .perf_utils import create_large_onnx_model
 
 
@@ -57,6 +58,7 @@ def test_benchmark_precompiled_pytorch_runner(benchmark):
 
 def test_benchmark_indexed_egraph_saturation(benchmark):
     """Benchmark Equality Saturation convergence using opcode-indexed rules."""
+
     def build_and_saturate():
         eg = EGraph()
         # Build expression: ((x + 0) * 1) + ((y * 1) + 0)
@@ -84,7 +86,9 @@ def test_benchmark_indexed_egraph_saturation(benchmark):
 def test_lazy_tensor_map_resilience():
     """Verify LazyTensorMap gracefully handles unlocatable/corrupted initializers."""
     from unittest.mock import MagicMock
+
     import onnx
+
     from neuron_toolkit.backends.onnx.parser import LazyTensorMap
 
     bad_init = MagicMock(spec=onnx.TensorProto)

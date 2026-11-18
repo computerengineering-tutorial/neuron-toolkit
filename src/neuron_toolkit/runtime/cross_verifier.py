@@ -50,15 +50,26 @@ class CrossVerificationReport:
 
     def summary(self) -> str:
         """Format an ASCII/Markdown summary table of the verification results."""
-        std_pct = (self.standard_nodes / max(1, self.simplified_nodes)) * 100.0 if self.simplified_nodes > 0 else 0.0
+        std_pct = (
+            (self.standard_nodes / max(1, self.simplified_nodes)) * 100.0
+            if self.simplified_nodes > 0
+            else 0.0
+        )
         custom_ratio_str = (
             f"1 : {self.standard_nodes / self.custom_nodes:.2f}"
             if self.custom_nodes > 0
             else "N/A (0 custom ops)"
         )
 
-        custom_ops_list = [f"{k} ({v})" for k, v in sorted(self.custom_op_breakdown.items(), key=lambda x: -x[1])]
-        custom_ops_summary = ", ".join(custom_ops_list) if custom_ops_list else "None (all standard ONNX)"
+        custom_ops_list = [
+            f"{k} ({v})"
+            for k, v in sorted(self.custom_op_breakdown.items(), key=lambda x: -x[1])
+        ]
+        custom_ops_summary = (
+            ", ".join(custom_ops_list)
+            if custom_ops_list
+            else "None (all standard ONNX)"
+        )
 
         lines = [
             "==================================================================",
@@ -82,7 +93,9 @@ class CrossVerificationReport:
             lines.append(
                 f"{name:<20} {shape_str:<16} {m.max_abs_diff:<12.3e} {m.mse:<12.3e} {m.cosine_similarity:<10.6f} {status_str}"
             )
-        lines.append("==================================================================")
+        lines.append(
+            "=================================================================="
+        )
         return "\n".join(lines)
 
 
@@ -107,9 +120,9 @@ class CrossVerifier:
     def _to_proto(self, obj: Any) -> onnx.ModelProto:
         if isinstance(obj, str):
             return onnx.load(obj)
-        elif hasattr(obj, "_backend") and hasattr(obj._backend, "model"):
+        if hasattr(obj, "_backend") and hasattr(obj._backend, "model"):
             return copy.deepcopy(obj._backend.model)
-        elif isinstance(obj, onnx.ModelProto):
+        if isinstance(obj, onnx.ModelProto):
             return copy.deepcopy(obj)
         msg = f"Cannot convert {type(obj)} to onnx.ModelProto"
         raise TypeError(msg)
@@ -166,7 +179,10 @@ class CrossVerifier:
             ort_raw_outs = ort_session.run(None, inputs)
             ref_outs = dict(zip(ort_out_names, ort_raw_outs, strict=False))
         except Exception as e:
-            log.warning("ORT failed to load reference model (%s). Falling back to PyTorch reference runner.", e)
+            log.warning(
+                "ORT failed to load reference model (%s). Falling back to PyTorch reference runner.",
+                e,
+            )
             ref_runner = PyTorchRunner(self.orig_proto)
             ref_outs = ref_runner.run(inputs)
 
@@ -198,15 +214,23 @@ class CrossVerifier:
                 test_num = test_arr.astype(np.float64)
                 diff = np.abs(ref_num - test_num)
                 max_diff = float(np.max(diff)) if diff.size > 0 else 0.0
-                mse = float(np.mean(diff ** 2)) if diff.size > 0 else 0.0
+                mse = float(np.mean(diff**2)) if diff.size > 0 else 0.0
                 cosine_sim = 1.0 if bool_match else 0.0
                 passed = bool_match
             else:
-                ref_num = ref_arr.astype(np.float64) if np.issubdtype(ref_arr.dtype, np.integer) else ref_arr
-                test_num = test_arr.astype(np.float64) if np.issubdtype(test_arr.dtype, np.integer) else test_arr
+                ref_num = (
+                    ref_arr.astype(np.float64)
+                    if np.issubdtype(ref_arr.dtype, np.integer)
+                    else ref_arr
+                )
+                test_num = (
+                    test_arr.astype(np.float64)
+                    if np.issubdtype(test_arr.dtype, np.integer)
+                    else test_arr
+                )
                 diff = np.abs(ref_num - test_num)
                 max_diff = float(np.max(diff)) if diff.size > 0 else 0.0
-                mse = float(np.mean(diff ** 2)) if diff.size > 0 else 0.0
+                mse = float(np.mean(diff**2)) if diff.size > 0 else 0.0
 
                 # Cosine similarity
                 ref_flat = ref_arr.flatten().astype(np.float64)
@@ -262,7 +286,10 @@ class CrossVerifier:
             is_custom = (
                 domain in ("custom.pytorch", "custom")
                 or domain.startswith("custom.")
-                or (domain not in ("", "ai.onnx", "ai.onnx.ml", "ai.onnx.preview.training"))
+                or (
+                    domain
+                    not in ("", "ai.onnx", "ai.onnx.ml", "ai.onnx.preview.training")
+                )
                 or n.op_type in custom_op_names
             )
             if is_custom:

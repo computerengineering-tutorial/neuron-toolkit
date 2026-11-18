@@ -9,7 +9,6 @@ from pathlib import Path
 from typing import Any
 
 import onnx
-from onnx import helper
 
 log = logging.getLogger(__name__)
 
@@ -60,7 +59,11 @@ class ArchitectureCatalog:
         for sig_dict in data.get("signatures", []):
             sig = BlockSignature.from_dict(sig_dict)
             self.signatures[sig.name] = sig
-        log.info("Loaded %d architectural block signatures from %s", len(self.signatures), self.catalog_path.name)
+        log.info(
+            "Loaded %d architectural block signatures from %s",
+            len(self.signatures),
+            self.catalog_path.name,
+        )
 
     def register_signature(self, signature: BlockSignature) -> None:
         self.signatures[signature.name] = signature
@@ -78,7 +81,9 @@ class SignatureEngine:
     def __init__(self, catalog: ArchitectureCatalog | None = None) -> None:
         self.catalog = catalog or ArchitectureCatalog()
 
-    def discover_subgraphs(self, model: onnx.ModelProto) -> dict[str, list[dict[str, Any]]]:
+    def discover_subgraphs(
+        self, model: onnx.ModelProto
+    ) -> dict[str, list[dict[str, Any]]]:
         """Detect occurrence of architectural patterns across the model graph."""
         graph = model.graph
         discovered: dict[str, list[dict[str, Any]]] = {}
@@ -99,11 +104,17 @@ class SignatureEngine:
                     break
 
             if possible:
-                discovered[name] = [{
-                    "signature": sig.name,
-                    "category": sig.category,
-                    "matched_ops": sig.sub_ops,
-                    "confidence": min(1.0, sum(op_counts.get(op, 0) for op in sig.sub_ops) / max(1, len(graph.node))),
-                }]
+                discovered[name] = [
+                    {
+                        "signature": sig.name,
+                        "category": sig.category,
+                        "matched_ops": sig.sub_ops,
+                        "confidence": min(
+                            1.0,
+                            sum(op_counts.get(op, 0) for op in sig.sub_ops)
+                            / max(1, len(graph.node)),
+                        ),
+                    }
+                ]
 
         return discovered

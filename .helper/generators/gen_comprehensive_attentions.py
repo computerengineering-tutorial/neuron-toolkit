@@ -24,13 +24,13 @@ Exports across multiple ONNX Opset versions: 14, 17, 18, 20, 23.
 from __future__ import annotations
 
 import math
-from pathlib import Path
 import warnings
+from pathlib import Path
 
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
 import onnx
+import torch
+import torch.nn.functional as F
+from torch import nn
 
 warnings.filterwarnings("ignore")
 
@@ -159,7 +159,7 @@ class RotaryMHA(nn.Module):
         B, S, D = x.shape
         # RMSNorm
         norm = torch.norm(x, p=2, dim=-1, keepdim=True)
-        scale_rms = (D ** 0.5) / torch.clamp(norm, min=1e-12)
+        scale_rms = (D**0.5) / torch.clamp(norm, min=1e-12)
         x_norm = x * scale_rms * self.gamma
 
         qkv = self.qkv_proj(x_norm)
@@ -183,7 +183,9 @@ class RotaryMHA(nn.Module):
 # 5. Grouped-Query Attention (GQA - LLaMA 3, Mistral 7B)
 # =============================================================================
 class GroupedQueryAttention_GQA(nn.Module):
-    def __init__(self, d_model: int = 64, num_q_heads: int = 8, num_kv_heads: int = 2) -> None:
+    def __init__(
+        self, d_model: int = 64, num_q_heads: int = 8, num_kv_heads: int = 2
+    ) -> None:
         super().__init__()
         self.d_model = d_model
         self.num_q_heads = num_q_heads
@@ -261,13 +263,27 @@ class CrossAttention(nn.Module):
         self.v_proj = nn.Linear(d_model, d_model)
         self.out_proj = nn.Linear(d_model, d_model)
 
-    def forward(self, hidden_states: torch.Tensor, encoder_hidden_states: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self, hidden_states: torch.Tensor, encoder_hidden_states: torch.Tensor
+    ) -> torch.Tensor:
         B, S_dec, D = hidden_states.shape
         _, S_enc, _ = encoder_hidden_states.shape
 
-        q = self.q_proj(hidden_states).view(B, S_dec, self.num_heads, self.head_dim).transpose(1, 2)
-        k = self.k_proj(encoder_hidden_states).view(B, S_enc, self.num_heads, self.head_dim).transpose(1, 2)
-        v = self.v_proj(encoder_hidden_states).view(B, S_enc, self.num_heads, self.head_dim).transpose(1, 2)
+        q = (
+            self.q_proj(hidden_states)
+            .view(B, S_dec, self.num_heads, self.head_dim)
+            .transpose(1, 2)
+        )
+        k = (
+            self.k_proj(encoder_hidden_states)
+            .view(B, S_enc, self.num_heads, self.head_dim)
+            .transpose(1, 2)
+        )
+        v = (
+            self.v_proj(encoder_hidden_states)
+            .view(B, S_enc, self.num_heads, self.head_dim)
+            .transpose(1, 2)
+        )
 
         scale = 1.0 / math.sqrt(self.head_dim)
         scores = torch.matmul(q * scale, k.transpose(-1, -2))
@@ -305,7 +321,9 @@ class GatedAttention_Sigmoid(nn.Module):
         attn_out = torch.matmul(probs, v)
 
         # Gate projection
-        gate = self.gate_proj(x).view(B, S, self.num_heads, self.head_dim).transpose(1, 2)
+        gate = (
+            self.gate_proj(x).view(B, S, self.num_heads, self.head_dim).transpose(1, 2)
+        )
         gated_attn = attn_out * torch.sigmoid(gate)
 
         out = gated_attn.transpose(1, 2).contiguous().view(B, S, D)
@@ -340,7 +358,9 @@ class GatedAttention_SiLU(nn.Module):
         probs = torch.softmax(scores, dim=-1)
         attn_out = torch.matmul(probs, v)
 
-        gate = self.gate_proj(x).view(B, S, self.num_heads, self.head_dim).transpose(1, 2)
+        gate = (
+            self.gate_proj(x).view(B, S, self.num_heads, self.head_dim).transpose(1, 2)
+        )
         gated_attn = attn_out * F.silu(gate)
 
         out = gated_attn.transpose(1, 2).contiguous().view(B, S, D)
@@ -375,7 +395,9 @@ class GatedAttention_GELU(nn.Module):
         probs = torch.softmax(scores, dim=-1)
         attn_out = torch.matmul(probs, v)
 
-        gate = self.gate_proj(x).view(B, S, self.num_heads, self.head_dim).transpose(1, 2)
+        gate = (
+            self.gate_proj(x).view(B, S, self.num_heads, self.head_dim).transpose(1, 2)
+        )
         gated_attn = attn_out * F.gelu(gate)
 
         out = gated_attn.transpose(1, 2).contiguous().view(B, S, D)
@@ -386,7 +408,9 @@ class GatedAttention_GELU(nn.Module):
 # 11. T5 Relative Position Bias Attention
 # =============================================================================
 class T5_RelativePositionAttention(nn.Module):
-    def __init__(self, d_model: int = 64, num_heads: int = 4, num_buckets: int = 32) -> None:
+    def __init__(
+        self, d_model: int = 64, num_heads: int = 4, num_buckets: int = 32
+    ) -> None:
         super().__init__()
         self.d_model = d_model
         self.num_heads = num_heads
@@ -433,7 +457,9 @@ class ALiBi_Attention(nn.Module):
         self.out_proj = nn.Linear(d_model, d_model, bias=False)
 
         # Geometric slope distribution
-        slopes = torch.tensor([2.0 ** (-8.0 * i / num_heads) for i in range(1, num_heads + 1)])
+        slopes = torch.tensor(
+            [2.0 ** (-8.0 * i / num_heads) for i in range(1, num_heads + 1)]
+        )
         self.register_buffer("slopes", slopes)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -465,6 +491,7 @@ class ALiBi_Attention(nn.Module):
 def get_hf_gpt2_attention():
     from transformers.models.gpt2.configuration_gpt2 import GPT2Config
     from transformers.models.gpt2.modeling_gpt2 import GPT2Attention
+
     config = GPT2Config(n_embd=64, n_head=4, n_positions=128)
     layer = GPT2Attention(config)
     layer.eval()
@@ -473,15 +500,26 @@ def get_hf_gpt2_attention():
         def __init__(self, attn):
             super().__init__()
             self.attn = attn
+
         def forward(self, x: torch.Tensor) -> torch.Tensor:
             return self.attn(x)[0]
+
     return HF_GPT2_Wrapper(layer)
 
 
 def get_hf_llama_attention():
     from transformers.models.llama.configuration_llama import LlamaConfig
-    from transformers.models.llama.modeling_llama import LlamaAttention, LlamaRotaryEmbedding
-    config = LlamaConfig(hidden_size=64, num_attention_heads=4, num_key_value_heads=4, max_position_embeddings=128)
+    from transformers.models.llama.modeling_llama import (
+        LlamaAttention,
+        LlamaRotaryEmbedding,
+    )
+
+    config = LlamaConfig(
+        hidden_size=64,
+        num_attention_heads=4,
+        num_key_value_heads=4,
+        max_position_embeddings=128,
+    )
     config._attn_implementation = "eager"
 
     class HF_Llama_Wrapper(nn.Module):
@@ -490,25 +528,36 @@ def get_hf_llama_attention():
             self.rotary = LlamaRotaryEmbedding(config)
             self.attn = LlamaAttention(config, layer_idx=0)
             self.eval()
+
         def forward(self, x: torch.Tensor, pos_ids: torch.Tensor) -> torch.Tensor:
             cos, sin = self.rotary(x, pos_ids)
             return self.attn(x, position_embeddings=(cos, sin))[0]
+
     return HF_Llama_Wrapper(config)
 
 
 def get_hf_whisper_attention():
     from transformers.models.whisper.configuration_whisper import WhisperConfig
     from transformers.models.whisper.modeling_whisper import WhisperAttention
-    config = WhisperConfig(d_model=64, decoder_attention_heads=4, max_target_positions=128)
+
+    config = WhisperConfig(
+        d_model=64, decoder_attention_heads=4, max_target_positions=128
+    )
     config._attn_implementation = "eager"
 
     class HF_Whisper_Wrapper(nn.Module):
         def __init__(self, config):
             super().__init__()
-            self.attn = WhisperAttention(embed_dim=64, num_heads=4, config=config, layer_idx=0, is_decoder=True)
+            self.attn = WhisperAttention(
+                embed_dim=64, num_heads=4, config=config, layer_idx=0, is_decoder=True
+            )
             self.eval()
-        def forward(self, x: torch.Tensor, key_val_states: torch.Tensor) -> torch.Tensor:
+
+        def forward(
+            self, x: torch.Tensor, key_val_states: torch.Tensor
+        ) -> torch.Tensor:
             return self.attn(x, key_value_states=key_val_states)[0]
+
     return HF_Whisper_Wrapper(config)
 
 
@@ -540,7 +589,9 @@ def export_model(
             m_proto = onnx.load(str(out_path))
             onnx.checker.check_model(m_proto)
             size_kb = out_path.stat().st_size / 1024.0
-            print(f"  [OK] Exported {out_path.name:<45} (opset={opset}, nodes={len(m_proto.graph.node):<3}, {size_kb:.1f} KB)")
+            print(
+                f"  [OK] Exported {out_path.name:<45} (opset={opset}, nodes={len(m_proto.graph.node):<3}, {size_kb:.1f} KB)"
+            )
         except Exception as e:
             print(f"  [FAIL] Failed to export {out_path.name} (opset={opset}): {e}")
 
