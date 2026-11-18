@@ -120,3 +120,26 @@ neuron export model.onnx --format mermaid --output graph.mmd
 # Export model parameters to zero-copy Safetensors
 neuron export model.onnx --format safetensors --output weights.safetensors
 ```
+
+---
+
+## 6. AST Codebase Analysis & Codemap (`neuron ast`)
+
+Parse and query Python codebase architecture, class/function hierarchies, and documentation coverage via the built-in AST code intelligence engine:
+
+```bash
+# Generate hierarchical ASCII codemap of the src directory
+neuron ast --dir src --codemap
+
+# Search for symbols by regex pattern across codebase
+neuron ast --dir src --query "apply_.*fusion"
+
+# Find functions or classes containing specific docstring keywords
+neuron ast --dir src --doc-query "softcapping"
+
+# Scan for undocumented functions, classes, and methods
+neuron ast --dir src --missing-docs
+
+# Export AST structural analysis in JSON format
+neuron ast --dir src --query ".*Pipeline.*" --json
+```

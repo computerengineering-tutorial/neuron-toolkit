@@ -76,8 +76,8 @@ For fine-grained control over passes, execution order, and logging, use `Optimiz
 from neuron_toolkit.compiler.pipeline import OptimizationPipeline
 from neuron_toolkit.compiler.base import CompilerContext
 
-# Instantiate pipeline driver
-pipeline = OptimizationPipeline(mode="function_proto")
+# Instantiate pipeline driver with fixed-point iteration control
+pipeline = OptimizationPipeline(mode="function_proto", max_fixed_point_iters=5)
 
 # Create execution context with pass filtering or profiling
 context = CompilerContext(
@@ -88,13 +88,23 @@ context = CompilerContext(
     options={"enable_macro_blocks": True}
 )
 
-# Run complete 3-stage optimization
+# Run complete 3-stage optimization with fixed-point convergence
 optimized_model = pipeline.run(model, context=context)
 
 # Inspect pass metrics recorded during execution
 for pass_name, data in context.stats.items():
     print(f"Pass {pass_name}: nodes {data['nodes_before']} -> {data['nodes_after']} (delta: {data['delta']})")
 ```
+
+### Iterative Fixed-Point Convergence Engine
+
+Real-world model optimization requires cascading passes: for example, fusing a `Pad` into a `Conv` may expose new opportunities for continuous math collapse or reshape simplification. 
+
+`OptimizationPipeline.run()` employs an iterative fixed-point loop:
+1. At the start of each iteration, the compiler records a topological graph signature:
+   $$\text{Signature} = \left(|V|, \langle \text{op}_1, \text{op}_2, \dots, \text{op}_{|V|} \rangle, \langle \text{output}_1, \dots, \text{output}_m \rangle\right)$$
+2. All Stage 1 and Stage 2 passes are executed sequentially.
+3. If the graph topological signature after the iteration matches the signature before the iteration, **fixed-point convergence has been reached**, and the pipeline exits immediately to Stage 3 Target Export without unnecessary iterations (capped at `max_fixed_point_iters=5`).
 
 ### Compiler Modes
 
@@ -138,6 +148,7 @@ Canonicalizes matrix multiplication, Gemm, Einsum, and continuous math chains:
 - **Linear Fusion**: Fuses $\text{MatMul}(X, W) + B$ or $\text{Gemm}$ into `custom.pytorch::Linear(X, W, B)`.
   > [!IMPORTANT]
   > **Shared Weight Deduplication**: When multiple linear projections share the same transposed weight matrix, `MathCanonicalizer` inspects existing initializers before appending `w_name_transposed`, avoiding duplicate tensor definitions.
+- **Pad-Conv Fusion (`apply_pad_conv_fusion`)**: Fuses explicit `Pad` operations immediately preceding `Conv` nodes into the `Conv` operator's internal `pads` attribute when spatial padding dimensions and modes (`constant`, value 0) are compatible, eliminating intermediate memory allocations and kernel launch overhead.
 - **Continuous Math Collapse**: Collapses chains of elementwise constant arithmetic (`Add`, `Sub`, `Mul`, `Div`, `Pow`, `Sqrt`) into folded constants or specialized expressions stored directly in node docstrings.
 
 ### 3. `NormCanonicalizer`
@@ -155,6 +166,9 @@ Normalizes standard and custom normalization primitives across ONNX opset versio
 
 Optimizes tensor topology and constants:
 
+- **Consecutive Reshape Collapsing (`apply_reshape_collapsing`)**: Fuses consecutive reshapes ($X \to \text{Reshape}(S_1) \to \text{Reshape}(S_2) \implies X \to \text{Reshape}(S_2)$) when intermediate tensors have single fan-out, eliminating redundant layout re-indexing operations.
+- **Squeeze-Unsqueeze Cancellation (`apply_squeeze_unsqueeze_cancellation`)**: Detects and cancels adjacent inverse squeeze and unsqueeze pairs operating along the same axes, restoring direct tensor flow.
+- **Redundant Cast Elimination (`apply_redundant_cast_elimination`)**: Detects redundant data type conversions (casts where the source tensor already matches the target `to` data type or back-to-back identical casts) and replaces consumer inputs directly with the pre-cast tensor.
 - **Common Subexpression Elimination (CSE)**: Deduplicates identical nodes producing identical outputs.
   > [!TIP]
   > **Exposed Output Safeguard**: CSE preserves any constant node whose output is explicitly listed in `graph.output`.
@@ -177,6 +191,12 @@ Located in `neuron_toolkit.compiler.passes.synthesis`:
 - **ScaledDotProductAttention (SDPA)**: Fuses scaled dot-product attention subgraphs:
   $$\text{Attention}(Q, K, V) = \text{Softmax}\left(\frac{Q K^T}{\sqrt{d}} + M\right) V$$
   Replaces `MatMul \to \text{Div} \to \text{Add(Mask)} \to \text{Softmax} \to \text{MatMul}` with `custom.pytorch::ScaledDotProductAttention`.
+- **Gemma-2 Logits Soft-Capping (`apply_gemma2_softcapping_fusion`)**: Fuses attention score capping sequences:
+  $$\text{Scores}_{\text{capped}} = \text{cap} \cdot \tanh\left(\frac{Q K^T}{\sqrt{d} \cdot \text{cap}}\right)$$
+  Replaces `Div(cap) \to \text{Tanh} \to \text{Mul(cap)}` with monolithic `custom.pytorch::LogitsSoftCap(scores, cap=...)`.
+- **DeepSeek Multi-Head Latent Attention (MLA) (`apply_deepseek_mla_fusion`)**: Synthesizes DeepSeek-V2 / DeepSeek-V3 low-rank KV compression and decoupled RoPE key projections:
+  $$c_{KV} = X W_{DKV}, \quad K_C = c_{KV} W_{UK}, \quad V = c_{KV} W_{UV}, \quad K_R = \text{RoPE}(X W_{KR})$$
+  Fuses down-projection and up-projection into `custom.pytorch::MultiHeadLatentAttention_KVProjection`.
 - **SplitQKV**: Fuses joint projection unbinding or slicing into `custom.pytorch::SplitQKV`.
 - **MergeHeads**: Fuses multi-head transpose and reshape operations (`Transpose(0, 2, 1, 3) \to \text{Reshape}`) into `custom.pytorch::MergeHeads`.
 - **RotaryEmbedding (RoPE)**: Fuses rotary frequency slicing, sign inversion, and complex coordinate rotation into `custom.pytorch::RotaryEmbedding`. Supports partial head dimensions.

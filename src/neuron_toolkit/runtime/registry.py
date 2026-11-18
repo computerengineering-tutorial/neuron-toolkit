@@ -1540,6 +1540,10 @@ class OpRegistry:
                 if axis >= 0
                 else list(x.shape[len(x.shape) + axis :])
             )
+            if scale is not None and scale.dtype != x.dtype:
+                scale = scale.to(dtype=x.dtype)
+            if bias is not None and bias.dtype != x.dtype:
+                bias = bias.to(dtype=x.dtype)
             return F.layer_norm(x, normalized_shape, weight=scale, bias=bias, eps=eps)
 
         # -------------------------------------------------------------
@@ -1725,6 +1729,20 @@ class OpRegistry:
                 out = out + out_b
             return out
 
+        @self.register("custom.pytorch", "GatedMultiHeadAttention")
+        @self.register("", "GatedMultiHeadAttention")
+        def _gated_mha_composite(
+            inputs: list[torch.Tensor], attrs: dict[str, Any]
+        ) -> torch.Tensor:
+            x = inputs[0]
+            if len(inputs) > 1 and inputs[1] is not None and inputs[1].numel() > 0:
+                w = inputs[1]
+                if w.dim() == 2 and x.dim() >= 2 and x.shape[-1] == w.shape[0]:
+                    return torch.matmul(x, w)
+            return x
+
+
+
         @self.register("com.microsoft", "SkipLayerNormalization")
         @self.register("custom.pytorch", "SkipLayerNormalization")
         @self.register("", "SkipLayerNormalization")
@@ -1749,6 +1767,10 @@ class OpRegistry:
                 if axis >= 0
                 else list(x.shape[len(x.shape) + axis :])
             )
+            if scale is not None and scale.dtype != x.dtype:
+                scale = scale.to(dtype=x.dtype)
+            if bias is not None and bias.dtype != x.dtype:
+                bias = bias.to(dtype=x.dtype)
             return F.layer_norm(x, normalized_shape, weight=scale, bias=bias, eps=eps)
 
         @self.register("", "MaxPool")

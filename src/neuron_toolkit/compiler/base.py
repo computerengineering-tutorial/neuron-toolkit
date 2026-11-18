@@ -20,6 +20,7 @@ class CompilerContext:
     # - 'plain_custom_op' or 'pytorch_custom': Minimalist custom ops for PyTorch runtime.
     opset_version: int = 23
     custom_domain: str = "custom.pytorch"
+    max_fixed_point_iters: int = 5
     rule_ids: list[str] | None = None
     applied_passes: list[str] = field(default_factory=list)
     stats: dict[str, Any] = field(default_factory=dict)

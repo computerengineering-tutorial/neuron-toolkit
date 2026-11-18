@@ -196,7 +196,9 @@ class PyTorchRunner:
 
                 # 2. Check if it's a FunctionProto in model.functions
                 if fn_proto is not None:
-                    fn_outputs = self._run_function(fn_proto, node_inputs, attrs)
+                    fn_outputs = self._run_function(
+                        fn_proto, node_inputs, attrs, parent_env=tensor_env
+                    )
                     for idx, out_tensor in enumerate(fn_outputs):
                         if idx < len(node_outputs_names) and node_outputs_names[idx]:
                             tensor_env[node_outputs_names[idx]] = out_tensor
@@ -223,9 +225,10 @@ class PyTorchRunner:
         fn: onnx.FunctionProto,
         inputs: list[torch.Tensor],
         attrs: dict[str, Any],
+        parent_env: dict[str, torch.Tensor] | None = None,
     ) -> list[torch.Tensor]:
         """Execute an ONNX FunctionProto using the PyTorch registry."""
-        fn_env: dict[str, torch.Tensor] = {}
+        fn_env: dict[str, torch.Tensor] = dict(parent_env or self.initializers)
         for formal_inp, actual_tensor in zip(fn.input, inputs, strict=False):
             if actual_tensor is not None:
                 fn_env[formal_inp] = actual_tensor

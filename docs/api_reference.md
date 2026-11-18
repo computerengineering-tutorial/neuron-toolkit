@@ -509,3 +509,28 @@ Differential verification suite comparing original models executed on ONNX Runti
   - `metric.cosine_similarity: float`: Vector cosine similarity.
   - `metric.passed: bool`: Individual output validation status against `rtol`, `atol`, and `min_cosine_similarity`.
 - **`report.summary() -> str`**: Formatted ASCII / Markdown verification table.
+
+---
+
+## 19. `neuron_toolkit.compiler.passes`
+
+Advanced canonicalization, structural simplification, and modern attention synthesis passes.
+
+### Canonicalization Passes (`neuron_toolkit.compiler.passes.canonicalization`)
+
+- **`apply_reshape_collapsing(graph: onnx.GraphProto) -> int`**:
+  Fuses consecutive linear/spatial reshapes ($X \to \text{Reshape}(S_1) \to \text{Reshape}(S_2) \implies X \to \text{Reshape}(S_2)$) when intermediate tensors have single fan-out.
+- **`apply_pad_conv_fusion(graph: onnx.GraphProto) -> int`**:
+  Fuses explicit spatial `Pad` operations preceding `Conv` nodes directly into the Conv operator's internal `pads` attribute for compatible constant zero-padding modes.
+- **`apply_redundant_cast_elimination(graph: onnx.GraphProto) -> int`**:
+  Eliminates redundant data type casts where the input tensor already matches the target `to` dtype or back-to-back identical cast operations.
+- **`apply_squeeze_unsqueeze_cancellation(graph: onnx.GraphProto) -> int`**:
+  Detects and cancels adjacent inverse squeeze and unsqueeze pairs operating along identical axes.
+
+### Synthesis Passes (`neuron_toolkit.compiler.passes.synthesis`)
+
+- **`apply_gemma2_softcapping_fusion(graph: onnx.GraphProto) -> int`**:
+  Fuses Gemma-2 attention and output logits soft-capping sequences ($\text{cap} \cdot \tanh(x / \text{cap})$) into unified `custom.pytorch::LogitsSoftCap` nodes.
+- **`apply_deepseek_mla_fusion(graph: onnx.GraphProto) -> int`**:
+  Synthesizes DeepSeek-V2/V3 Multi-Head Latent Attention (MLA) low-rank KV compression projections into `custom.pytorch::MultiHeadLatentAttention_KVProjection`.
+

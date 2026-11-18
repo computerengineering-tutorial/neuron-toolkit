@@ -12,6 +12,8 @@
 | `fuse_swiglu`, `swiglu` | `FuseSwiGLU` | Fuses gating branches (`Mul(SiLU(gate), up)`) and upstream projections into `SwiGLU` / `GeGLU` |
 | `fuse_attention`, `attention`, `sdpa` | `FuseAttention` | Fuses Scaled Dot-Product Attention ($QK^T \to \text{scale} \to \text{mask} \to \text{softmax} \to V$) into `ScaledDotProductAttention` |
 | `fuse_rope`, `rope` | `FuseRotaryEmbedding` | Fuses slice, negate, concat, and $\sin/\cos$ rotations into `RotaryEmbedding` |
+| `gemma2_softcapping` | `apply_gemma2_softcapping_fusion` | Fuses logits soft-capping sequences ($\text{cap} \cdot \tanh(x / \text{cap})$) into `LogitsSoftCap` |
+| `deepseek_mla` | `apply_deepseek_mla_fusion` | Fuses low-rank KV compression and decoupled RoPE keys into `MultiHeadLatentAttention_KVProjection` |
 
 ---
 
@@ -119,7 +121,43 @@ opt_graph = graph.passes.fuse_rope()
 
 ---
 
-## 6. End-to-End LLM Optimization Pipeline
+## 6. Gemma-2 Logits Soft-Capping (`apply_gemma2_softcapping_fusion`)
+
+Gemma-2 architectures introduce logits soft-capping to bound the attention logits and final output logits without clipping gradients:
+
+$$\text{Scores}_{\text{capped}} = \text{cap} \cdot \tanh\left(\frac{Q K^T}{\sqrt{d} \cdot \text{cap}}\right)$$
+
+In raw exported graphs, this corresponds to a sequence of `Div(cap) -> Tanh -> Mul(cap)`. `apply_gemma2_softcapping_fusion` synthesizes this pattern into a unified `custom.pytorch::LogitsSoftCap` operator with an explicit `cap` scalar attribute:
+
+```python
+from neuron_toolkit.compiler.passes.synthesis.attention_synthesizer import apply_gemma2_softcapping_fusion
+
+# Optimized during synthesis pass or directly:
+fused_count = apply_gemma2_softcapping_fusion(graph)
+print(f"Fused Gemma-2 softcapping layers: {fused_count}")
+```
+
+---
+
+## 7. DeepSeek Multi-Head Latent Attention (`apply_deepseek_mla_fusion`)
+
+DeepSeek-V2 and DeepSeek-V3 introduce Multi-Head Latent Attention (MLA) to compress key-value cache memory via low-rank latent vector compression and decoupled RoPE keys:
+
+$$c_{KV} = X W_{DKV}, \quad K_C = c_{KV} W_{UK}, \quad V = c_{KV} W_{UV}, \quad K_R = \text{RoPE}(X W_{KR})$$
+
+`apply_deepseek_mla_fusion` identifies down-projection matrix multiplications into compressed latent vectors feeding upward key and value projections, fusing them into a monolithic `custom.pytorch::MultiHeadLatentAttention_KVProjection`:
+
+```python
+from neuron_toolkit.compiler.passes.synthesis.attention_synthesizer import apply_deepseek_mla_fusion
+
+# Detects and fuses low-rank compression projections:
+mla_count = apply_deepseek_mla_fusion(graph)
+print(f"Fused DeepSeek MLA blocks: {mla_count}")
+```
+
+---
+
+## 8. End-to-End LLM Optimization Pipeline
 
 Combine all passes into a comprehensive pipeline using `PassManager`:
 

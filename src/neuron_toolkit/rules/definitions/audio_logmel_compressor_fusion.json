@@ -1,0 +1,75 @@
+{
+  "rule_id": "audio_logmel_compressor_fusion",
+  "name": "Audio Log-Mel Dynamic Range Compressor Fusion",
+  "description": "Fuses Clip -> Div -> Log -> Div -> Mul -> Add -> Clip into AudioLogMelCompressor macro block with FunctionProto Netron expandability.",
+  "pattern": {
+    "nodes": [
+      {
+        "id": "c1",
+        "op_type": "Clip",
+        "inputs": ["$x"],
+        "outputs": ["$c1_out"]
+      },
+      {
+        "id": "d1",
+        "op_type": "Div",
+        "inputs": ["$c1_out"],
+        "outputs": ["$d1_out"]
+      },
+      {
+        "id": "l1",
+        "op_type": "Log",
+        "inputs": ["$d1_out"],
+        "outputs": ["$l1_out"]
+      },
+      {
+        "id": "d2",
+        "op_type": "Div",
+        "inputs": ["$l1_out"],
+        "outputs": ["$d2_out"]
+      },
+      {
+        "id": "m1",
+        "op_type": "Mul",
+        "inputs": ["$d2_out"],
+        "outputs": ["$m1_out"]
+      },
+      {
+        "id": "a1",
+        "op_type": "Add",
+        "inputs": ["$m1_out"],
+        "outputs": ["$a1_out"]
+      },
+      {
+        "id": "c2",
+        "op_type": "Clip",
+        "inputs": ["$a1_out"],
+        "outputs": ["$final_out"]
+      }
+    ]
+  },
+  "action": {
+    "type": "fuse_to_function",
+    "op_type": "AudioLogMelCompressor",
+    "domain": "custom.pytorch",
+    "inputs": ["$x"],
+    "outputs": ["$final_out"],
+    "targets": {
+      "modern_onnx": {
+        "op_type": "AudioLogMelCompressor",
+        "domain": "custom.pytorch",
+        "inputs": ["$x"]
+      },
+      "function_proto": {
+        "op_type": "AudioLogMelCompressor",
+        "domain": "custom.pytorch",
+        "inputs": ["$x"]
+      },
+      "pytorch_custom": {
+        "op_type": "AudioLogMelCompressor",
+        "domain": "custom.pytorch",
+        "inputs": ["$x"]
+      }
+    }
+  }
+}

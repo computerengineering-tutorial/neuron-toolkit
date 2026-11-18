@@ -1,8 +1,32 @@
-"""Macro architecture block synthesis passes."""
+"""Declarative JSON-Driven Macro Architecture Block Synthesis Passes.
+
+Loads declarative JSON pattern rules from `neuron_toolkit/rules/definitions/` and
+uses the `Pattern` DSL and `PatternDetector` pattern-matching engine to detect and
+fuse complex macro-architectural motifs:
+1. DeepMLP_Norm_Act (RMSNorm/LayerNorm -> Linear -> Gelu/Relu/SiLU)
+2. SpatialGatingUnit (Split -> Norm -> Linear -> Mul)
+3. HighwayBlock (Transform branch & Carry gate)
+4. SqueezeExcitation (GAP -> Linear -> ReLU -> Linear -> Sigmoid -> Mul)
+5. ResidualBlock (Pre-Activation ResNet: BN -> Conv -> ReLU -> BN -> Conv + Residual -> ReLU)
+6. AudioLogMelCompressor (Clip -> Div -> Log -> Div -> Mul -> Add -> Clip)
+7. MultiHeadAttention (Linear -> SplitQKV -> SDPA -> MergeHeads -> Linear)
+8. GatedMultiHeadAttention (RMSNorm -> GAU -> MergeHeads -> Linear)
+9. TransformerBlock (Attention + Residual Add + FeedForward + Residual Add)
+10. PyTorch TransformerEncoderLayer (scoped layer regex fusion)
+11. MultiFieldEmbedding (cascading multi-token table Gather + Add tree)
+
+Attaches formal ONNX FunctionProto definitions for Netron expandable hierarchical visualization.
+"""
 
 from __future__ import annotations
 
+import collections
+import copy
+import json
 import logging
+import re
+from pathlib import Path
+from typing import Any
 
 import onnx
 from onnx import helper
@@ -16,16 +40,125 @@ from neuron_toolkit.compiler.base import CompilerPass
 from neuron_toolkit.compiler.passes.canonicalization.shape_canonicalizer import (
     ShapeCanonicalizer,
 )
+from neuron_toolkit.pattern.detector import PatternDetector
+from neuron_toolkit.pattern.dsl import Pattern
+from neuron_toolkit.rules.schema import JSONRule
 
 log = logging.getLogger(__name__)
 
 
+def _ensure_custom_domain(model: onnx.ModelProto, domain: str = "custom.pytorch") -> None:
+    """Ensure custom domain exists in opset_import."""
+    if not any(op.domain == domain for op in model.opset_import):
+        model.opset_import.append(helper.make_opsetid(domain, 1))
+
+
+def _replace_nodes_topologically(
+    graph: onnx.GraphProto,
+    nodes_to_drop: set[str],
+    new_nodes: list[onnx.NodeProto],
+) -> None:
+    """Replace dropped nodes in-place at the topological exit positions."""
+    new_node_map = {n.output[0]: n for n in new_nodes}
+    new_graph_nodes = []
+    for n in graph.node:
+        if n.name in nodes_to_drop:
+            for out in n.output:
+                if out in new_node_map:
+                    new_graph_nodes.append(new_node_map.pop(out))
+                    break
+        else:
+            new_graph_nodes.append(n)
+    new_graph_nodes.extend(new_node_map.values())
+    del graph.node[:]
+    graph.node.extend(new_graph_nodes)
+
+
+def _toposort_nodes(nodes: list[onnx.NodeProto]) -> list[onnx.NodeProto]:
+    """Sort an arbitrary list of nodes topologically according to internal tensor dependencies."""
+    node_map = {id(n): n for n in nodes}
+    out_to_node_id = {out: id(n) for n in nodes for out in n.output if out}
+    dep_graph = collections.defaultdict(list)
+    in_degree = collections.defaultdict(int)
+    for n in nodes:
+        nid = id(n)
+        dep_count = 0
+        for inp in n.input:
+            if inp and inp in out_to_node_id:
+                dep_graph[out_to_node_id[inp]].append(nid)
+                dep_count += 1
+        in_degree[nid] = dep_count
+    queue = collections.deque([nid for nid in node_map if in_degree[nid] == 0])
+    sorted_nodes: list[onnx.NodeProto] = []
+    while queue:
+        nid = queue.popleft()
+        sorted_nodes.append(node_map[nid])
+        for nxt in dep_graph[nid]:
+            in_degree[nxt] -= 1
+            if in_degree[nxt] == 0:
+                queue.append(nxt)
+    if len(sorted_nodes) < len(nodes):
+        seen = {id(n) for n in sorted_nodes}
+        for n in nodes:
+            if id(n) not in seen:
+                sorted_nodes.append(n)
+    return sorted_nodes
+
+
+def _canonicalize_subgraph_nodes(
+    sub_nodes: list[onnx.NodeProto],
+    external_inputs: list[str],
+    external_outputs: list[str],
+) -> tuple[list[onnx.NodeProto], list[str], list[str]]:
+    """Canonicalize internal tensor names of a subgraph to ensure clean FunctionProto export."""
+    sub_nodes = _toposort_nodes(sub_nodes)
+    input_map = {inp: f"in_{i}" for i, inp in enumerate(external_inputs)}
+    output_map = {out: f"out_{j}" for j, out in enumerate(external_outputs)}
+    internal_map: dict[str, str] = {}
+    t_idx = 0
+    for sn in sub_nodes:
+        for out in sn.output:
+            if out and out not in output_map and out not in internal_map:
+                internal_map[out] = f"t_{t_idx}"
+                t_idx += 1
+    tensor_map = {**input_map, **output_map, **internal_map}
+    canon_nodes: list[onnx.NodeProto] = []
+    for sn in sub_nodes:
+        n_copy = copy.deepcopy(sn)
+        n_copy.input[:] = [tensor_map.get(inp, inp) for inp in sn.input]
+        n_copy.output[:] = [tensor_map.get(out, out) for out in sn.output]
+        canon_nodes.append(n_copy)
+    return (
+        canon_nodes,
+        [input_map[inp] for inp in external_inputs],
+        [output_map[out] for out in external_outputs],
+    )
+
+
 class MacroBlockSynthesizer(CompilerPass):
-    """Synthesizes high-level macro architectural blocks (ResMLP, SGU, SE, Highway, MHA, ConvNeXt)."""
+    """Synthesizes high-level macro architectural blocks using declarative JSON rules and pattern matching."""
+
+    _cached_rules: dict[str, JSONRule] = {}
 
     @property
     def name(self) -> str:
         return "macro_block_synthesizer"
+
+    @classmethod
+    def load_rule(cls, rule_id: str) -> JSONRule:
+        """Load a declarative JSON rule from definitions."""
+        if rule_id in cls._cached_rules:
+            return cls._cached_rules[rule_id]
+        definitions_dir = Path(__file__).resolve().parents[3] / "rules" / "definitions"
+        rule_path = definitions_dir / f"{rule_id}.json"
+        if not rule_path.exists():
+            msg = f"Rule definition file not found: {rule_path}"
+            raise FileNotFoundError(msg)
+        with open(rule_path, encoding="utf-8") as f:
+            data = json.load(f)
+        rule = JSONRule.from_dict(data)
+        cls._cached_rules[rule_id] = rule
+        return rule
 
     def run(
         self, model: onnx.ModelProto, mode: str = "function_proto"
@@ -35,7 +168,11 @@ class MacroBlockSynthesizer(CompilerPass):
         model = self.apply_spatial_gating_unit_fusion(model, mode=mode)
         model = self.apply_highway_block_fusion(model, mode=mode)
         model = self.apply_squeeze_excitation_fusion(model, mode=mode)
+        model = self.apply_preactivation_resnet_fusion(model, mode=mode)
+        model = self.apply_audio_logmel_compressor_fusion(model, mode=mode)
         model = self.apply_mha_composite_fusion(model, mode=mode)
+        model = self.apply_transformer_encoder_layer_fusion(model, mode=mode)
+        model = self.apply_multi_task_audio_head_fusion(model, mode=mode)
         return model
 
     # -------------------------------------------------------------------------
@@ -44,321 +181,224 @@ class MacroBlockSynthesizer(CompilerPass):
     def apply_deep_mlp_norm_act_fusion(
         self, model: onnx.ModelProto, mode: str = "function_proto"
     ) -> onnx.ModelProto:
-        """Fuse Norm -> Linear -> Gelu into DeepMLP_Norm_Act."""
+        """Fuse Norm -> Linear -> Gelu into DeepMLP_Norm_Act using pattern matching."""
+        rule = self.load_rule("deep_mlp_norm_act_fusion")
         graph = model.graph
-        node_by_output: dict[str, onnx.NodeProto] = {
-            out: n for n in graph.node for out in n.output
-        }
-        consumer_map: dict[str, list[onnx.NodeProto]] = {}
+        graph_outputs = {out.name for out in graph.output}
+        consumer_map: dict[str, list[onnx.NodeProto]] = collections.defaultdict(list)
         for n in graph.node:
             for inp in n.input:
-                consumer_map.setdefault(inp, []).append(n)
-        graph_outputs = {out.name for out in graph.output}
+                consumer_map[inp].append(n)
 
+        norm_pat = Pattern.any_of(
+            Pattern.op("RMSNorm"),
+            Pattern.op("RMSNormalization"),
+            Pattern.op("LayerNormalization"),
+            Pattern.op("SimplifiedLayerNormalization"),
+        ).capture("norm")
+
+        lin_pat = Pattern.any_of(
+            Pattern.op("Linear", norm_pat),
+            Pattern.op("Gemm", norm_pat),
+            Pattern.op("MatMul", norm_pat),
+        ).capture("linear")
+
+        act_pat = Pattern.any_of(
+            Pattern.op("Gelu", lin_pat),
+            Pattern.op("FastGelu", lin_pat),
+            Pattern.op("Relu", lin_pat),
+            Pattern.op("SiLU", lin_pat),
+        ).capture("act")
+
+        detector = PatternDetector(model)
+        matches = detector.find_all(act_pat)
+        if not matches:
+            return model
+
+        _ensure_custom_domain(model, rule.action.domain)
         nodes_to_drop: set[str] = set()
         new_nodes: list[onnx.NodeProto] = []
         count = 0
 
-        for n in graph.node:
-            if n.op_type in ("Gelu", "FastGelu", "Relu", "SiLU") and len(n.input) >= 1:
-                lin_node = node_by_output.get(n.input[0])
-                if not lin_node or lin_node.op_type not in ("Linear", "Gemm", "MatMul"):
-                    continue
+        for match in matches:
+            act_node = match.bindings.get("act")
+            lin_node = match.bindings.get("linear")
+            norm_node = match.bindings.get("norm")
+            if not act_node or not lin_node or not norm_node:
+                continue
 
-                # Check if lin_node consumed a Norm
-                norm_node = node_by_output.get(lin_node.input[0])
-                if not norm_node or norm_node.op_type not in (
-                    "LayerNormalization",
-                    "RMSNorm",
-                    "SimplifiedLayerNormalization",
-                ):
-                    continue
+            if lin_node.name in nodes_to_drop or act_node.name in nodes_to_drop:
+                continue
 
-                # Ensure linear is only consumed by this activation
-                if (
-                    len(consumer_map.get(lin_node.output[0], [])) > 1
-                    or lin_node.output[0] in graph_outputs
-                ):
-                    continue
+            # Ensure linear output is consumed only by this activation
+            if (
+                len(consumer_map.get(lin_node.output[0], [])) > 1
+                or lin_node.output[0] in graph_outputs
+            ):
+                continue
 
-                act_name = n.op_type
-                nodes_to_drop.update({n.name, lin_node.name})
-                if (
-                    len(consumer_map.get(norm_node.output[0], [])) <= 1
-                    and norm_node.output[0] not in graph_outputs
-                ):
-                    nodes_to_drop.add(norm_node.name)
-                    inputs = list(norm_node.input) + list(lin_node.input[1:])
-                    has_norm = 1
-                    sub_nodes = [norm_node, lin_node, n]
+            act_name = act_node.op_type
+            nodes_to_drop.update({act_node.name, lin_node.name})
+
+            if (
+                len(consumer_map.get(norm_node.output[0], [])) <= 1
+                and norm_node.output[0] not in graph_outputs
+            ):
+                nodes_to_drop.add(norm_node.name)
+                inputs = list(norm_node.input) + list(lin_node.input[1:])
+                has_norm = 1
+                sub_nodes = [norm_node, lin_node, act_node]
+            else:
+                inputs = list(lin_node.input)
+                has_norm = 0
+                sub_nodes = [lin_node, act_node]
+
+            fp = compute_subgraph_fingerprint(sub_nodes)
+            specialized_op = build_monomorphized_op_type(
+                rule.action.op_type, act_name, fp
+            )
+
+            new_node = helper.make_node(
+                specialized_op,
+                inputs=inputs,
+                outputs=[act_node.output[0]],
+                name=f"{act_node.name}_fused_{rule.rule_id}",
+                domain=rule.action.domain,
+                activation=act_name,
+                has_norm=has_norm,
+                doc_string=rule.description,
+            )
+            new_nodes.append(new_node)
+            count += 1
+
+            if mode == "function_proto":
+                formal_inputs = ["x", "norm_w", "w"] if has_norm else ["x", "w"]
+                formal_outputs = ["y"]
+                domain_act = "custom.pytorch" if act_name in ("Gelu", "SiLU", "FastGelu") else ""
+                if has_norm:
+                    formal_norm = helper.make_node(norm_node.op_type, inputs=["x", "norm_w"], outputs=["norm_out"])
+                    formal_lin = helper.make_node("Linear", inputs=["norm_out", "w"], outputs=["lin_out"], domain="custom.pytorch")
+                    formal_act = helper.make_node(act_name, inputs=["lin_out"], outputs=["y"], domain=domain_act)
+                    formal_body = [formal_norm, formal_lin, formal_act]
                 else:
-                    inputs = [norm_node.output[0]] + list(lin_node.input[1:])
-                    has_norm = 0
-                    sub_nodes = [lin_node, n]
-
-                fp = compute_subgraph_fingerprint(sub_nodes)
-                specialized_op = build_monomorphized_op_type("DeepMLP", act_name, fp)
-
-                fused = helper.make_node(
-                    specialized_op,
-                    inputs=inputs,
-                    outputs=[n.output[0]],
-                    name=f"{n.name}_fused_mlp_norm_act",
-                    domain="custom.pytorch",
-                    activation=act_name,
-                    has_norm=has_norm,
+                    formal_lin = helper.make_node("Linear", inputs=["x", "w"], outputs=["lin_out"], domain="custom.pytorch")
+                    formal_act = helper.make_node(act_name, inputs=["lin_out"], outputs=["y"], domain=domain_act)
+                    formal_body = [formal_lin, formal_act]
+                ensure_specialized_function_proto(
+                    model=model,
+                    domain=rule.action.domain,
+                    fname=specialized_op,
+                    formal_inputs=formal_inputs,
+                    formal_outputs=formal_outputs,
+                    body_nodes=formal_body,
+                    doc_string=f"Specialized DeepMLP Norm Act block: {rule.description}",
                 )
-                new_nodes.append(fused)
-                count += 1
-
-                if mode == "function_proto":
-                    self._attach_specialized_deep_mlp_function(
-                        model=model,
-                        fname=specialized_op,
-                        act_name=act_name,
-                        norm_op=norm_node.op_type if has_norm else None,
-                        has_norm=has_norm,
-                        fingerprint=fp,
-                        num_inputs=len(inputs),
-                    )
 
         if not new_nodes:
             return model
 
-        kept = [n for n in graph.node if n.name not in nodes_to_drop] + new_nodes
-        del graph.node[:]
-        graph.node.extend(kept)
-
-        log.info(
-            "DeepMLP_Norm_Act Fusion: Fused %d blocks with polymorphic fingerprints",
-            count,
-        )
+        _replace_nodes_topologically(graph, nodes_to_drop, new_nodes)
+        log.info("DeepMLP Norm Act Fusion: Fused %d instances", count)
         return ShapeCanonicalizer().apply_dead_code_elimination(model)
 
-    def _attach_specialized_deep_mlp_function(
-        self,
-        model: onnx.ModelProto,
-        fname: str,
-        act_name: str,
-        norm_op: str | None,
-        has_norm: int,
-        fingerprint: str,
-        num_inputs: int = 5,
-    ) -> None:
-        """Attach formal, content-hashed ONNX FunctionProto definition with exact inner activation and norm."""
-        if any(
-            f.name == fname and f.domain == "custom.pytorch" for f in model.functions
-        ):
-            return
-
-        opset_standard = helper.make_opsetid("", 14)
-        if has_norm and norm_op:
-            if num_inputs == 3:
-                ln_node = helper.make_node(
-                    norm_op, inputs=["x", "gamma"], outputs=["norm_out"]
-                )
-                lin_node = helper.make_node(
-                    "MatMul", inputs=["norm_out", "w"], outputs=["lin_out"]
-                )
-                act_node = helper.make_node(act_name, inputs=["lin_out"], outputs=["y"])
-                body_nodes = [ln_node, lin_node, act_node]
-                formal_inputs = ["x", "gamma", "w"]
-            elif num_inputs == 4:
-                ln_node = helper.make_node(
-                    norm_op, inputs=["x", "gamma"], outputs=["norm_out"]
-                )
-                lin_node = helper.make_node(
-                    "MatMul", inputs=["norm_out", "w"], outputs=["mm_out"]
-                )
-                add_node = helper.make_node(
-                    "Add", inputs=["mm_out", "b"], outputs=["lin_out"]
-                )
-                act_node = helper.make_node(act_name, inputs=["lin_out"], outputs=["y"])
-                body_nodes = [ln_node, lin_node, add_node, act_node]
-                formal_inputs = ["x", "gamma", "w", "b"]
-            else:
-                ln_node = helper.make_node(
-                    norm_op, inputs=["x", "gamma", "beta"], outputs=["norm_out"]
-                )
-                lin_node = helper.make_node(
-                    "MatMul", inputs=["norm_out", "w"], outputs=["mm_out"]
-                )
-                add_node = helper.make_node(
-                    "Add", inputs=["mm_out", "b"], outputs=["lin_out"]
-                )
-                act_node = helper.make_node(act_name, inputs=["lin_out"], outputs=["y"])
-                body_nodes = [ln_node, lin_node, add_node, act_node]
-                formal_inputs = ["x", "gamma", "beta", "w", "b"]
-        elif num_inputs == 2:
-            lin_node = helper.make_node(
-                "MatMul", inputs=["x", "w"], outputs=["lin_out"]
-            )
-            act_node = helper.make_node(act_name, inputs=["lin_out"], outputs=["y"])
-            body_nodes = [lin_node, act_node]
-            formal_inputs = ["x", "w"]
-        else:
-            lin_node = helper.make_node("MatMul", inputs=["x", "w"], outputs=["mm_out"])
-            add_node = helper.make_node(
-                "Add", inputs=["mm_out", "b"], outputs=["lin_out"]
-            )
-            act_node = helper.make_node(act_name, inputs=["lin_out"], outputs=["y"])
-            body_nodes = [lin_node, add_node, act_node]
-            formal_inputs = ["x", "w", "b"]
-
-        ensure_specialized_function_proto(
-            model=model,
-            domain="custom.pytorch",
-            fname=fname,
-            formal_inputs=formal_inputs,
-            formal_outputs=["y"],
-            body_nodes=body_nodes,
-            opset_imports=[opset_standard],
-            doc_string=f"Content-hashed polymorphic DeepMLP ({act_name}) block [{fingerprint}]",
-        )
-
     # -------------------------------------------------------------------------
-    # 2. Spatial Gating Unit (gMLP SGU) Fusion
+    # 2. Spatial Gating Unit (SGU) Fusion
     # -------------------------------------------------------------------------
     def apply_spatial_gating_unit_fusion(
         self, model: onnx.ModelProto, mode: str = "function_proto"
     ) -> onnx.ModelProto:
         """Fuse Split -> Norm -> Linear -> Mul into SpatialGatingUnit."""
+        rule = self.load_rule("spatial_gating_unit_fusion")
         graph = model.graph
-        node_by_output: dict[str, onnx.NodeProto] = {
-            out: n for n in graph.node for out in n.output
-        }
+
+        norm_pat = Pattern.any_of(
+            Pattern.op("RMSNorm"),
+            Pattern.op("LayerNormalization"),
+        ).capture("norm")
+
+        proj_pat = Pattern.any_of(
+            Pattern.op("Linear", norm_pat),
+            Pattern.op("MatMul", norm_pat),
+            Pattern.op("Gemm", norm_pat),
+        ).capture("proj")
+
+        mul_pat = Pattern.op("Mul", proj_pat, Pattern.any()).capture("mul")
+
+        detector = PatternDetector(model)
+        matches = detector.find_all(mul_pat)
+        if not matches:
+            return model
+
+        _ensure_custom_domain(model, rule.action.domain)
         nodes_to_drop: set[str] = set()
         new_nodes: list[onnx.NodeProto] = []
         count = 0
 
-        for n in graph.node:
-            if n.op_type == "Mul" and len(n.input) == 2:
-                in0_node = node_by_output.get(n.input[0])
-                in1_node = node_by_output.get(n.input[1])
-                lin_cand = None
-                other_inp = None
-                if in0_node and in0_node.op_type in ("Linear", "MatMul"):
-                    lin_cand = in0_node
-                    other_inp = n.input[1]
-                elif in1_node and in1_node.op_type in ("Linear", "MatMul"):
-                    lin_cand = in1_node
-                    other_inp = n.input[0]
+        for match in matches:
+            mul_node = match.bindings.get("mul")
+            proj_node = match.bindings.get("proj")
+            norm_node = match.bindings.get("norm")
+            if not mul_node or not proj_node or not norm_node:
+                continue
 
-                if lin_cand:
-                    norm_cand = node_by_output.get(lin_cand.input[0])
-                    # Check if norm_cand and other_inp trace to the same Split node
-                    split_cand = None
-                    if norm_cand and norm_cand.op_type in (
-                        "LayerNormalization",
-                        "RMSNorm",
-                        "SimplifiedLayerNormalization",
-                    ):
-                        split_cand = node_by_output.get(norm_cand.input[0])
-                    else:
-                        split_cand = node_by_output.get(lin_cand.input[0])
+            if mul_node.name in nodes_to_drop or proj_node.name in nodes_to_drop:
+                continue
 
-                    other_split = node_by_output.get(other_inp)
-                    if (
-                        split_cand
-                        and other_split
-                        and (
-                            split_cand.name == other_split.name
-                            or split_cand == other_split
-                        )
-                        and split_cand.op_type in ("Split", "SplitQKV")
-                    ):
-                        nodes_to_drop.update({n.name, lin_cand.name, split_cand.name})
-                        norm_inputs = []
-                        if norm_cand:
-                            nodes_to_drop.add(norm_cand.name)
-                            norm_inputs = list(norm_cand.input[1:])
+            branch_a = (
+                mul_node.input[1]
+                if mul_node.input[0] == proj_node.output[0]
+                else mul_node.input[0]
+            )
 
-                        sgu_node = helper.make_node(
-                            "SpatialGatingUnit",
-                            inputs=[split_cand.input[0]]
-                            + norm_inputs
-                            + list(lin_cand.input[1:]),
-                            outputs=[n.output[0]],
-                            name=f"{n.name}_fused_sgu",
-                            domain="custom.pytorch",
-                        )
-                        new_nodes.append(sgu_node)
-                        count += 1
+            count += 1
+            nodes_to_drop.update({mul_node.name, proj_node.name, norm_node.name})
+
+            sgu_node = helper.make_node(
+                rule.action.op_type,
+                inputs=[branch_a, norm_node.input[0]] + list(proj_node.input[1:]),
+                outputs=[mul_node.output[0]],
+                name=f"{mul_node.name}_fused_{rule.rule_id}",
+                domain=rule.action.domain,
+                doc_string=rule.description,
+            )
+            new_nodes.append(sgu_node)
 
         if not new_nodes:
             return model
 
-        kept = [n for n in graph.node if n.name not in nodes_to_drop] + new_nodes
-        del graph.node[:]
-        graph.node.extend(kept)
-
+        _replace_nodes_topologically(graph, nodes_to_drop, new_nodes)
         if mode == "function_proto":
             self._attach_sgu_function_def(model)
 
-        log.info("SpatialGatingUnit Fusion: Fused %d blocks", count)
+        log.info("SpatialGatingUnit Fusion: Fused %d instances", count)
         return ShapeCanonicalizer().apply_dead_code_elimination(model)
 
     def _attach_sgu_function_def(self, model: onnx.ModelProto) -> None:
+        """Attach formal ONNX FunctionProto definition for SpatialGatingUnit."""
         func_name = "SpatialGatingUnit"
         domain = "custom.pytorch"
         if any(f.name == func_name and f.domain == domain for f in model.functions):
             return
-        opset_standard = helper.make_opsetid("", 14)
+        model_opset = 14
+        for op in model.opset_import:
+            if op.domain in ("", "ai.onnx"):
+                model_opset = op.version
+                break
+        opset_standard = helper.make_opsetid("", model_opset)
+        opset_custom = helper.make_opsetid("custom.pytorch", 1)
 
-        sgu_nodes = [
-            n
-            for n in model.graph.node
-            if n.op_type == func_name and (n.domain == domain or not n.domain)
-        ]
-        max_inputs = max([len(n.input) for n in sgu_nodes], default=2)
-
-        sp_node = helper.make_node("Split", inputs=["x"], outputs=["u", "v"], axis=-1)
-        if max_inputs == 2:
-            formal_inputs = ["x", "w"]
-            ln_node = helper.make_node(
-                "LayerNormalization", inputs=["v"], outputs=["v_norm"]
-            )
-            mm_node = helper.make_node(
-                "MatMul", inputs=["v_norm", "w"], outputs=["gate"]
-            )
-            body_nodes = [sp_node, ln_node, mm_node]
-        elif max_inputs == 3:
-            formal_inputs = ["x", "gamma", "w"]
-            ln_node = helper.make_node(
-                "LayerNormalization", inputs=["v", "gamma"], outputs=["v_norm"]
-            )
-            mm_node = helper.make_node(
-                "MatMul", inputs=["v_norm", "w"], outputs=["gate"]
-            )
-            body_nodes = [sp_node, ln_node, mm_node]
-        elif max_inputs == 4:
-            formal_inputs = ["x", "gamma", "w", "b"]
-            ln_node = helper.make_node(
-                "LayerNormalization", inputs=["v", "gamma"], outputs=["v_norm"]
-            )
-            mm_node = helper.make_node("MatMul", inputs=["v_norm", "w"], outputs=["mm"])
-            add_node = helper.make_node("Add", inputs=["mm", "b"], outputs=["gate"])
-            body_nodes = [sp_node, ln_node, mm_node, add_node]
-        else:
-            formal_inputs = ["x", "gamma", "beta", "w", "b"]
-            ln_node = helper.make_node(
-                "LayerNormalization", inputs=["v", "gamma", "beta"], outputs=["v_norm"]
-            )
-            mm_node = helper.make_node("MatMul", inputs=["v_norm", "w"], outputs=["mm"])
-            add_node = helper.make_node("Add", inputs=["mm", "b"], outputs=["gate"])
-            body_nodes = [sp_node, ln_node, mm_node, add_node]
-
-        mul_node = helper.make_node("Mul", inputs=["u", "gate"], outputs=["y"])
-        body_nodes.append(mul_node)
+        norm = helper.make_node("RMSNorm", inputs=["u"], outputs=["norm_out"], domain=domain)
+        proj = helper.make_node("Linear", inputs=["norm_out", "w"], outputs=["proj_out"], domain=domain)
+        mul = helper.make_node("Mul", inputs=["v", "proj_out"], outputs=["y"])
 
         func = helper.make_function(
             domain=domain,
             fname=func_name,
-            inputs=formal_inputs,
+            inputs=["v", "u", "w"],
             outputs=["y"],
-            nodes=body_nodes,
-            opset_imports=[opset_standard],
-            doc_string="Spatial Gating Unit (gMLP)",
+            nodes=[norm, proj, mul],
+            opset_imports=[opset_standard, opset_custom],
+            doc_string="Formal Spatial Gating Unit (v * Linear(RMSNorm(u)))",
         )
         model.functions.append(func)
 
@@ -368,267 +408,527 @@ class MacroBlockSynthesizer(CompilerPass):
     def apply_highway_block_fusion(
         self, model: onnx.ModelProto, mode: str = "function_proto"
     ) -> onnx.ModelProto:
-        """Fuse Transform Gate + Carry Gate + Addition into HighwayBlock."""
+        """Fuse Highway transformation branch and carry gate into HighwayBlock."""
+        rule = self.load_rule("highway_block_fusion")
         graph = model.graph
-        node_by_output: dict[str, onnx.NodeProto] = {
-            out: n for n in graph.node for out in n.output
-        }
+
+        x = Pattern.any().capture("x")
+        lin_h = Pattern.any_of(
+            Pattern.op("Linear", x), Pattern.op("Gemm", x), Pattern.op("MatMul", x)
+        ).capture("lin_h")
+        act_h = Pattern.any_of(
+            Pattern.op("Relu", lin_h), Pattern.op("Gelu", lin_h), Pattern.op("Tanh", lin_h)
+        ).capture("act_h")
+        lin_t = Pattern.any_of(
+            Pattern.op("Linear", x), Pattern.op("Gemm", x), Pattern.op("MatMul", x)
+        ).capture("lin_t")
+        sig_t = Pattern.op("Sigmoid", lin_t).capture("sig_t")
+        mul_h = (act_h * sig_t).capture("mul_h")
+        one_minus_t = Pattern.const(1.0) - sig_t
+        mul_x = (x * one_minus_t).capture("mul_x")
+        add_out = (mul_h + mul_x).capture("add_out")
+
+        detector = PatternDetector(model)
+        matches = detector.find_all(add_out)
+        if not matches:
+            return model
+
+        _ensure_custom_domain(model, rule.action.domain)
         nodes_to_drop: set[str] = set()
         new_nodes: list[onnx.NodeProto] = []
         count = 0
 
-        for n in graph.node:
-            if n.op_type == "Add" and len(n.input) == 2:
-                # Check if one input is GatedUnit or Mul (h * t) and the other is Mul (x * (1 - t))
-                m1 = node_by_output.get(n.input[0])
-                m2 = node_by_output.get(n.input[1])
-                if not m1 or not m2:
-                    continue
+        for match in matches:
+            add_node = match.bindings.get("add_out")
+            act_node = match.bindings.get("act_h")
+            sig_node = match.bindings.get("sig_t")
+            lin_h_node = match.bindings.get("lin_h")
+            lin_t_node = match.bindings.get("lin_t")
+            x_node = match.bindings.get("x")
+            if not add_node or not act_node or not sig_node:
+                continue
 
-                # Case: GatedUnit + Mul(x, 1 - t)
-                gated_cand = (
-                    m1
-                    if m1.op_type == "GatedUnit"
-                    else (m2 if m2.op_type == "GatedUnit" else None)
-                )
-                carry_mul = (
-                    m2 if gated_cand == m1 else (m1 if gated_cand == m2 else None)
-                )
+            count += 1
+            for n_m in (act_node, sig_node, lin_h_node, lin_t_node, add_node):
+                if n_m and hasattr(n_m, "name"):
+                    nodes_to_drop.add(n_m.name)
 
-                if gated_cand and carry_mul and carry_mul.op_type == "Mul":
-                    sub_cand = node_by_output.get(
-                        carry_mul.input[0]
-                    ) or node_by_output.get(carry_mul.input[1])
-                    if sub_cand and sub_cand.op_type == "Sub":
-                        carry_x = (
-                            carry_mul.input[1]
-                            if sub_cand.output[0] == carry_mul.input[0]
-                            else carry_mul.input[0]
-                        )
-                        nodes_to_drop.update(
-                            {n.name, gated_cand.name, carry_mul.name, sub_cand.name}
-                        )
-                        hw_node = helper.make_node(
-                            "HighwayBlock",
-                            inputs=[gated_cand.input[0], gated_cand.input[1], carry_x],
-                            outputs=[n.output[0]],
-                            name=f"{n.name}_fused_highway",
-                            domain="custom.pytorch",
-                        )
-                        new_nodes.append(hw_node)
-                        count += 1
+            hw_inputs = [x_node.output[0] if hasattr(x_node, "output") else str(x_node)]
+            if lin_h_node and len(lin_h_node.input) > 1:
+                hw_inputs.append(lin_h_node.input[1])
+            if lin_t_node and len(lin_t_node.input) > 1:
+                hw_inputs.append(lin_t_node.input[1])
+
+            hw_node = helper.make_node(
+                rule.action.op_type,
+                inputs=hw_inputs,
+                outputs=[add_node.output[0]],
+                name=f"{add_node.name}_fused_{rule.rule_id}",
+                domain=rule.action.domain,
+                activation=act_node.op_type,
+                doc_string=rule.description,
+            )
+            new_nodes.append(hw_node)
 
         if not new_nodes:
             return model
 
-        kept = [n for n in graph.node if n.name not in nodes_to_drop] + new_nodes
-        del graph.node[:]
-        graph.node.extend(kept)
-
+        _replace_nodes_topologically(graph, nodes_to_drop, new_nodes)
         if mode == "function_proto":
             self._attach_highway_function_def(model)
 
-        log.info("HighwayBlock Fusion: Fused %d blocks", count)
+        log.info("HighwayBlock Fusion: Fused %d instances", count)
         return ShapeCanonicalizer().apply_dead_code_elimination(model)
 
     def _attach_highway_function_def(self, model: onnx.ModelProto) -> None:
+        """Attach formal ONNX FunctionProto definition for HighwayBlock."""
         func_name = "HighwayBlock"
         domain = "custom.pytorch"
         if any(f.name == func_name and f.domain == domain for f in model.functions):
             return
-        opset_standard = helper.make_opsetid("", 14)
-        sig_node = helper.make_node("Sigmoid", inputs=["gate_in"], outputs=["t"])
-        c_node = helper.make_node(
-            "Constant",
-            inputs=[],
-            outputs=["one"],
-            value=helper.make_tensor("one", onnx.TensorProto.FLOAT, [], [1.0]),
-        )
-        sub_node = helper.make_node("Sub", inputs=["one", "t"], outputs=["carry"])
-        m1_node = helper.make_node("Mul", inputs=["h", "t"], outputs=["out_h"])
-        m2_node = helper.make_node("Mul", inputs=["x", "carry"], outputs=["out_c"])
-        add_node = helper.make_node("Add", inputs=["out_h", "out_c"], outputs=["y"])
+        model_opset = 14
+        for op in model.opset_import:
+            if op.domain in ("", "ai.onnx"):
+                model_opset = op.version
+                break
+        opset_standard = helper.make_opsetid("", model_opset)
+        opset_custom = helper.make_opsetid("custom.pytorch", 1)
+
+        lh = helper.make_node("Linear", inputs=["x", "wh"], outputs=["h_raw"], domain=domain)
+        act = helper.make_node("Relu", inputs=["h_raw"], outputs=["h"])
+        lt = helper.make_node("Linear", inputs=["x", "wt"], outputs=["t_raw"], domain=domain)
+        sig = helper.make_node("Sigmoid", inputs=["t_raw"], outputs=["t"])
+        c1 = helper.make_node("Constant", inputs=[], outputs=["one"], value_float=1.0)
+        sub = helper.make_node("Sub", inputs=["one", "t"], outputs=["omt"])
+        m1 = helper.make_node("Mul", inputs=["h", "t"], outputs=["term1"])
+        m2 = helper.make_node("Mul", inputs=["x", "omt"], outputs=["term2"])
+        add = helper.make_node("Add", inputs=["term1", "term2"], outputs=["y"])
+
         func = helper.make_function(
             domain=domain,
             fname=func_name,
-            inputs=["h", "gate_in", "x"],
+            inputs=["x", "wh", "wt"],
             outputs=["y"],
-            nodes=[sig_node, c_node, sub_node, m1_node, m2_node, add_node],
-            opset_imports=[opset_standard],
-            doc_string="Highway Transform & Carry Block",
+            nodes=[lh, act, lt, sig, c1, sub, m1, m2, add],
+            opset_imports=[opset_standard, opset_custom],
+            doc_string="Formal Highway Block (H * T + x * (1 - T))",
         )
         model.functions.append(func)
 
     # -------------------------------------------------------------------------
-    # 4. Squeeze-and-Excitation (SE) Fusion
+    # 4. Squeeze-and-Excitation (SE) Block Fusion
     # -------------------------------------------------------------------------
     def apply_squeeze_excitation_fusion(
         self, model: onnx.ModelProto, mode: str = "function_proto"
     ) -> onnx.ModelProto:
-        """Fuse Global Pooling -> Linear/Conv -> ReLU -> Linear/Conv -> Sigmoid -> Mul into SqueezeExcitation."""
+        """Fuse GAP -> FC1 -> Relu -> FC2 -> Sigmoid -> Mul into SqueezeExcitation."""
+        rule = self.load_rule("squeeze_excitation_fusion")
         graph = model.graph
-        node_by_output: dict[str, onnx.NodeProto] = {
-            out: n for n in graph.node for out in n.output
-        }
+
+        x = Pattern.any().capture("x")
+        gap = Pattern.any_of(
+            Pattern.op("GlobalAveragePool", x),
+            Pattern.op("ReduceMean", x),
+        ).capture("gap")
+        fc1 = Pattern.any_of(
+            Pattern.op("Conv", gap),
+            Pattern.op("Linear", gap),
+            Pattern.op("Gemm", gap),
+        ).capture("fc1")
+        act = Pattern.op("Relu", fc1).capture("act")
+        fc2 = Pattern.any_of(
+            Pattern.op("Conv", act),
+            Pattern.op("Linear", act),
+            Pattern.op("Gemm", act),
+        ).capture("fc2")
+        sig = Pattern.op("Sigmoid", fc2).capture("sig")
+        se_out = (x * sig).capture("se_out")
+
+        detector = PatternDetector(model)
+        matches = detector.find_all(se_out)
+        if not matches:
+            return model
+
+        _ensure_custom_domain(model, rule.action.domain)
         nodes_to_drop: set[str] = set()
         new_nodes: list[onnx.NodeProto] = []
         count = 0
 
-        for n in graph.node:
-            if n.op_type == "Mul" and len(n.input) == 2:
-                sig_cand = node_by_output.get(n.input[0]) or node_by_output.get(
-                    n.input[1]
-                )
-                other_inp = (
-                    n.input[1]
-                    if sig_cand and sig_cand.output[0] == n.input[0]
-                    else n.input[0]
-                )
+        for match in matches:
+            mul_node = match.bindings.get("se_out")
+            fc1_node = match.bindings.get("fc1")
+            act_node = match.bindings.get("act")
+            fc2_node = match.bindings.get("fc2")
+            sig_node = match.bindings.get("sig")
+            gap_node = match.bindings.get("gap")
+            x_node = match.bindings.get("x")
+            if not mul_node or not fc1_node or not fc2_node:
+                continue
 
-                if sig_cand and sig_cand.op_type in ("Sigmoid", "HardSigmoid"):
-                    fc2_cand = node_by_output.get(sig_cand.input[0])
-                    if fc2_cand and fc2_cand.op_type in ("Linear", "Conv", "MatMul"):
-                        act_cand = node_by_output.get(fc2_cand.input[0])
-                        if act_cand and act_cand.op_type in (
-                            "Relu",
-                            "HardSwish",
-                            "SiLU",
-                        ):
-                            fc1_cand = node_by_output.get(act_cand.input[0])
-                            if fc1_cand and fc1_cand.op_type in (
-                                "Linear",
-                                "Conv",
-                                "MatMul",
-                            ):
-                                pool_cand = node_by_output.get(fc1_cand.input[0])
-                                if pool_cand and pool_cand.op_type in (
-                                    "GlobalAveragePool",
-                                    "ReduceMean",
-                                ):
-                                    # Ensure pool_cand takes other_inp as its original input
-                                    if pool_cand.input[0] == other_inp:
-                                        nodes_to_drop.update(
-                                            {
-                                                n.name,
-                                                sig_cand.name,
-                                                fc2_cand.name,
-                                                act_cand.name,
-                                                fc1_cand.name,
-                                                pool_cand.name,
-                                            }
-                                        )
-                                        se_node = helper.make_node(
-                                            "SqueezeExcitation",
-                                            inputs=[other_inp]
-                                            + list(fc1_cand.input[1:])
-                                            + list(fc2_cand.input[1:]),
-                                            outputs=[n.output[0]],
-                                            name=f"{n.name}_fused_se",
-                                            domain="custom.pytorch",
-                                        )
-                                        new_nodes.append(se_node)
-                                        count += 1
+            count += 1
+            for n_m in (gap_node, fc1_node, act_node, fc2_node, sig_node, mul_node):
+                if n_m and hasattr(n_m, "name"):
+                    nodes_to_drop.add(n_m.name)
+
+            se_inputs = [x_node.output[0] if hasattr(x_node, "output") else str(x_node)]
+            for fc in (fc1_node, fc2_node):
+                if len(fc.input) > 1:
+                    se_inputs.append(fc.input[1])
+
+            se_node = helper.make_node(
+                rule.action.op_type,
+                inputs=se_inputs,
+                outputs=[mul_node.output[0]],
+                name=f"{mul_node.name}_fused_{rule.rule_id}",
+                domain=rule.action.domain,
+                doc_string=rule.description,
+            )
+            new_nodes.append(se_node)
 
         if not new_nodes:
             return model
 
-        kept = [n for n in graph.node if n.name not in nodes_to_drop] + new_nodes
-        del graph.node[:]
-        graph.node.extend(kept)
-
+        _replace_nodes_topologically(graph, nodes_to_drop, new_nodes)
         if mode == "function_proto":
             self._attach_se_function_def(model)
 
-        log.info("SqueezeExcitation Fusion: Fused %d blocks", count)
+        log.info("SqueezeExcitation Fusion: Fused %d instances", count)
         return ShapeCanonicalizer().apply_dead_code_elimination(model)
 
     def _attach_se_function_def(self, model: onnx.ModelProto) -> None:
+        """Attach formal ONNX FunctionProto definition for SqueezeExcitation."""
         func_name = "SqueezeExcitation"
         domain = "custom.pytorch"
         if any(f.name == func_name and f.domain == domain for f in model.functions):
             return
-        opset_standard = helper.make_opsetid("", 14)
-        pool = helper.make_node("GlobalAveragePool", inputs=["x"], outputs=["pooled"])
-        fc1_mm = helper.make_node("MatMul", inputs=["pooled", "w1"], outputs=["fc1_mm"])
-        fc1 = helper.make_node("Add", inputs=["fc1_mm", "b1"], outputs=["fc1_out"])
-        relu = helper.make_node("Relu", inputs=["fc1_out"], outputs=["act_out"])
-        fc2_mm = helper.make_node(
-            "MatMul", inputs=["act_out", "w2"], outputs=["fc2_mm"]
-        )
-        fc2 = helper.make_node("Add", inputs=["fc2_mm", "b2"], outputs=["fc2_out"])
+        model_opset = 14
+        for op in model.opset_import:
+            if op.domain in ("", "ai.onnx"):
+                model_opset = op.version
+                break
+        opset_standard = helper.make_opsetid("", model_opset)
+        opset_custom = helper.make_opsetid("custom.pytorch", 1)
+
+        gap = helper.make_node("GlobalAveragePool", inputs=["x"], outputs=["pooled"])
+        fc1 = helper.make_node("Linear", inputs=["pooled", "w1"], outputs=["fc1_out"], domain=domain)
+        act = helper.make_node("Relu", inputs=["fc1_out"], outputs=["act_out"])
+        fc2 = helper.make_node("Linear", inputs=["act_out", "w2"], outputs=["fc2_out"], domain=domain)
         sig = helper.make_node("Sigmoid", inputs=["fc2_out"], outputs=["scale"])
         mul = helper.make_node("Mul", inputs=["x", "scale"], outputs=["y"])
+
         func = helper.make_function(
             domain=domain,
             fname=func_name,
-            inputs=["x", "w1", "b1", "w2", "b2"],
+            inputs=["x", "w1", "w2"],
             outputs=["y"],
-            nodes=[pool, fc1_mm, fc1, relu, fc2_mm, fc2, sig, mul],
-            opset_imports=[opset_standard],
-            doc_string="Squeeze-and-Excitation channel gating",
+            nodes=[gap, fc1, act, fc2, sig, mul],
+            opset_imports=[opset_standard, opset_custom],
+            doc_string="Formal Squeeze-and-Excitation Channel Attention Block",
         )
         model.functions.append(func)
 
     # -------------------------------------------------------------------------
-    # 5. Composite MultiHeadAttention Fusion
+    # 5. Pre-Activation ResNet Residual Block Fusion
     # -------------------------------------------------------------------------
-    def apply_mha_composite_fusion(
+    def apply_preactivation_resnet_fusion(
         self, model: onnx.ModelProto, mode: str = "function_proto"
     ) -> onnx.ModelProto:
-        """Fuse SplitQKV -> SDPA -> MergeHeads -> Linear out into MultiHeadAttention."""
+        """Fuse Pre-Activation ResNet blocks: BN -> Conv -> ReLU -> BN -> Conv + Residual -> ReLU."""
+        rule = self.load_rule("preactivation_resnet_fusion")
         graph = model.graph
-        node_by_output: dict[str, onnx.NodeProto] = {
-            out: n for n in graph.node for out in n.output
-        }
+
+        x = Pattern.any().capture("x")
+        bn1 = Pattern.op("BatchNormalization", x).capture("bn1")
+        conv1 = Pattern.op("Conv", bn1).capture("conv1")
+        relu1 = Pattern.op("Relu", conv1).capture("relu1")
+        bn2 = Pattern.op("BatchNormalization", relu1).capture("bn2")
+        conv2 = Pattern.op("Conv", bn2).capture("conv2")
+        add = (conv2 + x).capture("add")
+        relu2 = Pattern.op("Relu", add).capture("relu2")
+
+        detector = PatternDetector(model)
+        matches = detector.find_all(relu2)
+        if not matches:
+            return model
+
+        _ensure_custom_domain(model, rule.action.domain)
         nodes_to_drop: set[str] = set()
         new_nodes: list[onnx.NodeProto] = []
         count = 0
 
-        for n in graph.node:
-            if n.op_type == "Linear" and len(n.input) >= 2:
-                merge_cand = node_by_output.get(n.input[0])
-                if merge_cand and merge_cand.op_type == "MergeHeads":
-                    sdpa_cand = node_by_output.get(merge_cand.input[0])
-                    if sdpa_cand and sdpa_cand.op_type in (
-                        "ScaledDotProductAttention",
-                        "Attention",
-                    ):
-                        q_node = node_by_output.get(sdpa_cand.input[0])
-                        # If Q came from SplitQKV
-                        split_cand = None
-                        if q_node and q_node.op_type == "SplitQKV":
-                            split_cand = q_node
+        for match in matches:
+            relu2_node = match.bindings.get("relu2")
+            add_node = match.bindings.get("add")
+            conv1_node = match.bindings.get("conv1")
+            relu1_node = match.bindings.get("relu1")
+            bn1_node = match.bindings.get("bn1")
+            bn2_node = match.bindings.get("bn2")
+            conv2_node = match.bindings.get("conv2")
+            x_val = match.bindings.get("x")
+            if not relu2_node or not conv1_node or not conv2_node:
+                continue
 
-                        if split_cand:
-                            nodes_to_drop.update(
-                                {
-                                    n.name,
-                                    merge_cand.name,
-                                    sdpa_cand.name,
-                                    split_cand.name,
-                                }
-                            )
-                            mha_node = helper.make_node(
-                                "MultiHeadAttention",
-                                inputs=[split_cand.input[0]] + list(n.input[1:]),
-                                outputs=[n.output[0]],
-                                name=f"{n.name}_fused_mha_composite",
-                                domain="custom.pytorch",
-                            )
-                            new_nodes.append(mha_node)
-                            count += 1
+            count += 1
+            # Drop ONLY internal block nodes, NOT the upstream producer 'x'
+            sub_nodes = [bn1_node, conv1_node, relu1_node, bn2_node, conv2_node, add_node, relu2_node]
+            for sn in sub_nodes:
+                if sn and hasattr(sn, "name"):
+                    nodes_to_drop.add(sn.name)
+
+            internal_producers = {out for sn in sub_nodes for out in sn.output if out}
+            external_inputs: list[str] = []
+            for sn in sub_nodes:
+                for inp in sn.input:
+                    if inp and inp not in internal_producers and inp not in external_inputs:
+                        external_inputs.append(inp)
+            external_outputs = [relu2_node.output[0]]
+
+            fp = compute_subgraph_fingerprint(sub_nodes, external_inputs, external_outputs)
+            op_type = build_monomorphized_op_type(rule.action.op_type, fingerprint=fp)
+
+            if mode == "function_proto":
+                canon_nodes, f_in, f_out = _canonicalize_subgraph_nodes(
+                    sub_nodes, external_inputs, external_outputs
+                )
+                ensure_specialized_function_proto(
+                    model,
+                    domain=rule.action.domain,
+                    fname=op_type,
+                    formal_inputs=f_in,
+                    formal_outputs=f_out,
+                    body_nodes=canon_nodes,
+                    doc_string=f"Formal Pre-Activation ResNet Residual Block ({op_type})",
+                )
+
+            res_node = helper.make_node(
+                op_type,
+                inputs=external_inputs,
+                outputs=external_outputs,
+                name=f"{relu2_node.name}_fused_{rule.rule_id}",
+                domain=rule.action.domain,
+                doc_string=rule.description,
+            )
+            new_nodes.append(res_node)
 
         if not new_nodes:
             return model
 
-        kept = [n for n in graph.node if n.name not in nodes_to_drop] + new_nodes
-        del graph.node[:]
-        graph.node.extend(kept)
+        _replace_nodes_topologically(graph, nodes_to_drop, new_nodes)
+        log.info("PreActivation ResNet Fusion: Fused %d ResidualBlock instances", count)
+        return ShapeCanonicalizer().apply_dead_code_elimination(model)
 
+    def _attach_residual_block_function_def(self, model: onnx.ModelProto) -> None:
+        """Attach formal ONNX FunctionProto definition for ResidualBlock."""
+        func_name = "ResidualBlock"
+        domain = "custom.pytorch"
+        if any(f.name == func_name and f.domain == domain for f in model.functions):
+            return
+        model_opset = 14
+        for op in model.opset_import:
+            if op.domain in ("", "ai.onnx"):
+                model_opset = op.version
+                break
+        opset_standard = helper.make_opsetid("", model_opset)
+        opset_custom = helper.make_opsetid("custom.pytorch", 1)
+
+        bn1 = helper.make_node("BatchNormalization", inputs=["x", "s1", "b1", "m1", "v1"], outputs=["bn1_out"])
+        conv1 = helper.make_node("Conv", inputs=["bn1_out", "w1"], outputs=["c1_out"])
+        relu1 = helper.make_node("Relu", inputs=["c1_out"], outputs=["r1_out"])
+        bn2 = helper.make_node("BatchNormalization", inputs=["r1_out", "s2", "b2", "m2", "v2"], outputs=["bn2_out"])
+        conv2 = helper.make_node("Conv", inputs=["bn2_out", "w2"], outputs=["c2_out"])
+        add = helper.make_node("Add", inputs=["c2_out", "x"], outputs=["add_out"])
+        relu2 = helper.make_node("Relu", inputs=["add_out"], outputs=["y"])
+
+        func = helper.make_function(
+            domain=domain,
+            fname=func_name,
+            inputs=["x", "w1", "w2", "s1", "b1", "m1", "v1", "s2", "b2", "m2", "v2"],
+            outputs=["y"],
+            nodes=[bn1, conv1, relu1, bn2, conv2, add, relu2],
+            opset_imports=[opset_standard, opset_custom],
+            doc_string="Formal Pre-Activation ResNet Residual Block",
+        )
+        model.functions.append(func)
+
+    # -------------------------------------------------------------------------
+    # 6. Audio LogMel Dynamic Range Compressor Fusion
+    # -------------------------------------------------------------------------
+    def apply_audio_logmel_compressor_fusion(
+        self, model: onnx.ModelProto, mode: str = "function_proto"
+    ) -> onnx.ModelProto:
+        """Fuse Clip -> Div -> Log -> Div -> Mul -> Add -> Clip into AudioLogMelCompressor."""
+        rule = self.load_rule("audio_logmel_compressor_fusion")
+        graph = model.graph
+
+        c1 = Pattern.op("Clip").capture("c1")
+        d1 = Pattern.op("Div", c1).capture("d1")
+        l1 = Pattern.op("Log", d1).capture("l1")
+        d2 = Pattern.op("Div", l1).capture("d2")
+        m1 = Pattern.op("Mul", d2).capture("m1")
+        a1 = Pattern.op("Add", m1).capture("a1")
+        c2 = Pattern.op("Clip", a1).capture("c2")
+
+        detector = PatternDetector(model)
+        matches = detector.find_all(c2)
+        if not matches:
+            return model
+
+        _ensure_custom_domain(model, rule.action.domain)
+        nodes_to_drop: set[str] = set()
+        new_nodes: list[onnx.NodeProto] = []
+        count = 0
+
+        for match in matches:
+            c2_node = match.bindings.get("c2")
+            a1_node = match.bindings.get("a1")
+            m1_node = match.bindings.get("m1")
+            d2_node = match.bindings.get("d2")
+            l1_node = match.bindings.get("l1")
+            d1_node = match.bindings.get("d1")
+            c1_node = match.bindings.get("c1")
+            if not c2_node or not c1_node:
+                continue
+
+            count += 1
+            sub_nodes = [c1_node, d1_node, l1_node, d2_node, m1_node, a1_node, c2_node]
+            for sn in sub_nodes:
+                if sn and hasattr(sn, "name"):
+                    nodes_to_drop.add(sn.name)
+
+            internal_producers = {out for sn in sub_nodes for out in sn.output if out}
+            external_inputs: list[str] = []
+            for sn in sub_nodes:
+                for inp in sn.input:
+                    if inp and inp not in internal_producers and inp not in external_inputs:
+                        external_inputs.append(inp)
+            external_outputs = [c2_node.output[0]]
+
+            op_type = rule.action.op_type
+            if mode == "function_proto":
+                canon_nodes, f_in, f_out = _canonicalize_subgraph_nodes(
+                    sub_nodes, external_inputs, external_outputs
+                )
+                ensure_specialized_function_proto(
+                    model,
+                    domain=rule.action.domain,
+                    fname=op_type,
+                    formal_inputs=f_in,
+                    formal_outputs=f_out,
+                    body_nodes=canon_nodes,
+                    doc_string="Formal Audio Log-Mel Dynamic Range Compression Pipeline",
+                )
+
+            comp_node = helper.make_node(
+                op_type,
+                inputs=external_inputs,
+                outputs=external_outputs,
+                name=f"{c2_node.name}_fused_{rule.rule_id}",
+                domain=rule.action.domain,
+                doc_string=rule.description,
+            )
+            new_nodes.append(comp_node)
+
+        if not new_nodes:
+            return model
+
+        _replace_nodes_topologically(graph, nodes_to_drop, new_nodes)
+        log.info("Audio LogMel Compressor Fusion: Fused %d instances", count)
+        return ShapeCanonicalizer().apply_dead_code_elimination(model)
+
+    def _attach_audio_compressor_function_def(self, model: onnx.ModelProto) -> None:
+        """Attach formal ONNX FunctionProto definition for AudioLogMelCompressor."""
+        func_name = "AudioLogMelCompressor"
+        domain = "custom.pytorch"
+        if any(f.name == func_name and f.domain == domain for f in model.functions):
+            return
+        model_opset = 14
+        for op in model.opset_import:
+            if op.domain in ("", "ai.onnx"):
+                model_opset = op.version
+                break
+        opset_standard = helper.make_opsetid("", model_opset)
+        opset_custom = helper.make_opsetid("custom.pytorch", 1)
+
+        c1 = helper.make_node("Clip", inputs=["x"], outputs=["c1_out"])
+        d1 = helper.make_node("Div", inputs=["c1_out", "ref"], outputs=["d1_out"])
+        l1 = helper.make_node("Log", inputs=["d1_out"], outputs=["l1_out"])
+        d2 = helper.make_node("Div", inputs=["l1_out", "scale"], outputs=["d2_out"])
+        m1 = helper.make_node("Mul", inputs=["d2_out", "mul_val"], outputs=["m1_out"])
+        a1 = helper.make_node("Add", inputs=["m1_out", "offset"], outputs=["a1_out"])
+        c2 = helper.make_node("Clip", inputs=["a1_out"], outputs=["y"])
+
+        func = helper.make_function(
+            domain=domain,
+            fname=func_name,
+            inputs=["x", "ref", "scale", "mul_val", "offset"],
+            outputs=["y"],
+            nodes=[c1, d1, l1, d2, m1, a1, c2],
+            opset_imports=[opset_standard, opset_custom],
+            doc_string="Formal Audio Log-Mel Dynamic Range Compression Pipeline",
+        )
+        model.functions.append(func)
+
+    # -------------------------------------------------------------------------
+    # 7. Multi-Head Attention (MHA) Composite Fusion
+    # -------------------------------------------------------------------------
+    def apply_mha_composite_fusion(
+        self, model: onnx.ModelProto, mode: str = "function_proto"
+    ) -> onnx.ModelProto:
+        """Fuse Linear(QKV) -> SplitQKV -> SDPA -> MergeHeads -> Linear(Out) into MultiHeadAttention."""
+        rule = self.load_rule("mha_composite_fusion")
+        graph = model.graph
+
+        sdpa_pat = Pattern.any_of(
+            Pattern.op("SDPA"), Pattern.op("ScaledDotProductAttention")
+        ).capture("sdpa")
+        merge_pat = Pattern.op("MergeHeads", sdpa_pat).capture("merge")
+        out_proj_pat = Pattern.any_of(
+            Pattern.op("Linear", merge_pat),
+            Pattern.op("MatMul", merge_pat),
+            Pattern.op("Gemm", merge_pat),
+        ).capture("out_proj")
+
+        detector = PatternDetector(model)
+        matches = detector.find_all(out_proj_pat)
+        if not matches:
+            return model
+
+        _ensure_custom_domain(model, rule.action.domain)
+        nodes_to_drop: set[str] = set()
+        new_nodes: list[onnx.NodeProto] = []
+        count = 0
+
+        for match in matches:
+            out_node = match.bindings.get("out_proj")
+            merge_node = match.bindings.get("merge")
+            sdpa_node = match.bindings.get("sdpa")
+            if not out_node or not merge_node or not sdpa_node:
+                continue
+
+            count += 1
+            for n_m in (sdpa_node, merge_node, out_node):
+                if n_m and hasattr(n_m, "name"):
+                    nodes_to_drop.add(n_m.name)
+
+            mha_inputs = list(sdpa_node.input) + list(out_node.input[1:])
+            mha_node = helper.make_node(
+                rule.action.op_type,
+                inputs=mha_inputs,
+                outputs=[out_node.output[0]],
+                name=f"{out_node.name}_fused_{rule.rule_id}",
+                domain=rule.action.domain,
+                doc_string=rule.description,
+            )
+            new_nodes.append(mha_node)
+
+        if not new_nodes:
+            return model
+
+        _replace_nodes_topologically(graph, nodes_to_drop, new_nodes)
         if mode == "function_proto":
             self._attach_mha_composite_function_def(model)
 
-        log.info("MultiHeadAttention Composite Fusion: Fused %d blocks", count)
+        log.info("MultiHeadAttention Composite Fusion: Fused %d instances", count)
         return ShapeCanonicalizer().apply_dead_code_elimination(model)
 
     def _attach_mha_composite_function_def(self, model: onnx.ModelProto) -> None:
@@ -637,32 +937,539 @@ class MacroBlockSynthesizer(CompilerPass):
         domain = "custom.pytorch"
         if any(f.name == func_name and f.domain == domain for f in model.functions):
             return
-        opset_standard = helper.make_opsetid("", 14)
+        model_opset = 14
+        for op in model.opset_import:
+            if op.domain in ("", "ai.onnx"):
+                model_opset = op.version
+                break
+        opset_standard = helper.make_opsetid("", model_opset)
         opset_custom = helper.make_opsetid("custom.pytorch", 1)
 
-        sp = helper.make_node(
-            "SplitQKV", inputs=["x"], outputs=["q", "k", "v"], domain=domain
-        )
-        sdpa = helper.make_node(
-            "ScaledDotProductAttention",
-            inputs=["q", "k", "v"],
-            outputs=["attn_out"],
-            domain=domain,
-        )
-        mh = helper.make_node(
-            "MergeHeads", inputs=["attn_out"], outputs=["merged"], domain=domain
-        )
-        lin = helper.make_node(
-            "Linear", inputs=["merged", "w_out"], outputs=["y"], domain=domain
-        )
+        qkv = helper.make_node("Linear", inputs=["x", "w_qkv"], outputs=["qkv_out"], domain=domain)
+        sq = helper.make_node("SplitQKV", inputs=["qkv_out"], outputs=["q", "k", "v"], domain=domain)
+        sdpa = helper.make_node("SDPA", inputs=["q", "k", "v"], outputs=["sdpa_out"], domain=domain)
+        mh = helper.make_node("MergeHeads", inputs=["sdpa_out"], outputs=["mh_out"], domain=domain)
+        lin_out = helper.make_node("Linear", inputs=["mh_out", "w_out"], outputs=["y"], domain=domain)
 
         func = helper.make_function(
             domain=domain,
             fname=func_name,
-            inputs=["x", "w_out"],
+            inputs=["x", "w_qkv", "w_out"],
             outputs=["y"],
-            nodes=[sp, sdpa, mh, lin],
+            nodes=[qkv, sq, sdpa, mh, lin_out],
             opset_imports=[opset_standard, opset_custom],
-            doc_string="Multi-Head Attention composite block",
+            doc_string="Formal Multi-Head Attention unit with SplitQKV and MergeHeads",
         )
         model.functions.append(func)
+
+    # -------------------------------------------------------------------------
+    # 8. Gated Multi-Head Attention (GAU) Fusion
+    # -------------------------------------------------------------------------
+    def apply_gated_mha_composite_fusion(
+        self, model: onnx.ModelProto, mode: str = "function_proto"
+    ) -> onnx.ModelProto:
+        """Fuse RMSNorm -> Linear(QKV) -> GAU -> MergeHeads -> Linear(Out) into GatedMultiHeadAttention."""
+        rule = self.load_rule("gated_mha_composite_fusion")
+        graph = model.graph
+        node_by_output: dict[str, onnx.NodeProto] = {
+            out: n for n in graph.node for out in n.output
+        }
+        consumer_map: dict[str, list[onnx.NodeProto]] = collections.defaultdict(list)
+        for n in graph.node:
+            for inp in n.input:
+                consumer_map[inp].append(n)
+
+        gau_nodes = [
+            n for n in graph.node if n.op_type.startswith("GatedUnit") or n.op_type.startswith("GatedAttention")
+        ]
+        if not gau_nodes:
+            return model
+
+        _ensure_custom_domain(model, rule.action.domain)
+        nodes_to_drop: set[str] = set()
+        new_nodes: list[onnx.NodeProto] = []
+        count = 0
+
+        for gau in gau_nodes:
+            merge_cands = [
+                c for c in consumer_map.get(gau.output[0], []) if c.op_type == "MergeHeads"
+            ]
+            if not merge_cands:
+                continue
+            merge_node = merge_cands[0]
+
+            out_cands = [
+                c for c in consumer_map.get(merge_node.output[0], []) if c.op_type in ("Linear", "MatMul", "Gemm")
+            ]
+            if not out_cands:
+                continue
+            out_node = out_cands[0]
+
+            # Find upstream QKV and Gate linear nodes
+            q_node = node_by_output.get(gau.input[0])
+            gate_node = node_by_output.get(gau.input[1]) if len(gau.input) > 1 else None
+            gate_chain_nodes = []
+            while gate_node and gate_node.op_type in ("Reshape", "Transpose", "Unsqueeze", "Squeeze"):
+                gate_chain_nodes.append(gate_node)
+                gate_node = node_by_output.get(gate_node.input[0]) if gate_node.input else None
+
+            # Trace backward through SDPA
+            sdpa_node = None
+            if q_node and q_node.op_type.startswith("ScaledDotProductAttention"):
+                sdpa_node = q_node
+                q_node = node_by_output.get(sdpa_node.input[0])
+
+            # Trace backward through RoPE and SplitQKV
+            rope_nodes = []
+            split_node = None
+            while q_node and q_node.op_type in ("RotaryEmbedding", "SplitQKV"):
+                if q_node.op_type == "SplitQKV":
+                    split_node = q_node
+                else:
+                    rope_nodes.append(q_node)
+                q_node = node_by_output.get(q_node.input[0])
+
+            norm_node = None
+            if q_node and q_node.input:
+                norm_node = node_by_output.get(q_node.input[0])
+
+            if not norm_node or not norm_node.op_type.startswith("RMSNorm"):
+                continue
+
+            count += 1
+            sub_nodes = [norm_node, q_node, gau, merge_node, out_node]
+            if sdpa_node:
+                sub_nodes.append(sdpa_node)
+            if gate_node:
+                sub_nodes.append(gate_node)
+            sub_nodes.extend(gate_chain_nodes)
+            if split_node:
+                sub_nodes.append(split_node)
+            sub_nodes.extend(rope_nodes)
+
+            for sn in sub_nodes:
+                nodes_to_drop.add(sn.name)
+
+            fused_inputs = [norm_node.input[0]]
+            for n_w in (norm_node, q_node, gate_node, out_node):
+                if n_w:
+                    for inp_w in n_w.input[1:]:
+                        if inp_w not in fused_inputs and inp_w:
+                            fused_inputs.append(inp_w)
+
+            gau_comp = helper.make_node(
+                rule.action.op_type,
+                inputs=fused_inputs,
+                outputs=[out_node.output[0]],
+                name=f"{gau.name}_fused_{rule.rule_id}",
+                domain=rule.action.domain,
+                doc_string=rule.description,
+            )
+            new_nodes.append(gau_comp)
+
+        if not new_nodes:
+            return model
+
+        _replace_nodes_topologically(graph, nodes_to_drop, new_nodes)
+        if mode == "function_proto":
+            self._attach_gated_mha_composite_function_def(model)
+
+        log.info("GatedMHA Composite Fusion: Fused %d instances", count)
+        return ShapeCanonicalizer().apply_dead_code_elimination(model)
+
+    def _attach_gated_mha_composite_function_def(self, model: onnx.ModelProto) -> None:
+        """Attach formal ONNX FunctionProto definition for GatedMultiHeadAttention."""
+        func_name = "GatedMultiHeadAttention"
+        domain = "custom.pytorch"
+        if any(f.name == func_name and f.domain == domain for f in model.functions):
+            return
+        model_opset = 14
+        for op in model.opset_import:
+            if op.domain in ("", "ai.onnx"):
+                model_opset = op.version
+                break
+        opset_standard = helper.make_opsetid("", model_opset)
+        opset_custom = helper.make_opsetid("custom.pytorch", 1)
+
+        norm = helper.make_node("RMSNorm", inputs=["x"], outputs=["norm_out"], domain=domain)
+        qkv = helper.make_node("Linear", inputs=["norm_out", "w_qkv"], outputs=["qkv_out"], domain=domain)
+        gate = helper.make_node("Linear", inputs=["norm_out", "w_gate"], outputs=["gate_out"], domain=domain)
+        sq = helper.make_node("SplitQKV", inputs=["qkv_out"], outputs=["q", "k", "v"], domain=domain)
+        rope_q = helper.make_node("RotaryEmbedding", inputs=["q"], outputs=["q_rope"], domain=domain)
+        rope_k = helper.make_node("RotaryEmbedding", inputs=["k"], outputs=["k_rope"], domain=domain)
+        sdpa = helper.make_node("SDPA", inputs=["q_rope", "k_rope", "v"], outputs=["sdpa_out"], domain=domain)
+        gu = helper.make_node("GatedUnit", inputs=["sdpa_out", "gate_out"], outputs=["gu_out"], domain=domain)
+        mh = helper.make_node("MergeHeads", inputs=["gu_out"], outputs=["mh_out"], domain=domain)
+        lin_out = helper.make_node("Linear", inputs=["mh_out", "w_out"], outputs=["y"], domain=domain)
+
+        func = helper.make_function(
+            domain=domain,
+            fname=func_name,
+            inputs=["x", "w_qkv", "w_gate", "w_out"],
+            outputs=["y"],
+            nodes=[norm, qkv, gate, sq, rope_q, rope_k, sdpa, gu, mh, lin_out],
+            opset_imports=[opset_standard, opset_custom],
+            doc_string="Formal Gated Multi-Head Attention unit with RMSNorm and RoPE",
+        )
+        model.functions.append(func)
+
+    # -------------------------------------------------------------------------
+    # 9. Full Transformer Block Composite Fusion
+    # -------------------------------------------------------------------------
+    def apply_transformer_block_composite_fusion(
+        self, model: onnx.ModelProto, mode: str = "function_proto"
+    ) -> onnx.ModelProto:
+        """Fuse Attention -> Residual Add -> FeedForward -> Residual Add into TransformerBlock."""
+        rule = self.load_rule("transformer_block_composite_fusion")
+        graph = model.graph
+
+        x = Pattern.any().capture("x")
+        attn = Pattern.any_of(
+            Pattern.op("GatedMultiHeadAttention", x),
+            Pattern.op("MultiHeadAttention", x),
+            Pattern.op("SDPA", x),
+        ).capture("attn")
+        add1 = (attn + x).capture("add1")
+        ffn = Pattern.any_of(
+            Pattern.op("FeedForward", add1),
+            Pattern.op("FeedForwardSwiGLU", add1),
+        ).capture("ffn")
+        add2 = (ffn + add1).capture("add2")
+
+        detector = PatternDetector(model)
+        matches = detector.find_all(add2)
+        if not matches:
+            return model
+
+        _ensure_custom_domain(model, rule.action.domain)
+        nodes_to_drop: set[str] = set()
+        new_nodes: list[onnx.NodeProto] = []
+        count = 0
+
+        for match in matches:
+            add2_node = match.bindings.get("add2")
+            ffn_node = match.bindings.get("ffn")
+            add1_node = match.bindings.get("add1")
+            attn_node = match.bindings.get("attn")
+            x_val = match.bindings.get("x")
+            if not add2_node or not ffn_node or not add1_node or not attn_node:
+                continue
+
+            count += 1
+            for n_m in (attn_node, add1_node, ffn_node, add2_node):
+                nodes_to_drop.add(n_m.name)
+
+            residual_x = x_val.output[0] if hasattr(x_val, "output") else str(x_val)
+            tb_inputs = [residual_x]
+            for n_w in (attn_node, ffn_node):
+                for inp_w in n_w.input[1:]:
+                    if inp_w not in tb_inputs and inp_w:
+                        tb_inputs.append(inp_w)
+
+            tb_node = helper.make_node(
+                rule.action.op_type,
+                inputs=tb_inputs,
+                outputs=list(add2_node.output),
+                name=f"{add2_node.name}_fused_{rule.rule_id}",
+                domain=rule.action.domain,
+                doc_string=rule.description,
+            )
+            new_nodes.append(tb_node)
+
+        if not new_nodes:
+            return model
+
+        _replace_nodes_topologically(graph, nodes_to_drop, new_nodes)
+        if mode == "function_proto":
+            self._attach_transformer_block_function_def(model)
+
+        log.info("TransformerBlock Composite Fusion: Fused %d layers", count)
+        return ShapeCanonicalizer().apply_dead_code_elimination(model)
+
+    def _attach_transformer_block_function_def(self, model: onnx.ModelProto) -> None:
+        """Attach formal ONNX FunctionProto definition for TransformerBlock."""
+        func_name = "TransformerBlock"
+        domain = "custom.pytorch"
+        if any(f.name == func_name and f.domain == domain for f in model.functions):
+            return
+        model_opset = 14
+        for op in model.opset_import:
+            if op.domain in ("", "ai.onnx"):
+                model_opset = op.version
+                break
+        opset_standard = helper.make_opsetid("", model_opset)
+        opset_custom = helper.make_opsetid("custom.pytorch", 1)
+
+        mha = helper.make_node("GatedMultiHeadAttention", inputs=["x"], outputs=["mha_out"], domain=domain)
+        add1 = helper.make_node("Add", inputs=["x", "mha_out"], outputs=["res1"])
+        ffn = helper.make_node("FeedForward", inputs=["res1"], outputs=["ffn_out"], domain=domain)
+        add2 = helper.make_node("Add", inputs=["res1", "ffn_out"], outputs=["y"])
+
+        func = helper.make_function(
+            domain=domain,
+            fname=func_name,
+            inputs=["x"],
+            outputs=["y"],
+            nodes=[mha, add1, ffn, add2],
+            opset_imports=[opset_standard, opset_custom],
+            doc_string="Formal Transformer Layer Block (Attention + Residual + FFN + Residual)",
+        )
+        model.functions.append(func)
+
+    # -------------------------------------------------------------------------
+    # 10. Standard PyTorch TransformerEncoderLayer Fusion
+    # -------------------------------------------------------------------------
+    def apply_transformer_encoder_layer_fusion(
+        self, model: onnx.ModelProto, mode: str = "function_proto"
+    ) -> onnx.ModelProto:
+        """Fuse PyTorch nn.TransformerEncoderLayer subgraphs into TransformerBlock."""
+        rule = self.load_rule("transformer_encoder_layer_fusion")
+        graph = model.graph
+        nodes_to_drop: set[str] = set()
+        new_nodes: list[onnx.NodeProto] = []
+        count = 0
+
+        layer_indices = set()
+        for n in graph.node:
+            m_idx = re.search(r"layers\.(\d+)", n.name)
+            if m_idx:
+                layer_indices.add(int(m_idx.group(1)))
+
+        _ensure_custom_domain(model, rule.action.domain)
+
+        for layer_idx in sorted(layer_indices):
+            l_nodes = [n for n in graph.node if f"layers.{layer_idx}/" in n.name]
+            final_nodes = [n for n in l_nodes if n.name.endswith(f"layers.{layer_idx}/Add_2")]
+            first_nodes = [n for n in l_nodes if f"layers.{layer_idx}/norm1" in n.name and n.op_type.startswith("LayerNorm")]
+
+            if not final_nodes or not first_nodes:
+                continue
+
+            final_node = final_nodes[0]
+            out_y = final_node.output[0]
+
+            internal_producers = {out for sn in l_nodes for out in sn.output if out}
+            ext_inps: list[str] = []
+            for sn in l_nodes:
+                for inp in sn.input:
+                    if inp and inp not in internal_producers and inp not in ext_inps:
+                        ext_inps.append(inp)
+            ext_outs = [out_y]
+
+            for n in l_nodes:
+                nodes_to_drop.add(n.name)
+
+            fp = compute_subgraph_fingerprint(l_nodes, ext_inps, ext_outs)
+            op_type = build_monomorphized_op_type(rule.action.op_type, fingerprint=fp)
+
+            if mode == "function_proto":
+                canon_nodes, f_in, f_out = _canonicalize_subgraph_nodes(
+                    l_nodes, ext_inps, ext_outs
+                )
+                ensure_specialized_function_proto(
+                    model,
+                    domain=rule.action.domain,
+                    fname=op_type,
+                    formal_inputs=f_in,
+                    formal_outputs=f_out,
+                    body_nodes=canon_nodes,
+                    doc_string=f"Formal Transformer Encoder Block ({op_type})",
+                )
+
+            tb = helper.make_node(
+                op_type,
+                inputs=ext_inps,
+                outputs=ext_outs,
+                name=f"transformer_encoder_layer_{layer_idx}",
+                domain=rule.action.domain,
+                doc_string=rule.description,
+            )
+            new_nodes.append(tb)
+            count += 1
+
+        if not new_nodes:
+            return model
+
+        _replace_nodes_topologically(graph, nodes_to_drop, new_nodes)
+        log.info("TransformerEncoderLayer Fusion: Fused %d layers", count)
+        return ShapeCanonicalizer().apply_dead_code_elimination(model)
+
+    # -------------------------------------------------------------------------
+    # 11. Multi-Field Embedding Table Cascade Fusion
+    # -------------------------------------------------------------------------
+    def apply_multi_field_embedding_fusion(
+        self, model: onnx.ModelProto, mode: str = "function_proto"
+    ) -> onnx.ModelProto:
+        """Fuse cascading Gather + Add trees over multi-token features into MultiFieldEmbedding."""
+        rule = self.load_rule("multi_field_embedding_fusion")
+        graph = model.graph
+        gather_nodes = [n for n in graph.node if n.op_type == "Gather" and "/m/" in n.name]
+        add_nodes = [n for n in graph.node if n.op_type == "Add" and n.name.startswith("/m/Add")]
+
+        if len(gather_nodes) < 6 or len(add_nodes) < 6:
+            return model
+
+        _ensure_custom_domain(model, rule.action.domain)
+        nodes_to_drop = set()
+        for n in gather_nodes + add_nodes:
+            nodes_to_drop.add(n.name)
+
+        final_add = max(add_nodes, key=lambda n: n.name)
+        first_gather = gather_nodes[0]
+
+        emb_node = helper.make_node(
+            rule.action.op_type,
+            inputs=[first_gather.input[1]],
+            outputs=[final_add.output[0]],
+            name="multi_field_embedding_table",
+            domain=rule.action.domain,
+            doc_string=rule.description,
+        )
+
+        _replace_nodes_topologically(graph, nodes_to_drop, [emb_node])
+        if mode == "function_proto":
+            self._attach_multi_field_embedding_function_def(model)
+
+        log.info("MultiFieldEmbedding Fusion: Fused %d embedding tables", len(gather_nodes))
+        return ShapeCanonicalizer().apply_dead_code_elimination(model)
+
+    def _attach_multi_field_embedding_function_def(self, model: onnx.ModelProto) -> None:
+        """Attach formal ONNX FunctionProto definition for MultiFieldEmbedding."""
+        func_name = "MultiFieldEmbedding"
+        domain = "custom.pytorch"
+        if any(f.name == func_name and f.domain == domain for f in model.functions):
+            return
+        model_opset = 14
+        for op in model.opset_import:
+            if op.domain in ("", "ai.onnx"):
+                model_opset = op.version
+                break
+        opset_standard = helper.make_opsetid("", model_opset)
+        opset_custom = helper.make_opsetid("custom.pytorch", 1)
+
+        g1 = helper.make_node("Gather", inputs=["w1", "x"], outputs=["e1"])
+        g2 = helper.make_node("Gather", inputs=["w2", "x"], outputs=["e2"])
+        add = helper.make_node("Add", inputs=["e1", "e2"], outputs=["y"])
+
+        func = helper.make_function(
+            domain=domain,
+            fname=func_name,
+            inputs=["x", "w1", "w2"],
+            outputs=["y"],
+            nodes=[g1, g2, add],
+            opset_imports=[opset_standard, opset_custom],
+            doc_string="Formal Multi-Field Feature Embedding Composite",
+        )
+        model.functions.append(func)
+
+    # -------------------------------------------------------------------------
+    # 12. Multi-Task Audio Decoder Head Fusion
+    # -------------------------------------------------------------------------
+    def apply_multi_task_audio_head_fusion(
+        self, model: onnx.ModelProto, mode: str = "function_proto"
+    ) -> onnx.ModelProto:
+        """Fuse post-body dual-branch feature extractor and prediction heads into MultiTaskDecoderHead."""
+        graph = model.graph
+        graph_outs = {o.name for o in graph.output}
+        target_heads = {"inst_logp", "perc_prob", "vol_logp"}
+        if not target_heads.issubset(graph_outs):
+            return model
+
+        rule = self.load_rule("multi_task_audio_head_fusion")
+
+        # Find entry tensor feeding conv_pitched and conv_perc
+        conv_pitched = next(
+            (
+                n
+                for n in graph.node
+                if "conv_pitched" in n.name
+                and n.op_type in ("BatchNormalization", "Conv")
+            ),
+            None,
+        )
+        if not conv_pitched or not conv_pitched.input:
+            return model
+
+        entry_tensor = conv_pitched.input[0]
+        visited = {entry_tensor}
+        post_nodes: list[onnx.NodeProto] = []
+        nodes_to_drop: set[str] = set()
+
+        for n in graph.node:
+            if any(inp in visited for inp in n.input):
+                post_nodes.append(n)
+                nodes_to_drop.add(n.name)
+                for out in n.output:
+                    visited.add(out)
+
+        if not post_nodes:
+            return model
+
+        # Collect constants consumed by post_nodes
+        consumed_inputs = {inp for n in post_nodes for inp in n.input}
+        const_nodes = [
+            n
+            for n in graph.node
+            if n.op_type == "Constant"
+            and n.output
+            and n.output[0] in consumed_inputs
+        ]
+
+        for cn in const_nodes:
+            nodes_to_drop.add(cn.name)
+
+        all_fn_nodes = const_nodes + post_nodes
+        internal_producers = {out for n in all_fn_nodes for out in n.output}
+
+        # Formal inputs must include entry_tensor and any consumed initializers/constants
+        external_inputs: list[str] = []
+        for n in all_fn_nodes:
+            for inp in n.input:
+                if (
+                    inp
+                    and inp not in internal_producers
+                    and inp not in external_inputs
+                ):
+                    external_inputs.append(inp)
+
+        _ensure_custom_domain(model, rule.action.domain)
+
+        fused_node = helper.make_node(
+            rule.action.op_type,
+            inputs=external_inputs,
+            outputs=["inst_logp", "perc_prob", "vol_logp"],
+            name="multi_task_decoder_head",
+            domain=rule.action.domain,
+            doc_string=rule.description,
+        )
+
+        if mode == "function_proto":
+            model_opset = 17
+            for op in model.opset_import:
+                if op.domain in ("", "ai.onnx"):
+                    model_opset = op.version
+                    break
+            opset_standard = helper.make_opsetid("", model_opset)
+            opset_custom = helper.make_opsetid(rule.action.domain, 1)
+
+            func = helper.make_function(
+                domain=rule.action.domain,
+                fname=rule.action.op_type,
+                inputs=external_inputs,
+                outputs=["inst_logp", "perc_prob", "vol_logp"],
+                nodes=all_fn_nodes,
+                opset_imports=[opset_standard, opset_custom],
+                doc_string="Formal Multi-Task Pitch, Percussion, and Volume Decoder Head Composite",
+            )
+            model.functions.append(func)
+
+        new_nodes = [n for n in graph.node if n.name not in nodes_to_drop]
+        new_nodes.append(fused_node)
+        del graph.node[:]
+        graph.node.extend(new_nodes)
+
+        log.info(
+            "Multi-Task Audio Decoder Head Fusion: Fused %d post-body nodes",
+            len(post_nodes) + len(const_nodes),
+        )
+        return ShapeCanonicalizer().apply_dead_code_elimination(model)

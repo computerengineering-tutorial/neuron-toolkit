@@ -89,7 +89,7 @@ class OptimizationPipeline:
             len(model.graph.node),
         )
 
-        max_iters = int(context.options.get("max_fixed_point_iters", 5))
+        max_iters = int(context.options.get("max_fixed_point_iters", getattr(context, "max_fixed_point_iters", 5)))
         if not context.options.get("enable_fixed_point", True):
             max_iters = 1
 
@@ -230,13 +230,13 @@ class OptimizationPipeline:
                     model, mode=context.mode
                 )
 
-            if context.should_run("skip_norm"):
-                model = self.norm_pass.apply_skip_norm_fusion(model, mode=context.mode)
-
             if context.options.get("enable_macro_blocks", False) or (
                 context.rule_ids and "macro_blocks" in context.rule_ids
             ):
                 model = self.macro_pass.run(model, mode=context.mode)
+
+            if context.should_run("skip_norm"):
+                model = self.norm_pass.apply_skip_norm_fusion(model, mode=context.mode)
 
             # -------------------------------------------------------------
             # Graph Cleansing at each iteration

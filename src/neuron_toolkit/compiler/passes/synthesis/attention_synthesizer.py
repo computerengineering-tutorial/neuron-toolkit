@@ -879,7 +879,12 @@ class AttentionSynthesizer(Pass):
         replacements: dict[int, onnx.NodeProto] = {}
         nodes_to_drop: set[int] = set()
 
-        gated_units = [n for n in graph.node if n.op_type == "GatedUnit"]
+        gated_units = [
+            n
+            for n in graph.node
+            if n.op_type.startswith("GatedUnit")
+            or n.op_type.startswith("ScaledDotProductAttention")
+        ]
         for gu in gated_units:
             users = consumer_map.get(gu.output[0], [])
             trans = [u for u in users if u.op_type == "Transpose"]

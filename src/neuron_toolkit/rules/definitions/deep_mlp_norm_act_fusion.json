@@ -1,0 +1,51 @@
+{
+  "rule_id": "deep_mlp_norm_act_fusion",
+  "name": "DeepMLP Norm Act Block Fusion",
+  "description": "Fuses Norm -> Linear -> Gelu/Relu/SiLU into DeepMLP_Norm_Act macro block with FunctionProto Netron expandability.",
+  "pattern": {
+    "nodes": [
+      {
+        "id": "norm_node",
+        "op_type": "RMSNorm|RMSNormalization|LayerNormalization|SimplifiedLayerNormalization",
+        "inputs": ["$x", "$norm_w"],
+        "outputs": ["$norm_out"]
+      },
+      {
+        "id": "lin_node",
+        "op_type": "Linear|Gemm|MatMul",
+        "inputs": ["$norm_out", "$w"],
+        "outputs": ["$lin_out"]
+      },
+      {
+        "id": "act_node",
+        "op_type": "Gelu|FastGelu|Relu|SiLU",
+        "inputs": ["$lin_out"],
+        "outputs": ["$final_out"]
+      }
+    ]
+  },
+  "action": {
+    "type": "fuse_to_function",
+    "op_type": "DeepMLP_Norm_Act",
+    "domain": "custom.pytorch",
+    "inputs": ["$x", "$norm_w", "$w"],
+    "outputs": ["$final_out"],
+    "targets": {
+      "modern_onnx": {
+        "op_type": "DeepMLP_Norm_Act",
+        "domain": "custom.pytorch",
+        "inputs": ["$x", "$norm_w", "$w"]
+      },
+      "function_proto": {
+        "op_type": "DeepMLP_Norm_Act",
+        "domain": "custom.pytorch",
+        "inputs": ["$x", "$norm_w", "$w"]
+      },
+      "pytorch_custom": {
+        "op_type": "DeepMLP_Norm_Act",
+        "domain": "custom.pytorch",
+        "inputs": ["$x", "$norm_w", "$w"]
+      }
+    }
+  }
+}

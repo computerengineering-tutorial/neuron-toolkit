@@ -29,7 +29,7 @@ The predictor detects blocks across modern deep learning paradigms:
 
 | Family | Detected Block Types | Characteristic Motifs |
 | --- | --- | --- |
-| **Transformer** | `MultiHeadAttention`, `FeedForward_GELU`, `FeedForward_SwiGLU`, `RoPE`, `TransformerBlock` | SDPA patterns, RMSNorm / LayerNorm, QKV projections |
+| **Transformer** | `MultiHeadAttention`, `FeedForward_GELU`, `FeedForward_SwiGLU`, `RoPE`, `TransformerBlock`, `Gemma2_SoftCap_Attention`, `DeepSeek_MLA` | SDPA patterns, RMSNorm / LayerNorm, QKV projections, Logits soft-capping, Low-rank KV compression |
 | **Diffusion (DiT)** | `DiT_Block`, `AdaLayerNorm`, `TimestepEmbedding` | Scale/shift modulation, Cross-Attention, Timestep MLPs |
 | **State Space (SSM)** | `Mamba_SSM_Block`, `SelectiveScan`, `Conv1D_Gate` | 1D Depthwise Conv + Discretized State-Space equations |
 | **Vision (CNN/ViT)** | `ConvNeXt_Block`, `SqueezeExcitation`, `InvertedResidual`, `PatchEmbedding` | 7x7 Depthwise Conv, SE squeeze-excite ratio, Linear projection |

@@ -59,8 +59,8 @@ def my_custom_handler(inputs: list[torch.Tensor], attrs: dict) -> list[torch.Ten
 
 Built-in operator support in `OpRegistry` covers:
 
-- **Standard ONNX**: `MatMul`, `Gemm`, `Add`, `Sub`, `Mul`, `Div`, `Softmax`, `LayerNormalization`, `Reshape`, `Transpose`, `Split`, `Concat`, `Gather`, `Slice`, `Pow`, `Sqrt`, `Erf`, `Tanh`, `Sigmoid`, `Relu`, `Clip`, etc.
-- **Custom PyTorch**: `RMSNorm`, `ScaledDotProductAttention`, `RotaryEmbedding`, `SiLU`, `HardSwish`, `Mish`, `Linear`, `FeedForward`, `FeedForwardSwiGLU`, `SpatialGatingUnit`, `SqueezeExcitation`, `DeepMLP_Norm_Act`, `SplitQKV`, `MergeHeads`, `Unbind`.
+- **Standard ONNX**: `MatMul`, `Gemm`, `Conv`, `GlobalAveragePool`, `RNN`, `Add`, `Sub`, `Mul`, `Div`, `Softmax`, `LayerNormalization`, `Reshape`, `Transpose`, `Split`, `Concat`, `Gather`, `Slice`, `Pow`, `Sqrt`, `Erf`, `Tanh`, `Sigmoid`, `Relu`, `Clip`, etc.
+- **Custom PyTorch**: `RMSNorm`, `ScaledDotProductAttention`, `LogitsSoftCap`, `MultiHeadLatentAttention_KVProjection`, `RotaryEmbedding`, `SiLU`, `HardSwish`, `Mish`, `Linear`, `FeedForward`, `FeedForwardSwiGLU`, `SpatialGatingUnit`, `SqueezeExcitation`, `DeepMLP_Norm_Act`, `SplitQKV`, `MergeHeads`, `Unbind`.
 
 ---
 

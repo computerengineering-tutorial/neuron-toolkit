@@ -17,10 +17,11 @@
 - 📦 **Zero-Dependency Safetensors Serialization**: Built-in weight serializer and loader conforming to HuggingFace `.safetensors` standards without requiring Rust toolchains.
 - 📊 **Netron-Compatible JSON Export**: Export graph topologies with statistical weight summaries (min, max, mean, std, zero fraction) without saving raw weight buffers.
 - 🔬 **Differential Verification**: Extract subgraphs between arbitrary points and verify numerical equivalence against PyTorch or ONNXRuntime with automated tolerance checks (MAE, MSE, cosine similarity).
-- 🚀 **3-Stage Compiler Pipeline**: Micro-canonicalization, macro-block synthesis, and Netron FunctionProto dual-mode export (`NeuronCompiler.compile`).
+- 🚀 **3-Stage Compiler Pipeline**: Iterative fixed-point convergence engine with micro-canonicalization (Pad-Conv fusion, Reshape collapse, Cast folding), macro-block synthesis (SDPA, Gemma-2 softcapping, DeepSeek MLA), and Netron FunctionProto dual-mode export (`NeuronCompiler.compile`).
 - 🧠 **Architecture Recognition & Fingerprinting**: Automatic topology analysis predicting Transformer, DiT, Mamba/SSM, GNN, and ConvNeXt architectures with polymorphic subgraph fingerprinting.
-- 📜 **Declarative JSON Rules Engine**: Extensible declarative graph transformation engine with 29+ pre-built JSON rewrite rules (`JSONRuleEngine`).
-- ⚡ **PyTorch Execution & Cross-Verification**: Standalone vectorized execution of custom ONNX graphs via `PyTorchRunner` with automated differential equivalence testing against ONNX Runtime.
+- 📜 **Declarative JSON Rules Engine**: Extensible declarative graph transformation engine with 39 pre-built JSON rewrite rules (`JSONRuleEngine`).
+- ⚡ **PyTorch Execution & Cross-Verification**: Standalone vectorized execution of custom ONNX graphs via `PyTorchRunner` (including `GlobalAveragePool`, `RNN`, `LogitsSoftCap`, `MLA`) with automated differential equivalence testing against ONNX Runtime.
+- 🧭 **AST Code Intelligence & CLI**: Automated Python AST codemap generation, regex symbol querying, docstring indexing, and coverage reporting via `neuron ast`.
 
 ---
 

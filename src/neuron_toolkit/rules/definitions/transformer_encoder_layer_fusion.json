@@ -1,0 +1,69 @@
+{
+  "rule_id": "transformer_encoder_layer_fusion",
+  "name": "PyTorch TransformerEncoderLayer Fusion",
+  "description": "Fuses standard PyTorch nn.TransformerEncoderLayer subgraphs into TransformerBlock with FunctionProto Netron expandability.",
+  "pattern": {
+    "nodes": [
+      {
+        "id": "norm1",
+        "op_type": "LayerNormalization",
+        "inputs": ["$x"],
+        "outputs": ["$norm1_out"]
+      },
+      {
+        "id": "attn",
+        "op_type": "MultiHeadAttention|SDPA",
+        "inputs": ["$norm1_out"],
+        "outputs": ["$attn_out"]
+      },
+      {
+        "id": "add1",
+        "op_type": "Add",
+        "inputs": ["$attn_out", "$x"],
+        "outputs": ["$res1"]
+      },
+      {
+        "id": "norm2",
+        "op_type": "LayerNormalization",
+        "inputs": ["$res1"],
+        "outputs": ["$norm2_out"]
+      },
+      {
+        "id": "ffn",
+        "op_type": "FeedForward|Linear",
+        "inputs": ["$norm2_out"],
+        "outputs": ["$ffn_out"]
+      },
+      {
+        "id": "add2",
+        "op_type": "Add",
+        "inputs": ["$ffn_out", "$res1"],
+        "outputs": ["$final_out"]
+      }
+    ]
+  },
+  "action": {
+    "type": "fuse_to_function",
+    "op_type": "TransformerBlock",
+    "domain": "custom.pytorch",
+    "inputs": ["$x"],
+    "outputs": ["$final_out"],
+    "targets": {
+      "modern_onnx": {
+        "op_type": "TransformerBlock",
+        "domain": "custom.pytorch",
+        "inputs": ["$x"]
+      },
+      "function_proto": {
+        "op_type": "TransformerBlock",
+        "domain": "custom.pytorch",
+        "inputs": ["$x"]
+      },
+      "pytorch_custom": {
+        "op_type": "TransformerBlock",
+        "domain": "custom.pytorch",
+        "inputs": ["$x"]
+      }
+    }
+  }
+}

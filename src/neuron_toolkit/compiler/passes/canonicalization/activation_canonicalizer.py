@@ -232,8 +232,9 @@ class ActivationCanonicalizer(Pass):
                         nodes_to_remove.add(constant_node_names[c_tensor])
                         nodes_to_remove.add(c_tensor)
 
-            # Create replacement Gelu node
-            gelu_name = f"gelu_{gelu_count}"
+            # Create replacement Gelu node preserving hierarchical scope
+            prefix = final_output.rsplit("/", 1)[0] if "/" in final_output else ""
+            gelu_name = f"{prefix}/gelu_{gelu_count}" if prefix else f"gelu_{gelu_count}"
             gelu_count += 1
 
             if mode == "modern_onnx":

@@ -1,0 +1,63 @@
+{
+  "rule_id": "gated_mha_composite_fusion",
+  "name": "Gated Multi-Head Attention (GAU) Fusion",
+  "description": "Fuses Norm -> Linear(QKV) -> SDPA + Gate -> MergeHeads -> Linear(Out) into GatedMultiHeadAttention with FunctionProto Netron expandability.",
+  "pattern": {
+    "nodes": [
+      {
+        "id": "norm",
+        "op_type": "RMSNorm|LayerNormalization",
+        "inputs": ["$x"],
+        "outputs": ["$norm_out"]
+      },
+      {
+        "id": "qkv",
+        "op_type": "Linear|MatMul|Gemm",
+        "inputs": ["$norm_out", "$w_qkv"],
+        "outputs": ["$qkv_out"]
+      },
+      {
+        "id": "gate",
+        "op_type": "Linear|MatMul|Gemm",
+        "inputs": ["$norm_out", "$w_gate"],
+        "outputs": ["$gate_out"]
+      },
+      {
+        "id": "gau_core",
+        "op_type": "GatedUnit|GatedAttention",
+        "inputs": ["$qkv_out", "$gate_out"],
+        "outputs": ["$gau_out"]
+      },
+      {
+        "id": "out_proj",
+        "op_type": "Linear|MatMul|Gemm",
+        "inputs": ["$gau_out", "$w_out"],
+        "outputs": ["$final_out"]
+      }
+    ]
+  },
+  "action": {
+    "type": "fuse_to_function",
+    "op_type": "GatedMultiHeadAttention",
+    "domain": "custom.pytorch",
+    "inputs": ["$x", "$w_qkv", "$w_gate", "$w_out"],
+    "outputs": ["$final_out"],
+    "targets": {
+      "modern_onnx": {
+        "op_type": "GatedMultiHeadAttention",
+        "domain": "custom.pytorch",
+        "inputs": ["$x", "$w_qkv", "$w_gate", "$w_out"]
+      },
+      "function_proto": {
+        "op_type": "GatedMultiHeadAttention",
+        "domain": "custom.pytorch",
+        "inputs": ["$x", "$w_qkv", "$w_gate", "$w_out"]
+      },
+      "pytorch_custom": {
+        "op_type": "GatedMultiHeadAttention",
+        "domain": "custom.pytorch",
+        "inputs": ["$x", "$w_qkv", "$w_gate", "$w_out"]
+      }
+    }
+  }
+}

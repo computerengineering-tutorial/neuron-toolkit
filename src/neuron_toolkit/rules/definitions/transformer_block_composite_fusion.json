@@ -1,0 +1,57 @@
+{
+  "rule_id": "transformer_block_composite_fusion",
+  "name": "Transformer Block Composite Fusion",
+  "description": "Fuses Attention -> Add(Residual) -> FeedForward -> Add(Residual) into TransformerBlock with FunctionProto Netron expandability.",
+  "pattern": {
+    "nodes": [
+      {
+        "id": "attn",
+        "op_type": "GatedMultiHeadAttention|MultiHeadAttention|SDPA|ScaledDotProductAttention",
+        "inputs": ["$x"],
+        "outputs": ["$attn_out"]
+      },
+      {
+        "id": "add1",
+        "op_type": "Add",
+        "inputs": ["$attn_out", "$x"],
+        "outputs": ["$res1"]
+      },
+      {
+        "id": "ffn",
+        "op_type": "FeedForward|FeedForwardSwiGLU",
+        "inputs": ["$res1"],
+        "outputs": ["$ffn_out"]
+      },
+      {
+        "id": "add2",
+        "op_type": "Add",
+        "inputs": ["$ffn_out", "$res1"],
+        "outputs": ["$final_out"]
+      }
+    ]
+  },
+  "action": {
+    "type": "fuse_to_function",
+    "op_type": "TransformerBlock",
+    "domain": "custom.pytorch",
+    "inputs": ["$x"],
+    "outputs": ["$final_out"],
+    "targets": {
+      "modern_onnx": {
+        "op_type": "TransformerBlock",
+        "domain": "custom.pytorch",
+        "inputs": ["$x"]
+      },
+      "function_proto": {
+        "op_type": "TransformerBlock",
+        "domain": "custom.pytorch",
+        "inputs": ["$x"]
+      },
+      "pytorch_custom": {
+        "op_type": "TransformerBlock",
+        "domain": "custom.pytorch",
+        "inputs": ["$x"]
+      }
+    }
+  }
+}

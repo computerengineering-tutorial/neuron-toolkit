@@ -1,0 +1,39 @@
+{
+  "rule_id": "multi_task_audio_head_fusion",
+  "name": "Multi-Task Audio Decoder Head Composite Fusion",
+  "description": "Fuses post-body dual-branch feature extractor (pitched + percussion) and multi-task prediction decoders into MultiTaskDecoderHead with FunctionProto expandability.",
+  "pattern": {
+    "nodes": [
+      {
+        "id": "body_exit",
+        "op_type": "*",
+        "inputs": [],
+        "outputs": ["$x"]
+      }
+    ]
+  },
+  "action": {
+    "type": "fuse_to_function",
+    "op_type": "MultiTaskDecoderHead",
+    "domain": "custom.pytorch",
+    "inputs": ["$x"],
+    "outputs": ["inst_logp", "perc_prob", "vol_logp"],
+    "targets": {
+      "modern_onnx": {
+        "op_type": "MultiTaskDecoderHead",
+        "domain": "custom.pytorch",
+        "inputs": ["$x"]
+      },
+      "function_proto": {
+        "op_type": "MultiTaskDecoderHead",
+        "domain": "custom.pytorch",
+        "inputs": ["$x"]
+      },
+      "pytorch_custom": {
+        "op_type": "MultiTaskDecoderHead",
+        "domain": "custom.pytorch",
+        "inputs": ["$x"]
+      }
+    }
+  }
+}

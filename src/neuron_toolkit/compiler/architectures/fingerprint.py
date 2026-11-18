@@ -124,8 +124,13 @@ def ensure_specialized_function_proto(
             return existing
 
     if opset_imports is None:
+        model_opset = 14
+        for op in model.opset_import:
+            if op.domain in ("", "ai.onnx"):
+                model_opset = op.version
+                break
         opset_imports = [
-            helper.make_opsetid("", 14),
+            helper.make_opsetid("", model_opset),
             helper.make_opsetid("custom.pytorch", 1),
         ]
 

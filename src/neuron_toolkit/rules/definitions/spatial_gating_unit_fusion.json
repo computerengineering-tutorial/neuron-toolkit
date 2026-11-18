@@ -1,0 +1,51 @@
+{
+  "rule_id": "spatial_gating_unit_fusion",
+  "name": "Spatial Gating Unit (SGU) Fusion",
+  "description": "Fuses Split -> Norm -> Linear/MatMul -> Mul into SpatialGatingUnit macro block with FunctionProto Netron expandability.",
+  "pattern": {
+    "nodes": [
+      {
+        "id": "norm_node",
+        "op_type": "RMSNorm|LayerNormalization",
+        "inputs": ["$branch_b"],
+        "outputs": ["$norm_out"]
+      },
+      {
+        "id": "proj_node",
+        "op_type": "Linear|MatMul|Gemm",
+        "inputs": ["$norm_out", "$w"],
+        "outputs": ["$proj_out"]
+      },
+      {
+        "id": "mul_node",
+        "op_type": "Mul",
+        "inputs": ["$proj_out", "$branch_a"],
+        "outputs": ["$final_out"]
+      }
+    ]
+  },
+  "action": {
+    "type": "fuse_to_function",
+    "op_type": "SpatialGatingUnit",
+    "domain": "custom.pytorch",
+    "inputs": ["$branch_a", "$branch_b", "$w"],
+    "outputs": ["$final_out"],
+    "targets": {
+      "modern_onnx": {
+        "op_type": "SpatialGatingUnit",
+        "domain": "custom.pytorch",
+        "inputs": ["$branch_a", "$branch_b", "$w"]
+      },
+      "function_proto": {
+        "op_type": "SpatialGatingUnit",
+        "domain": "custom.pytorch",
+        "inputs": ["$branch_a", "$branch_b", "$w"]
+      },
+      "pytorch_custom": {
+        "op_type": "SpatialGatingUnit",
+        "domain": "custom.pytorch",
+        "inputs": ["$branch_a", "$branch_b", "$w"]
+      }
+    }
+  }
+}

@@ -96,12 +96,13 @@ Each JSON rule file defines four core sections:
 
 ## Built-In Rules Catalog
 
-The toolkit includes 29+ pre-built JSON rule definitions in `neuron_toolkit/rules/definitions/`:
+The toolkit includes 50 pre-built declarative JSON rule definitions in `neuron_toolkit/rules/definitions/`:
 
 | Rule Category | Rule ID | Description |
 | --- | --- | --- |
 | **Activations** | `erf_gelu_canonicalization` | Fuses Div -> Erf -> Add -> Mul -> Mul into `Gelu` |
 | | `tanh_gelu_canonicalization` | Fuses Tanh polynomial approximation into `Gelu(approx='tanh')` |
+| | `fast_gelu_canonicalization` | Fuses FastGELU coefficient expansions into `Gelu` |
 | | `silu_swish_canonicalization` | Fuses Mul + Sigmoid into `SiLU` |
 | | `hard_swish_canonicalization` | Fuses Mul + Clip + Div into `HardSwish` |
 | | `clip_to_relu6_canonicalization` | Fuses Clip(0, 6) into `Relu6` |
@@ -113,19 +114,42 @@ The toolkit includes 29+ pre-built JSON rule definitions in `neuron_toolkit/rule
 | | `skip_rmsnorm_fusion` | Fuses Add(Residual) directly before RMSNorm into `SkipRMSNorm` |
 | | `skip_layernorm_fusion` | Fuses Add(Residual) directly before LayerNorm into `SkipLayerNorm` |
 | **Attention & Linear** | `scaled_dot_product_attention_fusion` | Fuses MatMul + Scale + Mask + Softmax + MatMul into `SDPA` |
+| | `gemma2_softcapping_fusion` | Fuses Div(cap) -> Tanh -> Mul(cap) into `LogitsSoftCap` |
+| | `deepseek_mla_fusion` | Fuses low-rank KV latent projection into `MultiHeadLatentAttention_KVProjection` |
 | | `linear_matmul_add_fusion` | Fuses MatMul + Add into `Linear` |
 | | `linear_gemm_canonicalization` | Canonicalizes Gemm with transposed weights into `Linear` |
+| | `linear_einsum_projection` | Canonicalizes Einsum 2-tensor contractions into `Linear` |
+| | `conv1x1_to_linear` | Canonicalizes 1x1 2D Conv into unified `Linear` projection |
 | | `split_qkv_fusion` | Fuses sliced projection outputs into `SplitQKV` |
 | | `merge_heads_fusion` | Fuses Reshape + Transpose head merges into `MergeHeads` |
 | | `rope_frequency_slice_fusion` | Fuses complex Rotary Embedding frequency slices into `RoPE` |
-| **MLP Blocks** | `feedforward_gelu_fusion` | Fuses Norm -> Linear -> Gelu -> Linear into `FeedForward` |
+| | `softmax_matmul_fusion` | Fuses standalone Softmax + MatMul attention core |
+| **MLP & Macro Blocks** | `feedforward_gelu_fusion` | Fuses Norm -> Linear -> Gelu -> Linear into `FeedForward` |
 | | `feedforward_swiglu_fusion` | Fuses Norm -> (Linear *SiLU* Linear) -> Linear into `FeedForwardSwiGLU` |
 | | `gated_unit_fusion` | Fuses Split -> Norm -> Linear -> Mul into `GatedUnit` |
-| **Graph Cleanups** | `cast_initializer_folding` | Folds static initializer `Cast` nodes at compile time |
+| | `axial_rearrange_fusion` | Fuses multi-axis rearrange patterns into unified `AxialRearrange` |
+| | `unbind_fusion` | Fuses consecutive coordinate slice extractions into `Unbind` |
+| | `index_tensor_routing` | Fuses tensor gather/indexing routing sequences |
+| | `deep_mlp_norm_act_fusion` | Fuses Norm -> Linear -> Gelu/Relu/SiLU into `DeepMLP_Norm_Act` |
+| | `spatial_gating_unit_fusion` | Fuses Split -> Norm -> Linear/MatMul -> Mul into `SpatialGatingUnit` |
+| | `highway_block_fusion` | Fuses Highway transform & carry gate into `HighwayBlock` |
+| | `squeeze_excitation_fusion` | Fuses GAP -> FC1 -> Relu -> FC2 -> Sigmoid -> Mul into `SqueezeExcitation` |
+| | `preactivation_resnet_fusion` | Fuses BN -> Conv -> Relu -> BN -> Conv + Residual -> Relu into `ResidualBlock` |
+| | `audio_logmel_compressor_fusion` | Fuses Clip -> Div -> Log -> Div -> Mul -> Add -> Clip into `AudioLogMelCompressor` |
+| | `mha_composite_fusion` | Fuses Linear(QKV) -> SplitQKV -> SDPA -> MergeHeads -> Linear(Out) into `MultiHeadAttention` |
+| | `gated_mha_composite_fusion` | Fuses Norm -> Linear(QKV) -> GAU -> MergeHeads -> Linear(Out) into `GatedMultiHeadAttention` |
+| | `transformer_block_composite_fusion` | Fuses Attention -> Add -> FeedForward -> Add into `TransformerBlock` |
+| | `transformer_encoder_layer_fusion` | Fuses PyTorch `nn.TransformerEncoderLayer` into `TransformerBlock` |
+| | `multi_field_embedding_fusion` | Fuses cascading multi-token feature Gather tables + Add tree into `MultiFieldEmbedding` |
+| **Graph Simplification** | `cast_initializer_folding` | Folds static initializer `Cast` nodes at compile time |
+| | `cast_same_dtype_elimination` | Eliminates redundant `Cast` operators where input dtype equals target dtype |
 | | `common_subexpression_elimination` | Prunes redundant identical computation subtrees |
+| | `consecutive_reshape_collapse` | Collapses chained Reshape nodes into a single target Reshape |
 | | `continuous_math_collapse` | Folds consecutive constant arithmetic into folded constants |
 | | `dead_code_elimination` | Eliminates unreachable subgraphs |
 | | `identity_elimination` | Removes non-functional `Identity` forwarding nodes |
+| | `pad_conv_fusion` | Fuses explicit spatial zero-padding into Conv `pads` attribute |
+| | `squeeze_unsqueeze_cancellation` | Cancels adjacent inverse squeeze and unsqueeze operations |
 
 ---
 
@@ -173,7 +197,9 @@ targeted_graph = graph.apply_json_rules(
 To add a new rewrite rule:
 
 1. Create a `.json` descriptor in `src/neuron_toolkit/rules/definitions/<rule_name>.json`.
-2. Define the subgraph node topology under `"pattern"`, specifying placeholder inputs like `"$x"` and constants like `"$const"`.
+2. Define the subgraph node topology under `"pattern"` (or `"source_pattern"`), specifying placeholder inputs like `"$x"` and constants like `"$const"`.
 3. Add any type or value constraints in `"conditions"`.
-4. Specify the target replacement under `"action"` (`"type": "fuse_to_custom_op"` or `"replace_subgraph"`).
+4. Specify the target replacement under `"action"` or `"target_pattern"`:
+   - For custom fused operators: `"type": "fuse_to_custom_op"` or `"type": "fuse_to_function"` with `"domain"` and `"op_type"`.
+   - For direct opcode replacements / canonicalization: `"type": "replace_op"` (or `"target_pattern": {"nodes": [{"op_type": "...", ...}]}`).
 5. Add a test descriptor in `tests/rules_json_tests/<rule_name>_test.json` verifying input and output node counts.

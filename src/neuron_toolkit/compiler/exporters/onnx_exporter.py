@@ -49,6 +49,13 @@ class OnnxExporter:
                     helper.make_opsetid("", context.opset_version)
                 )
 
+        # Align function opset imports with model opset imports for clean checker validation
+        model_opsets = {op.domain: op.version for op in model.opset_import}
+        for f in model.functions:
+            for op in f.opset_import:
+                if op.domain in model_opsets:
+                    op.version = model_opsets[op.domain]
+
         # Ensure all node and function custom domains are imported
         existing_domains = {op.domain for op in model.opset_import}
         for n in model.graph.node:

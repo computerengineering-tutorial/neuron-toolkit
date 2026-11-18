@@ -17,10 +17,13 @@
 - 🔍 **Fluent Query Engine**: Chainable, SQL-like queries to traverse, filter, and inspect computational nodes (`graph.query().op("Conv").all()`).
 - 🧩 **Pattern Matching DSL**: Declarative subgraph pattern matching with operator overloads (`x * Pattern.op("Sigmoid", x)`), captures, wildcards, and commutative matching.
 - ⚡ **Optimization Passes (`PassManager`)**: Composable transformation pipelines including `FuseConvBN`, `ConstantFolding`, `DeadCodeElimination`, `CommonSubexpressionElimination`, `FuseGELU`, `FuseLayerNorm`, and `FuseConvActivation` with automated metric reports.
-- 📜 **Declarative `RewriteRule` Engine**: Pair symbolic patterns with transformation callbacks or target operators applied iteratively to a fixed point.
+- 🚀 **3-Stage Compiler Pipeline**: Micro-canonicalization (Pad-Conv fusion, Reshape collapse, Cast folding), macro-block synthesis (SDPA, Gemma-2 softcapping, DeepSeek MLA), and Netron FunctionProto dual-mode export with fixed-point iterative convergence.
+- 📜 **Declarative JSON Rules Engine**: 39 pre-built declarative JSON rewrite rules for automated graph rewriting and custom operator fusion.
+- ⚡ **PyTorch Execution & Differential Cross-Verification**: Standalone vectorized runtime (`PyTorchRunner`) for standard & custom ONNX ops with automated bitwise and tolerance checks against ONNX Runtime (`CrossVerifier`).
+- 🧠 **Architectural Block Detection & Fingerprinting**: Automatic detection of Transformer, DiT, Mamba/SSM, GNN, and ConvNeXt architectural motifs with polymorphic 8-character SHA-256 fingerprinting.
 - 🌐 **Unified Intermediate Representation (IR)**: Decoupled `IRGraph`, `IRNode`, and `IRTensor` with $O(1)$ producer/consumer lookups and format SPI adapters.
 - 🎨 **Visual Topology & Interactive HTML**: Instant GitHub-flavored Mermaid flowcharts (`graph.to_mermaid()`) and standalone interactive HTML visualizers (`graph.to_html()`).
-- 💻 **Developer CLI (`neuron`)**: Zero-code terminal tool to inspect topologies, execute passes, diff models, and export representations.
+- 💻 **Developer CLI (`neuron`)**: Zero-code terminal tool to inspect topologies, profile hardware bounds, diff models, run passes, export formats, and query AST codemaps (`neuron ast`).
 - 📦 **Zero-Dependency Safetensors Serialization**: Built-in weight serializer and loader conforming to HuggingFace `.safetensors` standards without requiring Rust toolchains.
 - 📊 **Netron-Compatible JSON Export & Rebuilding**: Export graph topologies with statistical weight summaries without saving raw weights; rebuild complete, runnable ONNX or TFLite models directly from JSON.
 - 🔬 **Differential Verification**: Extract subgraphs between arbitrary points and verify numerical equivalence against PyTorch or ONNXRuntime with automated tolerance checks (MAE, MSE, cosine similarity).
@@ -99,11 +102,15 @@ rebuilt = NeuronGraph.from_json("architecture.json", weights="weights.safetensor
   - [Pattern Matching DSL](file:///home/jenil-sheth/Desktop/Backup/neuron-toolkit/docs/guides/pattern_matching.md)
   - [Graph Rewriting & Passes](file:///home/jenil-sheth/Desktop/Backup/neuron-toolkit/docs/guides/rewriter_and_passes.md)
   - [Transformer & LLM Passes](file:///home/jenil-sheth/Desktop/Backup/neuron-toolkit/docs/guides/transformer_passes.md)
+  - [3-Stage Compiler Pipeline](file:///home/jenil-sheth/Desktop/Backup/neuron-toolkit/docs/guides/compiler_pipeline.md)
+  - [Declarative JSON Rules Engine](file:///home/jenil-sheth/Desktop/Backup/neuron-toolkit/docs/guides/json_rules_engine.md)
+  - [PyTorch Runtime & Cross-Verification](file:///home/jenil-sheth/Desktop/Backup/neuron-toolkit/docs/guides/cross_verification_runtime.md)
+  - [Architectural Block Recognition](file:///home/jenil-sheth/Desktop/Backup/neuron-toolkit/docs/guides/architecture_prediction.md)
   - [Equality Saturation & E-Graphs](file:///home/jenil-sheth/Desktop/Backup/neuron-toolkit/docs/guides/equality_saturation.md)
   - [Hardware Profiler & Roofline Model](file:///home/jenil-sheth/Desktop/Backup/neuron-toolkit/docs/guides/profiler_and_roofline.md)
   - [Model Verification & Slicing](file:///home/jenil-sheth/Desktop/Backup/neuron-toolkit/docs/guides/verification.md)
   - [Model Visualization](file:///home/jenil-sheth/Desktop/Backup/neuron-toolkit/docs/guides/visualization.md)
-  - [Developer CLI](file:///home/jenil-sheth/Desktop/Backup/neuron-toolkit/docs/guides/cli.md)
+  - [Developer CLI & AST Tooling](file:///home/jenil-sheth/Desktop/Backup/neuron-toolkit/docs/guides/cli.md)
   - [Unified Intermediate Representation](file:///home/jenil-sheth/Desktop/Backup/neuron-toolkit/docs/guides/unified_ir.md)
   - [API Reference](file:///home/jenil-sheth/Desktop/Backup/neuron-toolkit/docs/api_reference.md)
 
