@@ -15,6 +15,11 @@ from typing import Any
 import onnx
 from onnx import helper
 
+from neuron_toolkit.compiler.architectures.fingerprint import (
+    build_monomorphized_op_type,
+    compute_subgraph_fingerprint,
+    ensure_specialized_function_proto,
+)
 from neuron_toolkit.compiler.base import CompilerContext, Pass
 
 log = logging.getLogger("neuron_toolkit.compiler.feedforward_synthesizer")
@@ -62,7 +67,7 @@ class FeedForwardSynthesizer(Pass):
         ff_count = 0
 
         for n in graph.node:
-            if n.op_type != "Gelu":
+            if n.op_type not in ("Gelu", "FastGelu", "Relu", "SiLU", "Tanh", "Mish"):
                 continue
             lin1 = node_by_output.get(n.input[0])
             if not lin1 or lin1.op_type != "Linear":
@@ -80,6 +85,12 @@ class FeedForwardSynthesizer(Pass):
             if len(lin1_cons) != 1:
                 continue
 
+            act_name = n.op_type
+            norm_op = norm.op_type
+            sub_nodes = [norm, lin1, n, lin2]
+            fp = compute_subgraph_fingerprint(sub_nodes)
+            specialized_op = build_monomorphized_op_type("FeedForward", act_name, fp)
+
             x = norm.input[0]
             norm_gamma = norm.input[1]
             fc1_w = lin1.input[1]
@@ -90,13 +101,13 @@ class FeedForwardSynthesizer(Pass):
 
             ff_inputs = [x, norm_gamma, fc1_w, fc1_b, fc2_w, fc2_b]
             ff_node = helper.make_node(
-                op_type="FeedForward",
+                op_type=specialized_op,
                 inputs=ff_inputs,
                 outputs=[final_out],
                 name=f"{norm.name}_fused_feedforward",
                 domain="custom.pytorch",
-                activation="gelu",
-                doc_string="Fused FeedForward / MLP block",
+                activation=act_name.lower(),
+                doc_string=f"Fused polymorphic FeedForward ({act_name}) block",
             )
             new_nodes.append(ff_node)
             nodes_to_drop.update({lin1.name, n.name, lin2.name})
@@ -106,6 +117,15 @@ class FeedForwardSynthesizer(Pass):
                 nodes_to_drop.add(norm.name)
             ff_count += 1
 
+            if mode in ("function_proto", "modern_onnx"):
+                self._attach_specialized_feedforward_function(
+                    model=model,
+                    fname=specialized_op,
+                    act_name=act_name,
+                    norm_op=norm_op,
+                    fingerprint=fp,
+                )
+
         if not new_nodes:
             return model
 
@@ -114,36 +134,38 @@ class FeedForwardSynthesizer(Pass):
         del graph.node[:]
         graph.node.extend(kept)
 
-        if mode in ("function_proto", "modern_onnx"):
-            self._attach_feedforward_function_def(model)
-
-        log.info("FeedForward Fusion: Fused %d FFN blocks (eliminated %d nodes)", ff_count, ff_count * 3)
+        log.info("FeedForward Fusion: Fused %d FFN blocks with polymorphic fingerprints", ff_count)
         return model
 
-    def _attach_feedforward_function_def(self, model: onnx.ModelProto) -> None:
-        """Attach formal ONNX FunctionProto definition for FeedForward."""
-        func_name = "FeedForward"
-        domain = "custom.pytorch"
-        if any(f.name == func_name and f.domain == domain for f in model.functions):
+    def _attach_specialized_feedforward_function(
+        self,
+        model: onnx.ModelProto,
+        fname: str,
+        act_name: str,
+        norm_op: str,
+        fingerprint: str,
+    ) -> None:
+        """Attach formal, content-hashed ONNX FunctionProto definition for FeedForward."""
+        if any(f.name == fname and f.domain == "custom.pytorch" for f in model.functions):
             return
         opset_standard = helper.make_opsetid("", 14)
         opset_custom = helper.make_opsetid("custom.pytorch", 1)
 
-        norm = helper.make_node("RMSNorm", inputs=["X", "gamma"], outputs=["X_norm"], domain="custom.pytorch", epsilon=1e-12)
+        norm = helper.make_node(norm_op, inputs=["X", "gamma"], outputs=["X_norm"], domain="custom.pytorch", epsilon=1e-12)
         fc1 = helper.make_node("Linear", inputs=["X_norm", "fc1_w", "fc1_b"], outputs=["H1"], domain="custom.pytorch")
-        act = helper.make_node("Gelu", inputs=["H1"], outputs=["H_act"], domain="custom.pytorch", approximate="none")
+        act = helper.make_node(act_name, inputs=["H1"], outputs=["H_act"], domain="" if act_name in ("Relu", "Tanh") else "custom.pytorch")
         fc2 = helper.make_node("Linear", inputs=["H_act", "fc2_w", "fc2_b"], outputs=["Y"], domain="custom.pytorch")
 
-        func = helper.make_function(
-            domain=domain,
-            fname=func_name,
-            inputs=["X", "gamma", "fc1_w", "fc1_b", "fc2_w", "fc2_b"],
-            outputs=["Y"],
-            nodes=[norm, fc1, act, fc2],
+        ensure_specialized_function_proto(
+            model=model,
+            domain="custom.pytorch",
+            fname=fname,
+            formal_inputs=["X", "gamma", "fc1_w", "fc1_b", "fc2_w", "fc2_b"],
+            formal_outputs=["Y"],
+            body_nodes=[norm, fc1, act, fc2],
             opset_imports=[opset_standard, opset_custom],
-            doc_string="FeedForward / MLP Transformer block",
+            doc_string=f"Content-hashed polymorphic FeedForward ({act_name}) block [{fingerprint}]",
         )
-        model.functions.append(func)
 
     # -------------------------------------------------------------------------
     # FeedForward SwiGLU Fusion

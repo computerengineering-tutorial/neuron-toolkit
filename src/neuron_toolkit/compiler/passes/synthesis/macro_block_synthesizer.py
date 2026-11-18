@@ -8,6 +8,11 @@ from typing import Any
 import onnx
 from onnx import helper
 
+from neuron_toolkit.compiler.architectures.fingerprint import (
+    build_monomorphized_op_type,
+    compute_subgraph_fingerprint,
+    ensure_specialized_function_proto,
+)
 from neuron_toolkit.compiler.base import CompilerPass
 from neuron_toolkit.compiler.passes.canonicalization.shape_canonicalizer import ShapeCanonicalizer
 
@@ -70,12 +75,17 @@ class MacroBlockSynthesizer(CompilerPass):
                     nodes_to_drop.add(norm_node.name)
                     inputs = list(norm_node.input) + list(lin_node.input[1:])
                     has_norm = 1
+                    sub_nodes = [norm_node, lin_node, n]
                 else:
                     inputs = [norm_node.output[0]] + list(lin_node.input[1:])
                     has_norm = 0
+                    sub_nodes = [lin_node, n]
+
+                fp = compute_subgraph_fingerprint(sub_nodes)
+                specialized_op = build_monomorphized_op_type("DeepMLP", act_name, fp)
 
                 fused = helper.make_node(
-                    "DeepMLP_Norm_Act",
+                    specialized_op,
                     inputs=inputs,
                     outputs=[n.output[0]],
                     name=f"{n.name}_fused_mlp_norm_act",
@@ -86,6 +96,16 @@ class MacroBlockSynthesizer(CompilerPass):
                 new_nodes.append(fused)
                 count += 1
 
+                if mode == "function_proto":
+                    self._attach_specialized_deep_mlp_function(
+                        model=model,
+                        fname=specialized_op,
+                        act_name=act_name,
+                        norm_op=norm_node.op_type if has_norm else None,
+                        has_norm=has_norm,
+                        fingerprint=fp,
+                    )
+
         if not new_nodes:
             return model
 
@@ -93,32 +113,47 @@ class MacroBlockSynthesizer(CompilerPass):
         del graph.node[:]
         graph.node.extend(kept)
 
-        if mode == "function_proto":
-            self._attach_deep_mlp_function_def(model)
-
-        log.info("DeepMLP_Norm_Act Fusion: Fused %d blocks", count)
+        log.info("DeepMLP_Norm_Act Fusion: Fused %d blocks with polymorphic fingerprints", count)
         return ShapeCanonicalizer().apply_dead_code_elimination(model)
 
-    def _attach_deep_mlp_function_def(self, model: onnx.ModelProto) -> None:
-        func_name = "DeepMLP_Norm_Act"
-        domain = "custom.pytorch"
-        if any(f.name == func_name and f.domain == domain for f in model.functions):
+    def _attach_specialized_deep_mlp_function(
+        self,
+        model: onnx.ModelProto,
+        fname: str,
+        act_name: str,
+        norm_op: str | None,
+        has_norm: int,
+        fingerprint: str,
+    ) -> None:
+        """Attach formal, content-hashed ONNX FunctionProto definition with exact inner activation and norm."""
+        if any(f.name == fname and f.domain == "custom.pytorch" for f in model.functions):
             return
+
         opset_standard = helper.make_opsetid("", 14)
-        ln_node = helper.make_node("LayerNormalization", inputs=["x", "gamma", "beta"], outputs=["norm_out"])
-        lin_node = helper.make_node("MatMul", inputs=["norm_out", "w"], outputs=["mm_out"])
-        add_node = helper.make_node("Add", inputs=["mm_out", "b"], outputs=["lin_out"])
-        gelu_node = helper.make_node("Relu", inputs=["lin_out"], outputs=["y"])
-        func = helper.make_function(
-            domain=domain,
-            fname=func_name,
-            inputs=["x", "gamma", "beta", "w", "b"],
-            outputs=["y"],
-            nodes=[ln_node, lin_node, add_node, gelu_node],
+        if has_norm and norm_op:
+            ln_node = helper.make_node(norm_op, inputs=["x", "gamma", "beta"], outputs=["norm_out"])
+            lin_node = helper.make_node("MatMul", inputs=["norm_out", "w"], outputs=["mm_out"])
+            add_node = helper.make_node("Add", inputs=["mm_out", "b"], outputs=["lin_out"])
+            act_node = helper.make_node(act_name, inputs=["lin_out"], outputs=["y"])
+            body_nodes = [ln_node, lin_node, add_node, act_node]
+            formal_inputs = ["x", "gamma", "beta", "w", "b"]
+        else:
+            lin_node = helper.make_node("MatMul", inputs=["x", "w"], outputs=["mm_out"])
+            add_node = helper.make_node("Add", inputs=["mm_out", "b"], outputs=["lin_out"])
+            act_node = helper.make_node(act_name, inputs=["lin_out"], outputs=["y"])
+            body_nodes = [lin_node, add_node, act_node]
+            formal_inputs = ["x", "w", "b"]
+
+        ensure_specialized_function_proto(
+            model=model,
+            domain="custom.pytorch",
+            fname=fname,
+            formal_inputs=formal_inputs,
+            formal_outputs=["y"],
+            body_nodes=body_nodes,
             opset_imports=[opset_standard],
-            doc_string="DeepMLP Norm Act sequential block",
+            doc_string=f"Content-hashed polymorphic DeepMLP ({act_name}) block [{fingerprint}]",
         )
-        model.functions.append(func)
 
     # -------------------------------------------------------------------------
     # 2. Spatial Gating Unit (gMLP SGU) Fusion

@@ -95,11 +95,24 @@ class OpRegistry:
         return decorator
 
     def get(self, domain: str, op_type: str) -> OpHandler | None:
-        """Retrieve handler for (domain, op_type) with fallback to default domain."""
+        """Retrieve handler for (domain, op_type) with fallback to default domain and prefix matches."""
         if (domain, op_type) in self._registry:
             return self._registry[(domain, op_type)]
         if ("", op_type) in self._registry:
             return self._registry[("", op_type)]
+        # Prefix fallback for monomorphized specialized custom ops
+        for prefix, base_op in [
+            ("DeepMLP_", "DeepMLP_Norm_Act"),
+            ("FeedForward_", "FeedForward"),
+            ("FeedForwardSwiGLU_", "FeedForwardSwiGLU"),
+            ("GatedUnit_", "GatedUnit"),
+            ("GatedAttention_", "GatedAttention"),
+        ]:
+            if op_type.startswith(prefix):
+                if (domain, base_op) in self._registry:
+                    return self._registry[(domain, base_op)]
+                if ("", base_op) in self._registry:
+                    return self._registry[("", base_op)]
         return None
 
     def _register_builtins(self) -> None:
@@ -851,10 +864,21 @@ class OpRegistry:
         @self.register("", "GatedUnit")
         def _gated_unit(inputs: list[torch.Tensor], attrs: dict[str, Any]) -> torch.Tensor:
             x, gate = inputs[0], inputs[1]
+            act_name = attrs.get("activation", "sigmoid").lower()
             if gate.dim() == 3 and x.dim() == 4:
                 # gate: (B, S, H) -> (B, H, S, 1) to match x: (B, H, S, D)
                 gate = gate.transpose(1, 2).unsqueeze(-1)
-            return x * torch.sigmoid(gate)
+            if act_name in ("silu", "swish"):
+                g_act = F.silu(gate)
+            elif act_name == "gelu":
+                g_act = F.gelu(gate)
+            elif act_name == "relu":
+                g_act = F.relu(gate)
+            elif act_name == "tanh":
+                g_act = torch.tanh(gate)
+            else:
+                g_act = torch.sigmoid(gate)
+            return x * g_act
 
         @self.register("custom.pytorch", "SoftmaxMatMul")
         @self.register("", "SoftmaxMatMul")

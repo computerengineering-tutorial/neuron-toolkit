@@ -219,6 +219,7 @@ class NeuronCompiler:
         mode: str = "function_proto",
         rule_ids: list[str] | None = None,
         opset_version: int = 23,
+        options: dict[str, Any] | None = None,
     ) -> onnx.ModelProto:
         """Compile and optimize model with specified mode and rules."""
         pipeline = OptimizationPipeline(mode=mode)
@@ -226,5 +227,6 @@ class NeuronCompiler:
             mode=mode,
             opset_version=opset_version,
             rule_ids=rule_ids,
+            options=options or {},
         )
         return pipeline.run(model, context)

@@ -312,16 +312,30 @@ class NormCanonicalizer(Pass):
                 continue
             sqrt_node = sqrt_candidates[0]
             div_candidates = [c for c in graph.node if sqrt_node.output[0] in c.input and c.op_type == "Div" and c.input[0] == x]
-            if not div_candidates:
-                continue
-            div_node = div_candidates[0]
-            mul_candidates = [c for c in graph.node if div_node.output[0] in c.input and c.op_type == "Mul"]
-            if not mul_candidates:
-                continue
-            mul_node = mul_candidates[0]
-            gamma = mul_node.input[1] if mul_node.input[0] == div_node.output[0] else mul_node.input[0]
-
-            nodes_to_remove.update({pow_node.name, rm_node.name, add_node.name, sqrt_node.name, div_node.name, mul_node.name})
+            if div_candidates:
+                div_node = div_candidates[0]
+                mul_candidates = [c for c in graph.node if div_node.output[0] in c.input and c.op_type == "Mul"]
+                if not mul_candidates:
+                    continue
+                mul_node = mul_candidates[0]
+                gamma = mul_node.input[1] if mul_node.input[0] == div_node.output[0] else mul_node.input[0]
+                nodes_to_remove.update({pow_node.name, rm_node.name, add_node.name, sqrt_node.name, div_node.name, mul_node.name})
+            else:
+                # Reciprocal variant: Sqrt -> Reciprocal -> Mul(x, rsqrt) -> Mul(..., gamma)
+                recip_candidates = [c for c in graph.node if sqrt_node.output[0] in c.input and c.op_type == "Reciprocal"]
+                if not recip_candidates:
+                    continue
+                recip_node = recip_candidates[0]
+                mul1_candidates = [c for c in graph.node if recip_node.output[0] in c.input and c.op_type == "Mul" and x in c.input]
+                if not mul1_candidates:
+                    continue
+                mul1_node = mul1_candidates[0]
+                mul2_candidates = [c for c in graph.node if mul1_node.output[0] in c.input and c.op_type == "Mul"]
+                if not mul2_candidates:
+                    continue
+                mul_node = mul2_candidates[0]
+                gamma = mul_node.input[1] if mul_node.input[0] == mul1_node.output[0] else mul_node.input[0]
+                nodes_to_remove.update({pow_node.name, rm_node.name, add_node.name, sqrt_node.name, recip_node.name, mul1_node.name, mul_node.name})
             if mode == "modern_onnx":
                 rmsnorm_node = helper.make_node(
                     op_type="RMSNormalization",

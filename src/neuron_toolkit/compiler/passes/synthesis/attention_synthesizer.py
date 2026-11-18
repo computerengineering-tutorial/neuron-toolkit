@@ -20,6 +20,11 @@ import numpy as np
 import onnx
 from onnx import helper, numpy_helper
 
+from neuron_toolkit.compiler.architectures.fingerprint import (
+    build_monomorphized_op_type,
+    compute_subgraph_fingerprint,
+    ensure_specialized_function_proto,
+)
 from neuron_toolkit.compiler.base import CompilerContext, Pass
 from neuron_toolkit.compiler.passes.canonicalization.shape_canonicalizer import (
     ShapeCanonicalizer,
@@ -253,9 +258,10 @@ class AttentionSynthesizer(Pass):
 
         for n in graph.node:
             if n.op_type == "Mul" and len(n.input) == 2:
-                sig_in = [inp for inp in n.input if inp in node_by_output and node_by_output[inp].op_type == "Sigmoid"]
+                sig_in = [inp for inp in n.input if inp in node_by_output and node_by_output[inp].op_type in ("Sigmoid", "SiLU", "Gelu", "Tanh", "Relu")]
                 if sig_in:
                     sig_node = node_by_output[sig_in[0]]
+                    act_name = sig_node.op_type
                     other_inp = [inp for inp in n.input if inp != sig_node.output[0]][0]
                     gate_in = sig_node.input[0]
 
@@ -264,15 +270,22 @@ class AttentionSynthesizer(Pass):
                     if len(consumer_map.get(sig_node.output[0], [])) <= 1 and sig_node.output[0] not in graph_outputs:
                         nodes_to_remove.add(sig_node.name)
 
+                    fp = compute_subgraph_fingerprint([sig_node, n])
+                    specialized_op = build_monomorphized_op_type("GatedUnit", act_name, fp)
+
                     gated_node = helper.make_node(
-                        op_type="GatedUnit",
+                        op_type=specialized_op,
                         inputs=[other_inp, gate_in],
                         outputs=[n.output[0]],
                         name=f"{n.name}_fused_gated",
                         domain="custom.pytorch",
+                        activation=act_name.lower(),
                     )
                     new_nodes.append(gated_node)
                     gate_count += 1
+
+                    if mode == "function_proto":
+                        self._attach_specialized_gated_unit_function(model, specialized_op, act_name, fp)
 
         if not new_nodes:
             return model
@@ -281,11 +294,33 @@ class AttentionSynthesizer(Pass):
         del graph.node[:]
         graph.node.extend(surviving)
 
-        if mode == "function_proto":
-            self._attach_gated_unit_function_def(model)
-
-        log.info("GatedUnit Fusion: Fused %d GatedUnit instances", gate_count)
+        log.info("GatedUnit Fusion: Fused %d GatedUnit instances with polymorphic fingerprints", gate_count)
         return ShapeCanonicalizer().apply_dead_code_elimination(model)
+
+    def _attach_specialized_gated_unit_function(
+        self,
+        model: onnx.ModelProto,
+        fname: str,
+        act_name: str,
+        fingerprint: str,
+    ) -> None:
+        """Attach formal, content-hashed ONNX FunctionProto definition for GatedUnit with exact inner activation."""
+        if any(f.name == fname and f.domain == "custom.pytorch" for f in model.functions):
+            return
+        opset_standard = helper.make_opsetid("", 14)
+        sig_node = helper.make_node(act_name, inputs=["gate"], outputs=["sig_out"], domain="" if act_name in ("Relu", "Tanh", "Sigmoid") else "custom.pytorch")
+        mul_node = helper.make_node("Mul", inputs=["x", "sig_out"], outputs=["y"])
+
+        ensure_specialized_function_proto(
+            model=model,
+            domain="custom.pytorch",
+            fname=fname,
+            formal_inputs=["x", "gate"],
+            formal_outputs=["y"],
+            body_nodes=[sig_node, mul_node],
+            opset_imports=[opset_standard],
+            doc_string=f"Content-hashed polymorphic GatedUnit ({act_name}) [{fingerprint}]",
+        )
 
     def _find_base_gate_tensor(
         self,
@@ -802,9 +837,10 @@ class AttentionSynthesizer(Pass):
 
             # 5. Downstream: GatedUnit
             sdpa_users = consumer_map.get(sdpa.output[0], [])
-            if len(sdpa_users) != 1 or sdpa_users[0].op_type != "GatedUnit":
+            if len(sdpa_users) != 1 or not sdpa_users[0].op_type.startswith("GatedUnit"):
                 continue
             gated_unit = sdpa_users[0]
+            gate_act = gated_unit.op_type.split("_")[1] if "_" in gated_unit.op_type else "Sigmoid"
 
             # to_gates
             to_gates = node_by_output.get(gated_unit.input[1])
@@ -840,17 +876,21 @@ class AttentionSynthesizer(Pass):
 
             final_out = to_out.output[0]
 
+            constituent_nodes = [norm, to_qkv, split_qkv, q_node, k_node, sdpa, to_gates, gated_unit, merge_heads, to_out]
+            fp = compute_subgraph_fingerprint(constituent_nodes)
+            specialized_attn_op = build_monomorphized_op_type("GatedAttention", gate_act, fp)
+
             attn_inputs = [x, norm_gamma, qkv_w, qkv_b, gates_w, gates_b, theta_name, out_w, out_b]
             while attn_inputs and attn_inputs[-1] == "":
                 attn_inputs.pop()
 
             gated_attn_node = helper.make_node(
-                "GatedAttention",
+                specialized_attn_op,
                 inputs=attn_inputs,
                 outputs=[final_out],
                 name=f"{norm.name}_fused_gated_attention",
                 domain="custom.pytorch",
-                doc_string="Fused Gated Multi-Head Attention block with RoPE",
+                doc_string=f"Fused polymorphic Gated Multi-Head Attention ({gate_act}) block",
             )
             for a in norm.attribute:
                 if a.name == "epsilon":
@@ -873,6 +913,15 @@ class AttentionSynthesizer(Pass):
                 to_out.name,
             })
 
+            if mode == "function_proto":
+                self._attach_specialized_gated_attention_function(
+                    model=model,
+                    fname=specialized_attn_op,
+                    gate_unit_op=gated_unit.op_type,
+                    norm_op=norm.op_type,
+                    fingerprint=fp,
+                )
+
         if not new_nodes:
             return model
 
@@ -885,39 +934,41 @@ class AttentionSynthesizer(Pass):
         if not any(op.domain == custom_domain for op in model.opset_import):
             model.opset_import.append(helper.make_opsetid(custom_domain, 1))
 
-        if mode == "function_proto":
-            self._attach_gated_attention_function_def(model)
-
-        log.info("GatedAttention Fusion: Fused %d GatedAttention instances", len(new_nodes))
+        log.info("GatedAttention Fusion: Fused %d GatedAttention instances with polymorphic fingerprints", len(new_nodes))
         return ShapeCanonicalizer().apply_dead_code_elimination(model)
 
-    def _attach_gated_attention_function_def(self, model: onnx.ModelProto) -> None:
-        """Attach formal ONNX FunctionProto definition for GatedAttention."""
-        func_name = "GatedAttention"
-        domain = "custom.pytorch"
-        if any(f.name == func_name and f.domain == domain for f in model.functions):
+    def _attach_specialized_gated_attention_function(
+        self,
+        model: onnx.ModelProto,
+        fname: str,
+        gate_unit_op: str,
+        norm_op: str,
+        fingerprint: str,
+    ) -> None:
+        """Attach formal, content-hashed ONNX FunctionProto definition for GatedAttention."""
+        if any(f.name == fname and f.domain == "custom.pytorch" for f in model.functions):
             return
         opset_standard = helper.make_opsetid("", 14)
         opset_custom = helper.make_opsetid("custom.pytorch", 1)
 
-        norm = helper.make_node("RMSNorm", inputs=["X", "norm_gamma"], outputs=["X_norm"], domain="custom.pytorch", epsilon=1e-12)
+        norm = helper.make_node(norm_op, inputs=["X", "norm_gamma"], outputs=["X_norm"], domain="custom.pytorch", epsilon=1e-12)
         to_qkv = helper.make_node("Linear", inputs=["X_norm", "qkv_w"], outputs=["QKV"], domain="custom.pytorch")
         to_gates = helper.make_node("Linear", inputs=["X_norm", "gates_w", "gates_b"], outputs=["Gates"], domain="custom.pytorch")
         split_qkv = helper.make_node("SplitQKV", inputs=["QKV"], outputs=["Q", "K", "V"], domain="custom.pytorch")
         rope_q = helper.make_node("RotaryEmbedding", inputs=["Q", "theta"], outputs=["Q_rot"], domain="custom.pytorch")
         rope_k = helper.make_node("RotaryEmbedding", inputs=["K", "theta"], outputs=["K_rot"], domain="custom.pytorch")
         sdpa = helper.make_node("ScaledDotProductAttention", inputs=["Q_rot", "K_rot", "V"], outputs=["AttnScores"], domain="custom.pytorch")
-        gated = helper.make_node("GatedUnit", inputs=["AttnScores", "Gates"], outputs=["GatedScores"], domain="custom.pytorch")
+        gated = helper.make_node(gate_unit_op, inputs=["AttnScores", "Gates"], outputs=["GatedScores"], domain="custom.pytorch")
         merge = helper.make_node("MergeHeads", inputs=["GatedScores"], outputs=["Merged"], domain="custom.pytorch")
         to_out = helper.make_node("Linear", inputs=["Merged", "out_w"], outputs=["Y"], domain="custom.pytorch")
 
-        func = helper.make_function(
-            domain=domain,
-            fname=func_name,
-            inputs=["X", "norm_gamma", "qkv_w", "qkv_b", "gates_w", "gates_b", "theta", "out_w", "out_b"],
-            outputs=["Y"],
-            nodes=[norm, to_qkv, to_gates, split_qkv, rope_q, rope_k, sdpa, gated, merge, to_out],
+        ensure_specialized_function_proto(
+            model=model,
+            domain="custom.pytorch",
+            fname=fname,
+            formal_inputs=["X", "norm_gamma", "qkv_w", "qkv_b", "gates_w", "gates_b", "theta", "out_w", "out_b"],
+            formal_outputs=["Y"],
+            body_nodes=[norm, to_qkv, to_gates, split_qkv, rope_q, rope_k, sdpa, gated, merge, to_out],
             opset_imports=[opset_standard, opset_custom],
-            doc_string="Gated Multi-Head Attention block with RoPE and GatedUnit",
+            doc_string=f"Content-hashed polymorphic GatedAttention block [{fingerprint}]",
         )
-        model.functions.append(func)

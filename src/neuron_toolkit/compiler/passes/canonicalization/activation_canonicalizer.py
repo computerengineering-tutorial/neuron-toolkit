@@ -186,6 +186,24 @@ class ActivationCanonicalizer(Pass):
                 final_output = mul2_node.output[0]
                 for n in (div_node, erf_node, add_node, mul1_node, mul2_node):
                     nodes_to_remove.add(n.name or n.output[0])
+            elif is_approx(other_input, 0.5, tol=0.01):
+                # Form 3: Mul(add_out, 0.5) -> Mul(mul1_out, x)
+                mul1_node = mul_cand
+                mul1_out = mul1_node.output[0]
+                mul2_candidates = [
+                    c
+                    for c in consumer_map.get(mul1_out, [])
+                    if c.op_type == "Mul" and len(c.input) == 2
+                ]
+                if not mul2_candidates:
+                    continue
+                mul2_node = mul2_candidates[0]
+                if x_tensor not in mul2_node.input:
+                    continue
+                c_half_tensor = other_input
+                final_output = mul2_node.output[0]
+                for n in (div_node, erf_node, add_node, mul1_node, mul2_node):
+                    nodes_to_remove.add(n.name or n.output[0])
             elif other_input in node_by_output and node_by_output[other_input].op_type == "Mul":
                 # Form 2: Mul(x, 0.5) -> Mul(half_x, add_out)
                 half_mul = node_by_output[other_input]
