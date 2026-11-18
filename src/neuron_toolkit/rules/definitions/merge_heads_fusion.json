@@ -3,19 +3,19 @@
   "version": "1.0",
   "name": "Merge Heads Fusion",
   "description": "Fuses post-attention Transpose(perm=[0, 2, 1, 3]) and Reshape (merging [B, H, S, D] -> [B, S, H*D]) along with associated dynamic shape calculations into custom.pytorch::MergeHeads.",
-  "source_pattern": {
+  "pattern": {
     "nodes": [
       {
         "id": "trans",
         "op_type": "Transpose",
-        "inputs": ["X"],
-        "outputs": ["T"]
+        "inputs": ["$x"],
+        "outputs": ["$t"]
       },
       {
         "id": "reshape",
         "op_type": "Reshape",
-        "inputs": ["T", "shape"],
-        "outputs": ["Y"]
+        "inputs": ["$t", "$shape"],
+        "outputs": ["$y"]
       }
     ],
     "constraints": [
@@ -23,14 +23,11 @@
       "count_users(T) == 1"
     ]
   },
-  "target_pattern": {
-    "nodes": [
-      {
-        "op_type": "MergeHeads",
-        "domain": "custom.pytorch",
-        "inputs": ["X"],
-        "outputs": ["Y"]
-      }
-    ]
+  "action": {
+    "type": "replace_op",
+    "op_type": "MergeHeads",
+    "domain": "custom.pytorch",
+    "inputs": ["$x"],
+    "outputs": ["$y"]
   }
 }

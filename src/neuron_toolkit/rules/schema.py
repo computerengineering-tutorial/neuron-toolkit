@@ -62,14 +62,40 @@ class RuleAction:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> RuleAction:
+        action_type = data.get("type")
+        op_type = data.get("op_type", "")
+        domain = data.get("domain", "custom.pytorch")
+        inputs = list(data.get("inputs", []))
+        outputs = list(data.get("outputs", []))
+        attributes = dict(data.get("attributes", {}))
+
+        # Support target_pattern format with nested nodes list
+        if not op_type and "nodes" in data and len(data["nodes"]) > 0:
+            first_node = data["nodes"][0]
+            op_type = first_node.get("op_type", "")
+            domain = first_node.get("domain", domain)
+            if not inputs:
+                inputs = list(first_node.get("inputs", []))
+            if not outputs:
+                outputs = list(first_node.get("outputs", []))
+            if not attributes:
+                attributes = dict(first_node.get("attributes", {}))
+            if not action_type:
+                action_type = "replace_op"
+
+        if not action_type:
+            action_type = "replace_op"
+        elif action_type == "replace":
+            action_type = "replace_op"
+
         return cls(
-            action_type=data.get("type", "replace_op"),
-            op_type=data.get("op_type", ""),
-            domain=data.get("domain", "custom.pytorch"),
+            action_type=action_type,
+            op_type=op_type,
+            domain=domain,
             pytorch_module=data.get("pytorch_module", ""),
-            inputs=list(data.get("inputs", [])),
-            outputs=list(data.get("outputs", [])),
-            attributes=dict(data.get("attributes", {})),
+            inputs=inputs,
+            outputs=outputs,
+            attributes=attributes,
             metadata=dict(data.get("metadata", {})),
             targets=dict(data.get("targets", {})),
         )

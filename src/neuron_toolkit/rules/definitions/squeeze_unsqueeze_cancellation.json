@@ -1,0 +1,27 @@
+{
+  "rule_id": "squeeze_unsqueeze_cancellation",
+  "name": "Squeeze Unsqueeze Cancellation",
+  "description": "Cancels out matching Unsqueeze immediately followed by Squeeze along the identical axes.",
+  "pattern": {
+    "nodes": [
+      {
+        "id": "unsq_node",
+        "op_type": "Unsqueeze",
+        "inputs": ["$x", "$axes"],
+        "outputs": ["$unsq_out"]
+      },
+      {
+        "id": "sq_node",
+        "op_type": "Squeeze",
+        "inputs": ["$unsq_out", "$axes"],
+        "outputs": ["$y"]
+      }
+    ]
+  },
+  "action": {
+    "type": "replace_op",
+    "op_type": "Identity",
+    "inputs": ["$x"],
+    "outputs": ["$y"]
+  }
+}

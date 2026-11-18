@@ -1,0 +1,27 @@
+{
+  "rule_id": "consecutive_reshape_collapse",
+  "name": "Consecutive Reshape Collapse",
+  "description": "Fuses consecutive Reshape operations Reshape(X, s1) -> Reshape(..., s2) into a single direct Reshape(X, s2).",
+  "pattern": {
+    "nodes": [
+      {
+        "id": "reshape1",
+        "op_type": "Reshape",
+        "inputs": ["$x", "$shape1"],
+        "outputs": ["$interm"]
+      },
+      {
+        "id": "reshape2",
+        "op_type": "Reshape",
+        "inputs": ["$interm", "$shape2"],
+        "outputs": ["$y"]
+      }
+    ]
+  },
+  "action": {
+    "type": "replace_op",
+    "op_type": "Reshape",
+    "inputs": ["$x", "$shape2"],
+    "outputs": ["$y"]
+  }
+}

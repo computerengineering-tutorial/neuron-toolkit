@@ -3,7 +3,7 @@
   "version": "1.0",
   "name": "Scaled Dot-Product Attention Fusion",
   "description": "Fuses the 14-node attention scaling, transposition, dot-product, softmax, and value projection chain into ScaledDotProductAttention under custom.pytorch domain or modern ONNX Attention op.",
-  "source_pattern": {
+  "pattern": {
     "nodes": [
       {
         "id": "q_mul",

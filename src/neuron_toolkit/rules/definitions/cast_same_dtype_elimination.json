@@ -1,0 +1,27 @@
+{
+  "rule_id": "cast_same_dtype_elimination",
+  "name": "Chained Cast Elimination",
+  "description": "Fuses chained Cast operations Cast(A -> B) -> Cast(B -> C) into a single direct Cast(A -> C).",
+  "pattern": {
+    "nodes": [
+      {
+        "id": "cast1",
+        "op_type": "Cast",
+        "inputs": ["$x"],
+        "outputs": ["$interm"]
+      },
+      {
+        "id": "cast2",
+        "op_type": "Cast",
+        "inputs": ["$interm"],
+        "outputs": ["$y"]
+      }
+    ]
+  },
+  "action": {
+    "type": "replace_op",
+    "op_type": "Cast",
+    "inputs": ["$x"],
+    "outputs": ["$y"]
+  }
+}

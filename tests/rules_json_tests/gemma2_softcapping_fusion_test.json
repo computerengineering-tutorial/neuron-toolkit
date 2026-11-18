@@ -1,0 +1,15 @@
+{
+  "test_id": "gemma2_softcapping_fusion_test",
+  "model_path": ".helper/models/attention_variants/mha_gemma2_softcap_opset18.onnx",
+  "input_shapes": {
+    "x": [
+      1,
+      16,
+      64
+    ]
+  },
+  "expected_target_node": "LogitsSoftCap",
+  "min_expected_reduction": 0.0,
+  "rtol": 0.0001,
+  "atol": 0.0001
+}

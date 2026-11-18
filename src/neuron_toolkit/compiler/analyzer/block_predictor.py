@@ -190,6 +190,43 @@ class ArchitectureBlockPredictor:
                 )
             )
 
+        # Check for Logits Soft-Capping (Gemma-2)
+        softcap_nodes = [
+            n
+            for n in nodes
+            if n.op_type == "LogitsSoftCap"
+            or any(a.name == "softcap" for a in n.attribute)
+        ]
+        if softcap_nodes:
+            blocks.append(
+                DetectedBlock(
+                    block_type="Gemma2 SoftCapped Attention Block",
+                    category="transformer",
+                    confidence=0.98,
+                    nodes_involved=[n.name for n in softcap_nodes],
+                    summary="Detected Gemma-2 style attention logits soft-capping block.",
+                )
+            )
+
+        # Check for MultiHeadLatentAttention (MLA)
+        mla_nodes = [
+            n
+            for n in nodes
+            if "MLA" in n.op_type
+            or "MultiHeadLatentAttention" in n.op_type
+            or n.op_type == "MultiHeadLatentAttention_KVProjection"
+        ]
+        if mla_nodes:
+            blocks.append(
+                DetectedBlock(
+                    block_type="MultiHeadLatentAttention (MLA) Block",
+                    category="transformer",
+                    confidence=0.99,
+                    nodes_involved=[n.name for n in mla_nodes],
+                    summary="Detected DeepSeek-style low-rank KV latent compression and projection block.",
+                )
+            )
+
     def _detect_ffn_motifs(
         self, graph: onnx.GraphProto, blocks: list[DetectedBlock]
     ) -> None:

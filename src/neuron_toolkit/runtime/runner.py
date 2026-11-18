@@ -109,7 +109,7 @@ class PyTorchRunner:
 
         # Precompile execution plan: pre-resolve handlers and attributes once
         self._execution_plan: list[
-            tuple[Any, list[str], list[str], dict[str, Any], Any]
+            tuple[Any, list[str], list[str], dict[str, Any], Any, str]
         ] = []
         for node in self.sorted_nodes:
             op_type = node.op_type
@@ -119,8 +119,9 @@ class PyTorchRunner:
             fn_proto = (
                 self.functions.get((domain, op_type)) if handler is None else None
             )
+            op_desc = f"{domain}::{op_type}" if domain else op_type
             self._execution_plan.append(
-                (handler, list(node.input), list(node.output), attrs, fn_proto)
+                (handler, list(node.input), list(node.output), attrs, fn_proto, op_desc)
             )
 
     def _extract_attributes(self, node: onnx.NodeProto) -> dict[str, Any]:
@@ -166,6 +167,7 @@ class PyTorchRunner:
                 node_outputs_names,
                 attrs,
                 fn_proto,
+                op_desc,
             ) in self._execution_plan:
                 # Fast input extraction
                 node_inputs: list[torch.Tensor | None] = []
@@ -201,7 +203,7 @@ class PyTorchRunner:
                     continue
 
                 # 3. Op not found
-                msg = "No PyTorch runtime handler registered for operation"
+                msg = f"No PyTorch runtime handler registered for operation {op_desc!r}"
                 raise NotImplementedError(msg)
 
         # Collect outputs

@@ -161,6 +161,71 @@ def export_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def ast_command(args: argparse.Namespace) -> int:
+    """AST-based codebase analysis, symbol querying, and codemap generation."""
+    import json
+
+    task_helper_path = (
+        Path(__file__).resolve().parents[2] / ".task_helper" / "ast_graph.py"
+    )
+    if not task_helper_path.exists():
+        task_helper_path = Path(".task_helper/ast_graph.py")
+    if not task_helper_path.exists():
+        print(
+            f"Error: Could not locate ast_graph.py at {task_helper_path}",
+            file=sys.stderr,
+        )
+        return 1
+
+    try:
+        task_helper_dir = str(task_helper_path.resolve().parent)
+        if task_helper_dir not in sys.path:
+            sys.path.insert(0, task_helper_dir)
+        import ast_graph
+
+        code_graph = ast_graph.CodeGraph()
+    except Exception as e:
+        print(f"Error loading ast_graph helper: {e}", file=sys.stderr)
+        return 1
+
+    if args.file:
+        code_graph.parse_file(args.file)
+    else:
+        code_graph.parse_directory(args.dir)
+
+    if args.query or args.doc_query or args.missing_docs:
+        results = code_graph.query_symbols(
+            name_pattern=args.query,
+            doc_keyword=args.doc_query,
+            missing_doc=args.missing_docs,
+        )
+        if args.json:
+            print(json.dumps(results, indent=2))
+        else:
+            print(f"Found {len(results)} matches:")
+            for r in results:
+                doc = (
+                    r["docstring"].strip().splitlines()[0]
+                    if r["docstring"]
+                    else "NO DOCSTRING"
+                )
+                sig = f" {r.get('signature', '')}" if "signature" in r else ""
+                print(f"[{r['type'].upper():8}] {r['qualname']}{sig}")
+                print(
+                    f"           File: {r['file']}:{r['lines'][0]}-{r['lines'][1]}"
+                )
+                print(f"           Doc:  {doc}")
+        return 0
+
+    if args.codemap:
+        print(code_graph.generate_codemap(filter_file=args.file))
+        return 0
+
+    print(f"Parsed {len(code_graph.modules)} Python files in '{args.dir}'.")
+    print("Use --codemap, --query <regex>, --doc-query <kw>, or --missing-docs.")
+    return 0
+
+
 def profile_command(args: argparse.Namespace) -> int:
     """Profile FLOPs, MACs, memory timeline, and Roofline latency bounds."""
     import json
@@ -259,6 +324,25 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     p_export.add_argument("-o", "--output", help="Path to save output file.")
 
+    # AST Codebase Inspection & Codemap
+    p_ast = subparsers.add_parser(
+        "ast",
+        help="AST-based codebase analysis, symbol querying, and codemap hierarchy.",
+    )
+    p_ast.add_argument(
+        "--dir", default="src", help="Directory to parse (default: src)."
+    )
+    p_ast.add_argument("--file", help="Specific file to parse.")
+    p_ast.add_argument(
+        "--codemap", action="store_true", help="Print hierarchical ASCII codemap."
+    )
+    p_ast.add_argument("--query", help="Query symbol name (regex).")
+    p_ast.add_argument("--doc-query", help="Search docstring keyword.")
+    p_ast.add_argument(
+        "--missing-docs", action="store_true", help="Find undocumented symbols."
+    )
+    p_ast.add_argument("--json", action="store_true", help="Output in JSON.")
+
     parsed = parser.parse_args(argv)
 
     if parsed.command == "inspect":
@@ -271,6 +355,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return diff_command(parsed)
     if parsed.command == "export":
         return export_command(parsed)
+    if parsed.command == "ast":
+        return ast_command(parsed)
 
     return 0
 

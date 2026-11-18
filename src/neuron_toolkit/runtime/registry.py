@@ -647,6 +647,113 @@ class OpRegistry:
 
             return [Y, Y_h]
 
+        @self.register("", "RNN")
+        def _rnn(inputs: list[torch.Tensor], attrs: dict[str, Any]) -> Any:
+            X = inputs[0]
+            W = inputs[1]
+            R = inputs[2]
+            B = (
+                inputs[3]
+                if len(inputs) > 3 and inputs[3] is not None and inputs[3].numel() > 0
+                else None
+            )
+            initial_h = (
+                inputs[5]
+                if len(inputs) > 5 and inputs[5] is not None and inputs[5].numel() > 0
+                else None
+            )
+
+            layout = int(attrs.get("layout", 0))
+            hidden_size = int(attrs.get("hidden_size", W.shape[1]))
+            direction = attrs.get("direction", "forward")
+            if isinstance(direction, bytes):
+                direction = direction.decode("utf-8")
+            activations = attrs.get("activations", ["Tanh", "Tanh"])
+            if isinstance(activations, (list, tuple)) and activations:
+                act_fn_name = (
+                    activations[0].decode("utf-8")
+                    if isinstance(activations[0], bytes)
+                    else str(activations[0])
+                )
+            else:
+                act_fn_name = "Tanh"
+
+            act_fn = torch.relu if act_fn_name.lower() == "relu" else torch.tanh
+
+            if layout == 1:
+                X_t = X.transpose(0, 1)
+            else:
+                X_t = X
+
+            T, B_size, _ = X_t.shape
+            num_directions = W.shape[0]
+
+            all_dir_outputs = []
+            final_h = []
+
+            for d_idx in range(num_directions):
+                w_d = W[d_idx]
+                r_d = R[d_idx]
+
+                b_w = (
+                    B[d_idx, :hidden_size]
+                    if B is not None
+                    else torch.zeros(hidden_size, device=X_t.device, dtype=X_t.dtype)
+                )
+                b_r = (
+                    B[d_idx, hidden_size:]
+                    if B is not None
+                    else torch.zeros(hidden_size, device=X_t.device, dtype=X_t.dtype)
+                )
+                bias = b_w + b_r
+
+                h_t = (
+                    initial_h[d_idx]
+                    if initial_h is not None
+                    else torch.zeros(
+                        B_size, hidden_size, device=X_t.device, dtype=X_t.dtype
+                    )
+                )
+
+                dir_outs = [None] * T
+                time_steps = (
+                    range(T)
+                    if (direction == "forward" or d_idx == 0)
+                    else reversed(range(T))
+                )
+
+                for t in time_steps:
+                    x_t = X_t[t]
+                    h_t = act_fn(
+                        torch.matmul(x_t, w_d.T) + torch.matmul(h_t, r_d.T) + bias
+                    )
+                    dir_outs[t] = h_t
+
+                all_dir_outputs.append(torch.stack(dir_outs, dim=0))
+                final_h.append(h_t)
+
+            if num_directions == 1:
+                Y = all_dir_outputs[0].unsqueeze(1)
+                Y_h = final_h[0].unsqueeze(0)
+            else:
+                Y = torch.stack(all_dir_outputs, dim=1)
+                Y_h = torch.stack(final_h, dim=0)
+
+            if layout == 1:
+                Y = Y.permute(2, 0, 1, 3)
+
+            return [Y, Y_h]
+
+        @self.register("", "GlobalAveragePool")
+        def _global_average_pool(
+            inputs: list[torch.Tensor], attrs: dict[str, Any]
+        ) -> torch.Tensor:
+            x = inputs[0]
+            dims = list(range(2, x.ndim))
+            if dims:
+                return torch.mean(x, dim=dims, keepdim=True)
+            return x
+
         @self.register("", "Range")
         def _range(inputs: list[torch.Tensor], attrs: dict[str, Any]) -> torch.Tensor:
             device = inputs[0].device
@@ -1179,6 +1286,26 @@ class OpRegistry:
                 out = out + bias
             return out
 
+        @self.register("custom.pytorch", "LogitsSoftCap")
+        @self.register("", "LogitsSoftCap")
+        def _logits_softcap(
+            inputs: list[torch.Tensor], attrs: dict[str, Any]
+        ) -> torch.Tensor:
+            x = inputs[0]
+            softcap = float(attrs.get("softcap", 50.0))
+            return softcap * torch.tanh(x / softcap)
+
+        @self.register("custom.pytorch", "MultiHeadLatentAttention_KVProjection")
+        @self.register("", "MultiHeadLatentAttention_KVProjection")
+        def _mla_kv_proj(
+            inputs: list[torch.Tensor], attrs: dict[str, Any]
+        ) -> list[torch.Tensor]:
+            x, w_down, w_up_k, w_up_v = inputs[0], inputs[1], inputs[2], inputs[3]
+            c_kv = torch.matmul(x, w_down)
+            k = torch.matmul(c_kv, w_up_k)
+            v = torch.matmul(c_kv, w_up_v)
+            return [k, v]
+
         @self.register("custom.pytorch", "ScaledDotProductAttention")
         @self.register("custom.pytorch", "Attention")
         @self.register("", "ScaledDotProductAttention")
@@ -1192,6 +1319,9 @@ class OpRegistry:
             else:
                 s = q.shape[-1] ** -0.25
             scores = torch.matmul(q * s, (k * s).transpose(-1, -2))
+            if "softcap" in attrs:
+                sc = float(attrs["softcap"])
+                scores = sc * torch.tanh(scores / sc)
             if len(inputs) > 3 and inputs[3] is not None and inputs[3].numel() > 0:
                 scores = scores + inputs[3]
             probs = torch.softmax(scores, dim=-1)

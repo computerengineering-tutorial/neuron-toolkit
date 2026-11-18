@@ -38,8 +38,14 @@ class ShapeCanonicalizer(Pass):
 
         if context.should_run("cast"):
             model = self.apply_cast_initializer_folding(model)
+            model = self.apply_redundant_cast_elimination(model)
         if context.should_run("identity"):
             model = self.apply_identity_elimination(model)
+        if context.should_run("reshape") or context.should_run("shape"):
+            model = self.apply_reshape_collapsing(model)
+            model = self.apply_squeeze_unsqueeze_cancellation(model)
+        if context.should_run("pad_conv") or context.should_run("conv"):
+            model = self.apply_pad_conv_fusion(model)
         if context.should_run("transpose") or context.should_run("shape"):
             model = self.apply_transpose_cancellation(model)
         if context.should_run("cse") or context.should_run("common_subexpression"):
@@ -374,6 +380,306 @@ class ShapeCanonicalizer(Pass):
                     new_n.input[idx] = canonical(inp)
                 new_nodes.append(new_n)
 
+            del graph.node[:]
+            graph.node.extend(new_nodes)
+
+        return self.apply_dead_code_elimination(model)
+
+    # -------------------------------------------------------------------------
+    # Rule: Consecutive Reshape Collapse
+    # -------------------------------------------------------------------------
+    def apply_reshape_collapsing(self, model: onnx.ModelProto) -> onnx.ModelProto:
+        """Collapse consecutive Reshape operations: Reshape(X, s1) -> Reshape(..., s2) => Reshape(X, s2)."""
+        graph = model.graph
+        graph_outputs = {o.name for o in graph.output}
+
+        for _ in range(5):
+            node_by_output = {out: n for n in graph.node for out in n.output}
+            consumer_map: dict[str, list[onnx.NodeProto]] = {}
+            for n in graph.node:
+                for inp in n.input:
+                    consumer_map.setdefault(inp, []).append(n)
+
+            nodes_to_drop: set[str] = set()
+            modified = False
+
+            for n in graph.node:
+                if n.op_type != "Reshape" or len(n.input) < 2 or len(n.output) != 1:
+                    continue
+
+                prev_node = node_by_output.get(n.input[0])
+                if (
+                    prev_node
+                    and prev_node.op_type == "Reshape"
+                    and len(prev_node.input) >= 2
+                    and (prev_node.name or prev_node.output[0]) not in nodes_to_drop
+                ):
+                    interm = prev_node.output[0]
+                    if interm not in graph_outputs:
+                        n.input[0] = prev_node.input[0]
+                        if len(consumer_map.get(interm, [])) <= 1:
+                            nodes_to_drop.add(prev_node.name or interm)
+                        modified = True
+
+            if not modified:
+                break
+
+            new_nodes = [
+                n for n in graph.node if (n.name or n.output[0]) not in nodes_to_drop
+            ]
+            del graph.node[:]
+            graph.node.extend(new_nodes)
+
+        return self.apply_dead_code_elimination(model)
+
+    # -------------------------------------------------------------------------
+    # Rule: Pad into Conv Fusion
+    # -------------------------------------------------------------------------
+    def apply_pad_conv_fusion(self, model: onnx.ModelProto) -> onnx.ModelProto:
+        """Fuse Pad -> Conv into Conv with combined pads when Pad mode is constant 0."""
+        from onnx import helper
+
+        graph = model.graph
+        graph_outputs = {o.name for o in graph.output}
+        node_by_output = {out: n for n in graph.node for out in n.output}
+        consumer_map: dict[str, list[onnx.NodeProto]] = {}
+        for n in graph.node:
+            for inp in n.input:
+                consumer_map.setdefault(inp, []).append(n)
+
+        init_map = {
+            init.name: numpy_helper.to_array(init) for init in graph.initializer
+        }
+        nodes_to_drop: set[str] = set()
+        modified = False
+
+        for n in graph.node:
+            if n.op_type != "Conv" or len(n.input) < 2:
+                continue
+
+            pad_node = node_by_output.get(n.input[0])
+            if not pad_node or pad_node.op_type != "Pad":
+                continue
+
+            pad_out = pad_node.output[0]
+            if pad_out in graph_outputs or len(consumer_map.get(pad_out, [])) > 1:
+                continue
+
+            # Verify pad mode is constant (or default)
+            pad_mode = "constant"
+            for a in pad_node.attribute:
+                if a.name == "mode":
+                    pad_mode = (
+                        a.s.decode("utf-8") if isinstance(a.s, bytes) else str(a.s)
+                    )
+                    break
+            if pad_mode.lower() != "constant":
+                continue
+
+            # Check constant value is 0 (if provided)
+            if len(pad_node.input) >= 3 and pad_node.input[2]:
+                cval_name = pad_node.input[2]
+                if cval_name in init_map:
+                    arr = init_map[cval_name]
+                    if arr.size == 1 and float(arr.item()) != 0.0:
+                        continue
+
+            # Get pads array
+            pads = None
+            if len(pad_node.input) >= 2 and pad_node.input[1] in init_map:
+                pads = list(init_map[pad_node.input[1]])
+            else:
+                for a in pad_node.attribute:
+                    if a.name == "pads":
+                        pads = list(a.ints)
+                        break
+
+            if pads is None:
+                continue
+
+            if (
+                len(pads) == 8
+                and pads[0] == 0
+                and pads[1] == 0
+                and pads[4] == 0
+                and pads[5] == 0
+            ):
+                pad_top, pad_left = pads[2], pads[3]
+                pad_bottom, pad_right = pads[6], pads[7]
+            elif len(pads) == 4:
+                pad_top, pad_left, pad_bottom, pad_right = (
+                    pads[0],
+                    pads[1],
+                    pads[2],
+                    pads[3],
+                )
+            else:
+                continue
+
+            # Extract existing Conv pads
+            conv_pads = [0, 0, 0, 0]
+            conv_pad_attr = None
+            for a in n.attribute:
+                if a.name == "pads":
+                    conv_pads = list(a.ints)
+                    conv_pad_attr = a
+                    break
+
+            if len(conv_pads) == 4:
+                new_pads = [
+                    int(conv_pads[0] + pad_top),
+                    int(conv_pads[1] + pad_left),
+                    int(conv_pads[2] + pad_bottom),
+                    int(conv_pads[3] + pad_right),
+                ]
+            else:
+                continue
+
+            # Rewire Conv input[0] to Pad input[0]
+            n.input[0] = pad_node.input[0]
+            if conv_pad_attr is not None:
+                del conv_pad_attr.ints[:]
+                conv_pad_attr.ints.extend(new_pads)
+            else:
+                n.attribute.append(helper.make_attribute("pads", new_pads))
+
+            nodes_to_drop.add(pad_node.name or pad_out)
+            modified = True
+
+        if modified:
+            new_nodes = [
+                n for n in graph.node if (n.name or n.output[0]) not in nodes_to_drop
+            ]
+            del graph.node[:]
+            graph.node.extend(new_nodes)
+
+        return self.apply_dead_code_elimination(model)
+
+    # -------------------------------------------------------------------------
+    # Rule: Redundant Cast Elimination
+    # -------------------------------------------------------------------------
+    def apply_redundant_cast_elimination(
+        self, model: onnx.ModelProto
+    ) -> onnx.ModelProto:
+        """Eliminate redundant chained Cast ops: Cast(A -> B) -> Cast(B -> C) => Cast(A -> C)."""
+        graph = model.graph
+        graph_outputs = {o.name for o in graph.output}
+
+        for _ in range(3):
+            node_by_output = {out: n for n in graph.node for out in n.output}
+            consumer_map: dict[str, list[onnx.NodeProto]] = {}
+            for n in graph.node:
+                for inp in n.input:
+                    consumer_map.setdefault(inp, []).append(n)
+
+            nodes_to_drop: set[str] = set()
+            modified = False
+
+            for n in graph.node:
+                if n.op_type != "Cast" or len(n.input) != 1 or len(n.output) != 1:
+                    continue
+
+                prev_node = node_by_output.get(n.input[0])
+                if (
+                    prev_node
+                    and prev_node.op_type == "Cast"
+                    and len(prev_node.input) == 1
+                    and len(prev_node.output) == 1
+                    and (prev_node.name or prev_node.output[0]) not in nodes_to_drop
+                ):
+                    interm = prev_node.output[0]
+                    if (
+                        interm not in graph_outputs
+                        and len(consumer_map.get(interm, [])) <= 1
+                    ):
+                        n.input[0] = prev_node.input[0]
+                        nodes_to_drop.add(prev_node.name or interm)
+                        modified = True
+
+            if not modified:
+                break
+
+            new_nodes = [
+                n for n in graph.node if (n.name or n.output[0]) not in nodes_to_drop
+            ]
+            del graph.node[:]
+            graph.node.extend(new_nodes)
+
+        return self.apply_dead_code_elimination(model)
+
+    # -------------------------------------------------------------------------
+    # Rule: Squeeze / Unsqueeze Cancellation
+    # -------------------------------------------------------------------------
+    def apply_squeeze_unsqueeze_cancellation(
+        self, model: onnx.ModelProto
+    ) -> onnx.ModelProto:
+        """Cancel matching Unsqueeze immediately followed by Squeeze along the same axes."""
+        graph = model.graph
+        graph_outputs = {o.name for o in graph.output}
+        init_map = {
+            init.name: numpy_helper.to_array(init) for init in graph.initializer
+        }
+
+        for _ in range(3):
+            node_by_output = {out: n for n in graph.node for out in n.output}
+            consumer_map: dict[str, list[onnx.NodeProto]] = {}
+            for n in graph.node:
+                for inp in n.input:
+                    consumer_map.setdefault(inp, []).append(n)
+
+            rewrites: dict[str, str] = {}
+            nodes_to_drop: set[str] = set()
+            modified = False
+
+            def get_axes(node: onnx.NodeProto) -> list[int] | None:
+                if len(node.input) >= 2 and node.input[1] in init_map:
+                    return [int(x) for x in init_map[node.input[1]].flatten()]
+                for a in node.attribute:
+                    if a.name == "axes":
+                        return list(a.ints)
+                return None
+
+            for n in graph.node:
+                if n.op_type != "Squeeze" or len(n.input) < 1:
+                    continue
+
+                prev_node = node_by_output.get(n.input[0])
+                if (
+                    prev_node
+                    and prev_node.op_type == "Unsqueeze"
+                    and (prev_node.name or prev_node.output[0]) not in nodes_to_drop
+                ):
+                    interm = prev_node.output[0]
+                    if interm not in graph_outputs:
+                        axes_sq = get_axes(n)
+                        axes_unsq = get_axes(prev_node)
+                        if (
+                            axes_sq is not None
+                            and axes_unsq is not None
+                            and sorted(axes_sq) == sorted(axes_unsq)
+                        ):
+                            rewrites[n.output[0]] = prev_node.input[0]
+                            nodes_to_drop.add(n.name or n.output[0])
+                            if len(consumer_map.get(interm, [])) <= 1:
+                                nodes_to_drop.add(prev_node.name or interm)
+                            modified = True
+
+            if not modified:
+                break
+
+            def canonical(name: str) -> str:
+                while name in rewrites:
+                    name = rewrites[name]
+                return name
+
+            new_nodes = []
+            for n in graph.node:
+                if (n.name or n.output[0]) in nodes_to_drop:
+                    continue
+                new_n = copy.deepcopy(n)
+                for idx, inp in enumerate(new_n.input):
+                    new_n.input[idx] = canonical(inp)
+                new_nodes.append(new_n)
             del graph.node[:]
             graph.node.extend(new_nodes)
 

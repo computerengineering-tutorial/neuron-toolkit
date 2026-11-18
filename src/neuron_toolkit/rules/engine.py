@@ -69,8 +69,9 @@ class JSONRuleEngine:
         self,
         target: onnx.ModelProto | NeuronGraph,
         rule_ids: list[str] | None = None,
+        options: dict[str, Any] | None = None,
     ) -> onnx.ModelProto:
-        """Apply loaded rules to the model.
+        """Apply loaded rules to the model using iterative fixed-point optimization.
 
         Returns an optimized/simplified ONNX ModelProto.
         """
@@ -79,12 +80,47 @@ class JSONRuleEngine:
             rule_ids=rule_ids
             if rule_ids is not None
             else ([r.rule_id for r in self.rules] if self.rules else None),
+            options=options or {},
         )
         return self.pipeline.run(target, context)
 
     # -------------------------------------------------------------------------
     # Backward-Compatible Pass Delegates
     # -------------------------------------------------------------------------
+    def apply_reshape_collapsing(self, model: onnx.ModelProto) -> onnx.ModelProto:
+        """Collapse consecutive Reshape operations."""
+        return self.pipeline.shape_pass.apply_reshape_collapsing(model)
+
+    def apply_pad_conv_fusion(self, model: onnx.ModelProto) -> onnx.ModelProto:
+        """Fuse Pad into Conv with combined pads."""
+        return self.pipeline.shape_pass.apply_pad_conv_fusion(model)
+
+    def apply_redundant_cast_elimination(
+        self, model: onnx.ModelProto
+    ) -> onnx.ModelProto:
+        """Eliminate redundant chained Cast ops."""
+        return self.pipeline.shape_pass.apply_redundant_cast_elimination(model)
+
+    def apply_squeeze_unsqueeze_cancellation(
+        self, model: onnx.ModelProto
+    ) -> onnx.ModelProto:
+        """Cancel matching Unsqueeze + Squeeze operations."""
+        return self.pipeline.shape_pass.apply_squeeze_unsqueeze_cancellation(model)
+
+    def apply_gemma2_softcapping_fusion(
+        self, model: onnx.ModelProto
+    ) -> onnx.ModelProto:
+        """Fuse Gemma-2 style logits soft-capping."""
+        return self.pipeline.attn_pass.apply_gemma2_softcapping_fusion(
+            model, mode=self.mode
+        )
+
+    def apply_deepseek_mla_fusion(self, model: onnx.ModelProto) -> onnx.ModelProto:
+        """Synthesize DeepSeek MLA low-rank KV latent projection."""
+        return self.pipeline.attn_pass.apply_deepseek_mla_fusion(
+            model, mode=self.mode
+        )
+
     def apply_cast_initializer_folding(self, model: onnx.ModelProto) -> onnx.ModelProto:
         """Fold Cast nodes converting static initializers."""
         return self.pipeline.shape_pass.apply_cast_initializer_folding(model)

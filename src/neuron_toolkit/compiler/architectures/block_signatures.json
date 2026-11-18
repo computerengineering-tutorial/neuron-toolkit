@@ -133,6 +133,30 @@
       "attributes": {
         "state_dim": 16
       }
+    },
+    {
+      "name": "Gemma2AttentionBlock",
+      "category": "transformer",
+      "domain": "custom.pytorch",
+      "description": "Gemma-2 style attention block with logits soft-capping and RMSNorm",
+      "inputs": ["x", "norm_w", "q_w", "k_w", "v_w", "out_w"],
+      "outputs": ["out"],
+      "sub_ops": ["RMSNorm", "Linear", "ScaledDotProductAttention", "LogitsSoftCap"],
+      "attributes": {
+        "softcap": 50.0
+      }
+    },
+    {
+      "name": "DeepSeekMLA_Block",
+      "category": "transformer",
+      "domain": "custom.pytorch",
+      "description": "DeepSeek Multi-Head Latent Attention block with low-rank KV latent compression",
+      "inputs": ["x", "q_w", "kv_down_w", "kv_up_k_w", "kv_up_v_w", "out_w"],
+      "outputs": ["out"],
+      "sub_ops": ["Linear", "MultiHeadLatentAttention_KVProjection", "ScaledDotProductAttention"],
+      "attributes": {
+        "has_latent_kv": true
+      }
     }
   ]
 }

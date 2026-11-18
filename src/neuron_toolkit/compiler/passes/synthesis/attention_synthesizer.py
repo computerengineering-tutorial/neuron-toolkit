@@ -47,6 +47,10 @@ class AttentionSynthesizer(Pass):
 
         if context.should_run("rope"):
             model = self.apply_rope_fusion(model, mode=context.mode)
+        if context.should_run("gemma2_softcap") or context.should_run("softcap"):
+            model = self.apply_gemma2_softcapping_fusion(model, mode=context.mode)
+        if context.should_run("deepseek_mla") or context.should_run("mla"):
+            model = self.apply_deepseek_mla_fusion(model, mode=context.mode)
         if context.should_run("gated_unit"):
             model = self.apply_gated_unit_fusion(model, mode=context.mode)
         if context.should_run("softmax_matmul"):
@@ -297,7 +301,11 @@ class AttentionSynthesizer(Pass):
                 if sig_in:
                     sig_node = node_by_output[sig_in[0]]
                     act_name = sig_node.op_type
-                    other_inp = [inp for inp in n.input if inp != sig_node.output[0]][0]
+                    other_inps = [inp for inp in n.input if inp != sig_node.output[0]]
+                    if not other_inps:
+                        # Inputs are identical (e.g. squaring x * x); not a gating pair
+                        continue
+                    other_inp = other_inps[0]
                     gate_in = sig_node.input[0]
 
                     nodes_to_remove.add(id(n))
@@ -1255,3 +1263,233 @@ class AttentionSynthesizer(Pass):
             opset_imports=[opset_standard, opset_custom],
             doc_string=f"Content-hashed polymorphic GatedAttention block [{fingerprint}]",
         )
+
+    # -------------------------------------------------------------------------
+    # Gemma-2 Logits Soft-Capping Fusion
+    # -------------------------------------------------------------------------
+    def apply_gemma2_softcapping_fusion(
+        self, model: onnx.ModelProto, mode: str = "function_proto"
+    ) -> onnx.ModelProto:
+        """Fuse Gemma-2 style Logits Soft-Capping: cap * tanh(scores / cap) into LogitsSoftCap."""
+        graph = model.graph
+        node_by_output: dict[str, onnx.NodeProto] = {
+            out: n for n in graph.node for out in n.output
+        }
+        init_map = {
+            init.name: numpy_helper.to_array(init) for init in graph.initializer
+        }
+
+        nodes_to_drop: set[str] = set()
+        replacements: dict[str, onnx.NodeProto] = {}
+
+        for n in graph.node:
+            if n.op_type != "Mul" or len(n.input) < 2:
+                continue
+
+            tanh_cand = None
+            cap_val = None
+            for i in (0, 1):
+                inp, other = n.input[i], n.input[1 - i]
+                parent = node_by_output.get(inp)
+                if (
+                    parent
+                    and parent.op_type == "Tanh"
+                    and len(parent.input) >= 1
+                ):
+                    tanh_cand = parent
+                    if other in init_map:
+                        arr = init_map[other]
+                        if arr.size == 1:
+                            cap_val = float(arr.item())
+                    else:
+                        c_node = node_by_output.get(other)
+                        if c_node and c_node.op_type == "Constant":
+                            for a in c_node.attribute:
+                                if a.name == "value":
+                                    try:
+                                        arr = numpy_helper.to_array(a.t)
+                                        if arr.size == 1:
+                                            cap_val = float(arr.item())
+                                    except Exception:
+                                        pass
+                    break
+
+            if tanh_cand is None or cap_val is None:
+                continue
+
+            div_cand = node_by_output.get(tanh_cand.input[0])
+            if not div_cand or len(div_cand.input) < 2:
+                continue
+
+            scores_input = None
+            if div_cand.op_type == "Div":
+                divisor = div_cand.input[1]
+                div_val = None
+                if divisor in init_map:
+                    arr = init_map[divisor]
+                    if arr.size == 1:
+                        div_val = float(arr.item())
+                else:
+                    c_node = node_by_output.get(divisor)
+                    if c_node and c_node.op_type == "Constant":
+                        for a in c_node.attribute:
+                            if a.name == "value":
+                                try:
+                                    arr = numpy_helper.to_array(a.t)
+                                    if arr.size == 1:
+                                        div_val = float(arr.item())
+                                except Exception:
+                                    pass
+                if div_val is not None and abs(div_val - cap_val) < 1e-3:
+                    scores_input = div_cand.input[0]
+
+            elif div_cand.op_type == "Mul":
+                for j in (0, 1):
+                    sinp, sother = div_cand.input[j], div_cand.input[1 - j]
+                    inv_val = None
+                    if sother in init_map:
+                        arr = init_map[sother]
+                        if arr.size == 1:
+                            inv_val = float(arr.item())
+                    if (
+                        inv_val is not None
+                        and abs(inv_val - (1.0 / cap_val)) < 1e-3
+                    ):
+                        scores_input = sinp
+                        break
+
+            if scores_input is None:
+                continue
+
+            out_name = n.output[0]
+            fused_node = helper.make_node(
+                "LogitsSoftCap",
+                inputs=[scores_input],
+                outputs=[out_name],
+                name=f"{n.name or out_name}_softcap",
+                domain="custom.pytorch",
+                softcap=float(cap_val),
+            )
+            replacements[out_name] = fused_node
+            nodes_to_drop.add(n.name or out_name)
+            nodes_to_drop.add(tanh_cand.name or tanh_cand.output[0])
+            nodes_to_drop.add(div_cand.name or div_cand.output[0])
+
+        if not replacements:
+            return model
+
+        new_nodes = []
+        for n in graph.node:
+            out = n.output[0] if n.output else ""
+            if out in replacements:
+                new_nodes.append(replacements[out])
+            elif (n.name or out) not in nodes_to_drop:
+                new_nodes.append(n)
+
+        del graph.node[:]
+        graph.node.extend(new_nodes)
+
+        if mode == "function_proto":
+            self._attach_logits_softcap_function_def(model)
+
+        log.info(
+            "Gemma-2 SoftCapping Fusion: Fused %d soft-capping blocks",
+            len(replacements),
+        )
+        return ShapeCanonicalizer().apply_dead_code_elimination(model)
+
+    def _attach_logits_softcap_function_def(self, model: onnx.ModelProto) -> None:
+        """Attach formal ONNX FunctionProto definition for LogitsSoftCap."""
+        func_name = "LogitsSoftCap"
+        domain = "custom.pytorch"
+        if any(f.name == func_name and f.domain == domain for f in model.functions):
+            return
+        opset_standard = helper.make_opsetid("", 14)
+        c_node = helper.make_node(
+            "Constant",
+            inputs=[],
+            outputs=["cap_val"],
+            value=helper.make_tensor(
+                "cap_val", onnx.TensorProto.FLOAT, [1], [50.0]
+            ),
+        )
+        div_node = helper.make_node(
+            "Div", inputs=["x", "cap_val"], outputs=["div_out"]
+        )
+        tanh_node = helper.make_node(
+            "Tanh", inputs=["div_out"], outputs=["tanh_out"]
+        )
+        mul_node = helper.make_node(
+            "Mul", inputs=["tanh_out", "cap_val"], outputs=["y"]
+        )
+        func = helper.make_function(
+            domain=domain,
+            fname=func_name,
+            inputs=["x"],
+            outputs=["y"],
+            nodes=[c_node, div_node, tanh_node, mul_node],
+            opset_imports=[opset_standard],
+            doc_string="Gemma-2 style logits soft-capping function: cap * tanh(x / cap)",
+        )
+        model.functions.append(func)
+
+    # -------------------------------------------------------------------------
+    # DeepSeek MLA (Multi-Head Latent Attention) Fusion
+    # -------------------------------------------------------------------------
+    def apply_deepseek_mla_fusion(
+        self, model: onnx.ModelProto, mode: str = "function_proto"
+    ) -> onnx.ModelProto:
+        """Synthesize DeepSeek MLA low-rank KV latent projection and expansion."""
+        graph = model.graph
+        consumer_map: dict[str, list[onnx.NodeProto]] = {}
+        for n in graph.node:
+            for inp in n.input:
+                consumer_map.setdefault(inp, []).append(n)
+
+        linear_ops = ("Gemm", "MatMul", "Linear")
+        replacements: dict[str, onnx.NodeProto] = {}
+        nodes_to_drop: set[str] = set()
+
+        for n in graph.node:
+            if n.op_type not in linear_ops or len(n.output) != 1:
+                continue
+
+            c_kv = n.output[0]
+            consumers = consumer_map.get(c_kv, [])
+            up_proj_consumers = [c for c in consumers if c.op_type in linear_ops]
+            if len(up_proj_consumers) == 2:
+                up_k, up_v = up_proj_consumers[0], up_proj_consumers[1]
+                out_k = up_k.output[0]
+                out_v = up_v.output[0]
+
+                mla_kv_node = helper.make_node(
+                    "MultiHeadLatentAttention_KVProjection",
+                    inputs=[n.input[0], n.input[1], up_k.input[1], up_v.input[1]],
+                    outputs=[out_k, out_v],
+                    name=f"{n.name or c_kv}_mla_kv",
+                    domain="custom.pytorch",
+                )
+                replacements[out_k] = mla_kv_node
+                nodes_to_drop.add(n.name or c_kv)
+                nodes_to_drop.add(up_k.name or out_k)
+                nodes_to_drop.add(up_v.name or out_v)
+
+        if not replacements:
+            return model
+
+        new_nodes = []
+        for n in graph.node:
+            out = n.output[0] if n.output else ""
+            if out in replacements:
+                new_nodes.append(replacements[out])
+            elif (n.name or out) not in nodes_to_drop:
+                new_nodes.append(n)
+
+        del graph.node[:]
+        graph.node.extend(new_nodes)
+
+        log.info(
+            "DeepSeek MLA Fusion: Synthesized %d MLA low-rank KV blocks",
+            len(replacements),
+        )
+        return ShapeCanonicalizer().apply_dead_code_elimination(model)

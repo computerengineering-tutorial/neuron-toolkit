@@ -1,0 +1,27 @@
+{
+  "rule_id": "pad_conv_fusion",
+  "name": "Pad into Conv Fusion",
+  "description": "Fuses standalone Pad operation immediately preceding Conv into Conv with combined pads attribute.",
+  "pattern": {
+    "nodes": [
+      {
+        "id": "pad_node",
+        "op_type": "Pad",
+        "inputs": ["$x", "$pads"],
+        "outputs": ["$padded_x"]
+      },
+      {
+        "id": "conv_node",
+        "op_type": "Conv",
+        "inputs": ["$padded_x", "$w"],
+        "outputs": ["$y"]
+      }
+    ]
+  },
+  "action": {
+    "type": "replace_op",
+    "op_type": "Conv",
+    "inputs": ["$x", "$w"],
+    "outputs": ["$y"]
+  }
+}

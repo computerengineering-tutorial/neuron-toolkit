@@ -89,133 +89,182 @@ class OptimizationPipeline:
             len(model.graph.node),
         )
 
-        # -------------------------------------------------------------
-        # Stage 1: Micro-Canonicalization Pipeline
-        # -------------------------------------------------------------
-        if context.should_run("static_folder") or context.should_run(
-            "constant_folding"
-        ):
-            model = self.static_pass.apply_static_subgraph_folding(model)
+        max_iters = int(context.options.get("max_fixed_point_iters", 5))
+        if not context.options.get("enable_fixed_point", True):
+            max_iters = 1
 
-        if context.should_run("cast"):
-            model = self.shape_pass.apply_cast_initializer_folding(model)
+        for iteration in range(max_iters):
+            node_count_before = len(model.graph.node)
+            op_sig_before = tuple(n.op_type for n in model.graph.node)
+            out_sig_before = tuple(n.output[0] for n in model.graph.node if n.output)
 
-        if context.should_run("softmax"):
-            model = self.act_pass.apply_softmax_fusion(model)
+            # -------------------------------------------------------------
+            # Stage 1: Micro-Canonicalization Pipeline
+            # -------------------------------------------------------------
+            if context.should_run("static_folder") or context.should_run(
+                "constant_folding"
+            ):
+                model = self.static_pass.apply_static_subgraph_folding(model)
 
-        if context.should_run("erf_gelu"):
-            model = self.act_pass.apply_erf_gelu_fusion(model, mode=context.mode)
+            if context.should_run("cast"):
+                model = self.shape_pass.apply_cast_initializer_folding(model)
+                model = self.shape_pass.apply_redundant_cast_elimination(model)
 
-        if context.should_run("tanh_gelu") or context.should_run("fast_gelu"):
-            model = self.act_pass.apply_tanh_gelu_fusion(model, mode=context.mode)
+            if context.should_run("softmax"):
+                model = self.act_pass.apply_softmax_fusion(model)
 
-        if context.should_run("silu") or context.should_run("swish"):
-            model = self.act_pass.apply_silu_fusion(model, mode=context.mode)
+            if context.should_run("erf_gelu"):
+                model = self.act_pass.apply_erf_gelu_fusion(model, mode=context.mode)
 
-        if context.should_run("hard_swish"):
-            model = self.act_pass.apply_hardswish_fusion(model, mode=context.mode)
+            if context.should_run("tanh_gelu") or context.should_run("fast_gelu"):
+                model = self.act_pass.apply_tanh_gelu_fusion(model, mode=context.mode)
 
-        if context.should_run("relu6"):
-            model = self.act_pass.apply_relu6_fusion(model, mode=context.mode)
+            if context.should_run("silu") or context.should_run("swish"):
+                model = self.act_pass.apply_silu_fusion(model, mode=context.mode)
 
-        if context.should_run("mish"):
-            model = self.act_pass.apply_mish_fusion(model, mode=context.mode)
+            if context.should_run("hard_swish"):
+                model = self.act_pass.apply_hardswish_fusion(model, mode=context.mode)
 
-        if context.should_run("groupnorm"):
-            model = self.norm_pass.apply_groupnorm_fusion(model, mode=context.mode)
+            if context.should_run("relu6"):
+                model = self.act_pass.apply_relu6_fusion(model, mode=context.mode)
 
-        if context.should_run("layernorm"):
-            model = self.norm_pass.apply_layernorm_fusion(model, mode=context.mode)
+            if context.should_run("mish"):
+                model = self.act_pass.apply_mish_fusion(model, mode=context.mode)
 
-        if context.should_run("rmsnorm"):
-            model = self.norm_pass.apply_rmsnorm_fusion(model, mode=context.mode)
+            if context.should_run("groupnorm"):
+                model = self.norm_pass.apply_groupnorm_fusion(model, mode=context.mode)
 
-        if context.should_run("index") or context.should_run("routing"):
-            model = self.axial_pass.apply_index_tensor_routing(model, mode=context.mode)
+            if context.should_run("layernorm"):
+                model = self.norm_pass.apply_layernorm_fusion(model, mode=context.mode)
 
-        if context.should_run("identity"):
-            model = self.shape_pass.apply_identity_elimination(model)
+            if context.should_run("rmsnorm"):
+                model = self.norm_pass.apply_rmsnorm_fusion(model, mode=context.mode)
 
-        if (
-            context.should_run("transpose")
-            or context.should_run("identity")
-            or context.should_run("shape")
-        ):
-            model = self.shape_pass.apply_transpose_cancellation(model)
+            if context.should_run("index") or context.should_run("routing"):
+                model = self.axial_pass.apply_index_tensor_routing(
+                    model, mode=context.mode
+                )
 
-        # -------------------------------------------------------------
-        # Stage 2: Macro-Block Synthesis Pipeline
-        # -------------------------------------------------------------
-        if context.should_run("rope"):
-            model = self.attn_pass.apply_rope_fusion(model, mode=context.mode)
+            if context.should_run("identity"):
+                model = self.shape_pass.apply_identity_elimination(model)
 
-        if (
-            context.should_run("static_folder")
-            or context.should_run("constant_folding")
-            or context.should_run("scatter")
-        ):
-            model = self.static_pass.apply_identity_scatter_nd_folding(model)
+            if context.should_run("reshape") or context.should_run("shape"):
+                model = self.shape_pass.apply_reshape_collapsing(model)
+                model = self.shape_pass.apply_squeeze_unsqueeze_cancellation(model)
 
-        if context.should_run("gated_unit"):
-            model = self.attn_pass.apply_gated_unit_fusion(model, mode=context.mode)
+            if context.should_run("pad_conv") or context.should_run("conv"):
+                model = self.shape_pass.apply_pad_conv_fusion(model)
 
-        if context.should_run("softmax_matmul"):
-            model = self.attn_pass.apply_softmax_matmul_fusion(model, mode=context.mode)
+            if (
+                context.should_run("transpose")
+                or context.should_run("identity")
+                or context.should_run("shape")
+            ):
+                model = self.shape_pass.apply_transpose_cancellation(model)
 
-        if context.should_run("sdpa") or context.should_run("attention"):
-            model = self.attn_pass.apply_scaled_dot_product_attention_fusion(
-                model, mode=context.mode
-            )
+            # -------------------------------------------------------------
+            # Stage 2: Macro-Block Synthesis Pipeline
+            # -------------------------------------------------------------
+            if context.should_run("rope"):
+                model = self.attn_pass.apply_rope_fusion(model, mode=context.mode)
 
-        if context.should_run("linear"):
-            model = self.math_pass.apply_linear_fusion(model, mode=context.mode)
+            if (
+                context.should_run("static_folder")
+                or context.should_run("constant_folding")
+                or context.should_run("scatter")
+            ):
+                model = self.static_pass.apply_identity_scatter_nd_folding(model)
 
-        if context.should_run("feedforward"):
-            model = self.ffn_pass.apply_feedforward_fusion(model, mode=context.mode)
+            if context.should_run("gemma2_softcap") or context.should_run("softcap"):
+                model = self.attn_pass.apply_gemma2_softcapping_fusion(
+                    model, mode=context.mode
+                )
 
-        if context.should_run("feedforward_swiglu") or context.should_run("swiglu"):
-            model = self.ffn_pass.apply_feedforward_swiglu_fusion(
-                model, mode=context.mode
-            )
+            if context.should_run("deepseek_mla") or context.should_run("mla"):
+                model = self.attn_pass.apply_deepseek_mla_fusion(
+                    model, mode=context.mode
+                )
 
-        if context.should_run("merge_heads"):
-            model = self.attn_pass.apply_merge_heads_fusion(model, mode=context.mode)
+            if context.should_run("gated_unit"):
+                model = self.attn_pass.apply_gated_unit_fusion(model, mode=context.mode)
 
-        if context.should_run("axial") or context.should_run("rearrange"):
-            model = self.axial_pass.apply_axial_rearrange_fusion(
-                model, mode=context.mode
-            )
+            if context.should_run("softmax_matmul"):
+                model = self.attn_pass.apply_softmax_matmul_fusion(
+                    model, mode=context.mode
+                )
 
-        if context.should_run("unbind"):
-            model = self.axial_pass.apply_unbind_fusion(model, mode=context.mode)
+            if context.should_run("sdpa") or context.should_run("attention"):
+                model = self.attn_pass.apply_scaled_dot_product_attention_fusion(
+                    model, mode=context.mode
+                )
 
-        if context.should_run("split_qkv"):
-            model = self.attn_pass.apply_split_qkv_fusion(model, mode=context.mode)
+            if context.should_run("linear"):
+                model = self.math_pass.apply_linear_fusion(model, mode=context.mode)
 
-        if context.should_run("gated_attention") or context.should_run("attention"):
-            model = self.attn_pass.apply_gated_attention_fusion(
-                model, mode=context.mode
-            )
+            if context.should_run("feedforward"):
+                model = self.ffn_pass.apply_feedforward_fusion(model, mode=context.mode)
 
-        if context.should_run("skip_norm"):
-            model = self.norm_pass.apply_skip_norm_fusion(model, mode=context.mode)
+            if context.should_run("feedforward_swiglu") or context.should_run("swiglu"):
+                model = self.ffn_pass.apply_feedforward_swiglu_fusion(
+                    model, mode=context.mode
+                )
 
-        if context.options.get("enable_macro_blocks", False) or (
-            context.rule_ids and "macro_blocks" in context.rule_ids
-        ):
-            model = self.macro_pass.run(model, mode=context.mode)
+            if context.should_run("merge_heads"):
+                model = self.attn_pass.apply_merge_heads_fusion(
+                    model, mode=context.mode
+                )
 
-        # -------------------------------------------------------------
-        # Final Graph Cleansing
-        # -------------------------------------------------------------
-        if context.should_run("cse") or context.should_run("common_subexpression"):
-            model = self.shape_pass.apply_common_subexpression_elimination(model)
+            if context.should_run("axial") or context.should_run("rearrange"):
+                model = self.axial_pass.apply_axial_rearrange_fusion(
+                    model, mode=context.mode
+                )
 
-        if context.should_run("continuous_math"):
-            model = self.math_pass.apply_continuous_math_collapse(model)
+            if context.should_run("unbind"):
+                model = self.axial_pass.apply_unbind_fusion(model, mode=context.mode)
 
-        if context.should_run("dce") or context.should_run("dead_code"):
-            model = self.shape_pass.apply_dead_code_elimination(model)
+            if context.should_run("split_qkv"):
+                model = self.attn_pass.apply_split_qkv_fusion(model, mode=context.mode)
+
+            if context.should_run("gated_attention") or context.should_run("attention"):
+                model = self.attn_pass.apply_gated_attention_fusion(
+                    model, mode=context.mode
+                )
+
+            if context.should_run("skip_norm"):
+                model = self.norm_pass.apply_skip_norm_fusion(model, mode=context.mode)
+
+            if context.options.get("enable_macro_blocks", False) or (
+                context.rule_ids and "macro_blocks" in context.rule_ids
+            ):
+                model = self.macro_pass.run(model, mode=context.mode)
+
+            # -------------------------------------------------------------
+            # Graph Cleansing at each iteration
+            # -------------------------------------------------------------
+            if context.should_run("cse") or context.should_run("common_subexpression"):
+                model = self.shape_pass.apply_common_subexpression_elimination(model)
+
+            if context.should_run("continuous_math"):
+                model = self.math_pass.apply_continuous_math_collapse(model)
+
+            if context.should_run("dce") or context.should_run("dead_code"):
+                model = self.shape_pass.apply_dead_code_elimination(model)
+
+            node_count_after = len(model.graph.node)
+            op_sig_after = tuple(n.op_type for n in model.graph.node)
+            out_sig_after = tuple(n.output[0] for n in model.graph.node if n.output)
+
+            if (
+                node_count_before == node_count_after
+                and op_sig_before == op_sig_after
+                and out_sig_before == out_sig_after
+            ):
+                log.info(
+                    "Fixed-point convergence achieved at iteration %d (%d nodes)",
+                    iteration + 1,
+                    node_count_after,
+                )
+                break
 
         # -------------------------------------------------------------
         # Stage 3: Target Exporter & Serialization

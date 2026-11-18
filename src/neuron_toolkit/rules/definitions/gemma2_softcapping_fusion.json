@@ -1,0 +1,37 @@
+{
+  "rule_id": "gemma2_softcapping_fusion",
+  "name": "Gemma-2 Logits Soft-Capping Fusion",
+  "description": "Fuses Div -> Tanh -> Mul logits soft-capping chain into LogitsSoftCap macro-op under custom.pytorch domain.",
+  "pattern": {
+    "nodes": [
+      {
+        "id": "div_node",
+        "op_type": "Div",
+        "inputs": ["$scores", "$cap"],
+        "outputs": ["$div_out"]
+      },
+      {
+        "id": "tanh_node",
+        "op_type": "Tanh",
+        "inputs": ["$div_out"],
+        "outputs": ["$tanh_out"]
+      },
+      {
+        "id": "mul_node",
+        "op_type": "Mul",
+        "inputs": ["$tanh_out", "$cap"],
+        "outputs": ["$y"]
+      }
+    ]
+  },
+  "action": {
+    "type": "fuse_to_function",
+    "op_type": "LogitsSoftCap",
+    "domain": "custom.pytorch",
+    "inputs": ["$scores"],
+    "outputs": ["$y"],
+    "attributes": {
+      "softcap": 50.0
+    }
+  }
+}

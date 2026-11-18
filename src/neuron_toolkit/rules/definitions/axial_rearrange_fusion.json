@@ -3,19 +3,19 @@
   "version": "1.0",
   "name": "Axial Conformer Rearrange Fusion",
   "description": "Fuses Conformer multi-node shape calculation pipelines and multi-axis permutations (freq_in, freq_to_time, time_to_conv, add_channel) into custom.pytorch::AxialRearrange.",
-  "source_pattern": {
+  "pattern": {
     "nodes": [
       {
         "id": "trans",
         "op_type": "Transpose",
-        "inputs": ["X"],
-        "outputs": ["T"]
+        "inputs": ["$x"],
+        "outputs": ["$t"]
       },
       {
         "id": "reshape",
         "op_type": "Reshape",
-        "inputs": ["T", "shape"],
-        "outputs": ["Y"]
+        "inputs": ["$t", "$shape"],
+        "outputs": ["$y"]
       }
     ],
     "constraints": [
@@ -23,17 +23,14 @@
       "count_users(T) == 1"
     ]
   },
-  "target_pattern": {
-    "nodes": [
-      {
-        "op_type": "AxialRearrange",
-        "domain": "custom.pytorch",
-        "inputs": ["X"],
-        "outputs": ["Y"],
-        "attributes": {
-          "mode": "string"
-        }
-      }
-    ]
+  "action": {
+    "type": "replace_op",
+    "op_type": "AxialRearrange",
+    "domain": "custom.pytorch",
+    "inputs": ["$x"],
+    "outputs": ["$y"],
+    "attributes": {
+      "mode": "string"
+    }
   }
 }

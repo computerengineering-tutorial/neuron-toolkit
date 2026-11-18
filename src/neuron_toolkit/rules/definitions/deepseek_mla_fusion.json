@@ -1,0 +1,34 @@
+{
+  "rule_id": "deepseek_mla_fusion",
+  "name": "DeepSeek Multi-Head Latent Attention KV Projection Fusion",
+  "description": "Fuses low-rank KV latent compression projection and subsequent decompression up-projections into MultiHeadLatentAttention_KVProjection under custom.pytorch domain.",
+  "pattern": {
+    "nodes": [
+      {
+        "id": "down_proj",
+        "op_type": "MatMul",
+        "inputs": ["$x", "$w_down"],
+        "outputs": ["$c_kv"]
+      },
+      {
+        "id": "up_k",
+        "op_type": "MatMul",
+        "inputs": ["$c_kv", "$w_up_k"],
+        "outputs": ["$out_k"]
+      },
+      {
+        "id": "up_v",
+        "op_type": "MatMul",
+        "inputs": ["$c_kv", "$w_up_v"],
+        "outputs": ["$out_v"]
+      }
+    ]
+  },
+  "action": {
+    "type": "fuse_to_function",
+    "op_type": "MultiHeadLatentAttention_KVProjection",
+    "domain": "custom.pytorch",
+    "inputs": ["$x", "$w_down", "$w_up_k", "$w_up_v"],
+    "outputs": ["$out_k", "$out_v"]
+  }
+}

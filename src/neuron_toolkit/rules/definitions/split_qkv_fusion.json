@@ -3,25 +3,25 @@
   "version": "1.0",
   "name": "Split QKV Fusion",
   "description": "Fuses Reshape -> Transpose(perm=[2, 0, 3, 1, 4]) -> Unbind (or Split) into custom.pytorch::SplitQKV, unpacking projected QKV activations into distinct [Q, K, V] tensors.",
-  "source_pattern": {
+  "pattern": {
     "nodes": [
       {
         "id": "reshape",
         "op_type": "Reshape",
-        "inputs": ["QKV", "shape"],
-        "outputs": ["R"]
+        "inputs": ["$qkv", "$shape"],
+        "outputs": ["$r"]
       },
       {
         "id": "trans",
         "op_type": "Transpose",
-        "inputs": ["R"],
-        "outputs": ["T"]
+        "inputs": ["$r"],
+        "outputs": ["$t"]
       },
       {
         "id": "unbind",
         "op_type": "Unbind",
-        "inputs": ["T"],
-        "outputs": ["Q", "K", "V"]
+        "inputs": ["$t"],
+        "outputs": ["$q", "$k", "$v"]
       }
     ],
     "constraints": [
@@ -30,17 +30,14 @@
       "count_users(T) == 1"
     ]
   },
-  "target_pattern": {
-    "nodes": [
-      {
-        "op_type": "SplitQKV",
-        "domain": "custom.pytorch",
-        "inputs": ["QKV"],
-        "outputs": ["Q", "K", "V"],
-        "attributes": {
-          "num_heads": "@inferred_heads"
-        }
-      }
-    ]
+  "action": {
+    "type": "replace_op",
+    "op_type": "SplitQKV",
+    "domain": "custom.pytorch",
+    "inputs": ["$qkv"],
+    "outputs": ["$q", "$k", "$v"],
+    "attributes": {
+      "num_heads": "@inferred_heads"
+    }
   }
 }
