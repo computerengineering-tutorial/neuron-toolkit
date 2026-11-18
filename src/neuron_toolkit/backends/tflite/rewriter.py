@@ -770,7 +770,7 @@ class TFLiteRewriter(BaseRewriter):
             sorted_indices = list(nx.topological_sort(g))
             sorted_ops = [all_ops[idx] for idx in sorted_indices]
             log.info("Topological sort completed successfully.")
-        except nx.NetworkXCyclicError:
+        except (nx.NetworkXUnfeasible, Exception):
             log.warning(
                 "Cycle detected during rewrite! Falling back to unsorted order."
             )

@@ -75,11 +75,23 @@ class NeuronQuery:
         self.graph_outputs = graph_outputs or set()
         self.shape_info = shape_info or {}
         self._backend = backend
+        if backend is not None:
+            if hasattr(backend, "_cached_output_map"):
+                self.__dict__["output_map"] = backend._cached_output_map
+            if hasattr(backend, "_cached_nx_graph"):
+                self.__dict__["_nx_graph"] = backend._cached_nx_graph
+            if hasattr(backend, "_cached_rx_graph"):
+                self.__dict__["_rx_graph"] = backend._cached_rx_graph
+            if hasattr(backend, "_cached_node_to_idx"):
+                self.__dict__["_node_to_idx"] = backend._cached_node_to_idx
 
     @cached_property
     def output_map(self) -> dict[str, object]:
         """Return a mapping from output tensor names to their producing nodes."""
-        return {out: n for n in self.all_nodes for out in getattr(n, "output", [])}
+        res = {out: n for n in self.all_nodes for out in getattr(n, "output", [])}
+        if self._backend is not None:
+            self._backend._cached_output_map = res
+        return res
 
     @cached_property
     def _nx_graph(self) -> Any:
@@ -95,6 +107,8 @@ class NeuronQuery:
                 if parent := self.output_map.get(inp):
                     parent_name = getattr(parent, "name", "") or f"node_{id(parent)}"
                     g.add_edge(parent_name, name, tensor=inp)
+        if self._backend is not None:
+            self._backend._cached_nx_graph = g
         return g
 
     @cached_property
@@ -121,7 +135,10 @@ class NeuronQuery:
         except Exception:
             return None, {}, {}
         else:
-            return g, id_to_rx, name_to_rx
+            res = (g, id_to_rx, name_to_rx)
+            if self._backend is not None:
+                self._backend._cached_rx_graph = res
+            return res
 
     @cached_property
     def _node_to_idx(self) -> dict[str, int]:
@@ -134,10 +151,13 @@ class NeuronQuery:
                 import rustworkx as rx
 
                 topo_order = rx.topological_sort(g)
-                return {
+                res = {
                     getattr(g[i], "name", f"node_{i}"): rank
                     for rank, i in enumerate(topo_order)
                 }
+                if self._backend is not None:
+                    self._backend._cached_node_to_idx = res
+                return res
 
         try:
             from graphlib import TopologicalSorter
@@ -155,12 +175,15 @@ class NeuronQuery:
 
             ts = TopologicalSorter(dep_map)
             order = list(ts.static_order())
-            return {name: i for i, name in enumerate(order)}
+            res = {name: i for i, name in enumerate(order)}
         except Exception:
             # Fallback to original order if cycles exist
-            return {
+            res = {
                 getattr(n, "name", f"node_{i}"): i for i, n in enumerate(self.all_nodes)
             }
+        if self._backend is not None:
+            self._backend._cached_node_to_idx = res
+        return res
 
     def _clone(self, nodes: Sequence[object]) -> NeuronQuery:
         new = self.__class__(
@@ -300,21 +323,37 @@ class NeuronQuery:
 
         if method == "successors":
             targets = {
-                s for n in self.nodes for s in g.successors(getattr(n, "name", ""))
+                s
+                for n in self.nodes
+                for s in g.successors(getattr(n, "name", "") or f"node_{id(n)}")
+                if (getattr(n, "name", "") or f"node_{id(n)}") in g
             }
         elif method == "predecessors":
             targets = {
-                p for n in self.nodes for p in g.predecessors(getattr(n, "name", ""))
+                p
+                for n in self.nodes
+                for p in g.predecessors(getattr(n, "name", "") or f"node_{id(n)}")
+                if (getattr(n, "name", "") or f"node_{id(n)}") in g
             }
+        elif max_depth >= 100_000:
+            sources = [getattr(n, "name", "") or f"node_{id(n)}" for n in self.nodes]
+            targets = set()
+            for s in sources:
+                if s in g:
+                    if method == "descendants":
+                        targets.update(nx.descendants(g, s))
+                    else:
+                        targets.update(nx.ancestors(g, s))
+            targets -= set(sources)
         else:
-            # Optimized multi-source traversal
+            # Optimized multi-source traversal with finite max_depth
             rev = g.reverse(copy=False) if method == "ancestors" else g
-            sources = [getattr(n, "name", "") for n in self.nodes]
+            sources = [getattr(n, "name", "") or f"node_{id(n)}" for n in self.nodes]
             from collections import deque
 
             # Use multi-source BFS with deque for O(1) pops
             visited = set()
-            queue = deque((s, 0) for s in sources)
+            queue = deque((s, 0) for s in sources if s in rev)
             while queue:
                 u, d = queue.popleft()
                 if u not in visited:
@@ -325,7 +364,13 @@ class NeuronQuery:
                         )
             targets = visited - set(sources)
 
-        return self._clone([g.nodes[name]["proto"] for name in targets])
+        return self._clone(
+            [
+                g.nodes[name]["proto"]
+                for name in targets
+                if name in g.nodes and "proto" in g.nodes[name]
+            ]
+        )
 
     def children(self) -> NeuronQuery:
         """Return direct children of selected nodes."""

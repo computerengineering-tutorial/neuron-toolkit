@@ -75,7 +75,7 @@ class AttentionSynthesizer(Pass):
         node_by_output: dict[str, onnx.NodeProto] = {
             out: n for n in graph.node for out in n.output
         }
-        nodes_to_remove: set[str] = set()
+        nodes_to_remove: set[int] = set()
         new_nodes: list[onnx.NodeProto] = []
         rope_count = 0
 
@@ -99,31 +99,31 @@ class AttentionSynthesizer(Pass):
                         x_slice = mul_c.input[0] if mul_c.input[1] == cos_tensor else mul_c.input[1]
                         rot_tensor = mul_s.input[0] if mul_s.input[1] == sin_tensor else mul_s.input[1]
 
-                        subgraph_nodes = {n.name, mul_c.name, mul_s.name}
+                        subgraph_nodes = {id(n), id(mul_c), id(mul_s)}
                         curr = node_by_output.get(rot_tensor)
                         if curr and curr.op_type == "Reshape":
-                            subgraph_nodes.add(curr.name)
+                            subgraph_nodes.add(id(curr))
                             concat_n = node_by_output.get(curr.input[0])
                             if concat_n and concat_n.op_type == "Concat":
-                                subgraph_nodes.add(concat_n.name)
+                                subgraph_nodes.add(id(concat_n))
                                 for u_inp in concat_n.input:
                                     u_n = node_by_output.get(u_inp)
                                     if u_n and u_n.op_type == "Unsqueeze":
-                                        subgraph_nodes.add(u_n.name)
+                                        subgraph_nodes.add(id(u_n))
                                         p_n = node_by_output.get(u_n.input[0])
                                         if p_n:
-                                            subgraph_nodes.add(p_n.name)
+                                            subgraph_nodes.add(id(p_n))
                                             if p_n.op_type == "Neg":
                                                 sq = node_by_output.get(p_n.input[0])
                                                 if sq and sq.op_type == "Squeeze":
-                                                    subgraph_nodes.add(sq.name)
+                                                    subgraph_nodes.add(id(sq))
                                                     sp = node_by_output.get(sq.input[0])
                                                     if sp and sp.op_type == "Split":
-                                                        subgraph_nodes.add(sp.name)
+                                                        subgraph_nodes.add(id(sp))
                                             elif p_n.op_type == "Squeeze":
                                                 sp = node_by_output.get(p_n.input[0])
                                                 if sp and sp.op_type == "Split":
-                                                    subgraph_nodes.add(sp.name)
+                                                    subgraph_nodes.add(id(sp))
 
                         nodes_to_remove.update(subgraph_nodes)
 
@@ -133,7 +133,7 @@ class AttentionSynthesizer(Pass):
                             theta_tensor = cos_n.input[0]
                             base_theta = self._find_base_frequency_tensor(theta_tensor, node_by_output)
                             rope_inputs = [x_slice, base_theta]
-                            nodes_to_remove.update({cos_n.name, sin_n.name})
+                            nodes_to_remove.update({id(cos_n), id(sin_n)})
                         else:
                             rope_inputs = [x_slice, cos_tensor, sin_tensor]
 
@@ -157,13 +157,13 @@ class AttentionSynthesizer(Pass):
             if concats:
                 concat = concats[0]
                 rewrites[concat.output[0]] = r_out
-                nodes_to_remove.add(concat.name)
+                nodes_to_remove.add(id(concat))
 
             x_in = r_node.input[0]
             p = node_by_output.get(x_in)
             if p and p.op_type == "Slice":
                 r_node.input[0] = p.input[0]
-                nodes_to_remove.add(p.name)
+                nodes_to_remove.add(id(p))
 
         def canonical(name: str) -> str:
             while name in rewrites:
@@ -172,7 +172,7 @@ class AttentionSynthesizer(Pass):
 
         surviving = []
         for n in graph.node:
-            if n.name in nodes_to_remove:
+            if id(n) in nodes_to_remove:
                 continue
             for idx, inp in enumerate(n.input):
                 n.input[idx] = canonical(inp)
@@ -252,8 +252,8 @@ class AttentionSynthesizer(Pass):
                 consumer_map.setdefault(inp, []).append(node)
         graph_outputs = {out.name for out in graph.output}
 
-        nodes_to_remove: set[str] = set()
-        new_nodes: list[onnx.NodeProto] = []
+        nodes_to_remove: set[int] = set()
+        replacements: dict[int, onnx.NodeProto] = {}
         gate_count = 0
 
         for n in graph.node:
@@ -265,32 +265,38 @@ class AttentionSynthesizer(Pass):
                     other_inp = [inp for inp in n.input if inp != sig_node.output[0]][0]
                     gate_in = sig_node.input[0]
 
-                    nodes_to_remove.add(n.name)
+                    nodes_to_remove.add(id(n))
                     # Only remove sig_node if no other node consumes its output
                     if len(consumer_map.get(sig_node.output[0], [])) <= 1 and sig_node.output[0] not in graph_outputs:
-                        nodes_to_remove.add(sig_node.name)
+                        nodes_to_remove.add(id(sig_node))
 
                     fp = compute_subgraph_fingerprint([sig_node, n])
                     specialized_op = build_monomorphized_op_type("GatedUnit", act_name, fp)
 
+                    node_name = n.name or f"gated_unit_{gate_count}"
                     gated_node = helper.make_node(
                         op_type=specialized_op,
                         inputs=[other_inp, gate_in],
                         outputs=[n.output[0]],
-                        name=f"{n.name}_fused_gated",
+                        name=f"{node_name}_fused_gated",
                         domain="custom.pytorch",
                         activation=act_name.lower(),
                     )
-                    new_nodes.append(gated_node)
+                    replacements[id(n)] = gated_node
                     gate_count += 1
 
                     if mode == "function_proto":
                         self._attach_specialized_gated_unit_function(model, specialized_op, act_name, fp)
 
-        if not new_nodes:
+        if not replacements:
             return model
 
-        surviving = [n for n in graph.node if n.name not in nodes_to_remove] + new_nodes
+        surviving = []
+        for n in graph.node:
+            if id(n) in replacements:
+                surviving.append(replacements[id(n)])
+            elif id(n) not in nodes_to_remove:
+                surviving.append(n)
         del graph.node[:]
         graph.node.extend(surviving)
 
@@ -382,8 +388,8 @@ class AttentionSynthesizer(Pass):
                 consumer_map.setdefault(inp, []).append(node)
         graph_outputs = {out.name for out in graph.output}
 
-        nodes_to_remove: set[str] = set()
-        new_nodes: list[onnx.NodeProto] = []
+        nodes_to_remove: set[int] = set()
+        replacements: dict[int, onnx.NodeProto] = {}
         sm_count = 0
 
         for n in graph.node:
@@ -396,24 +402,30 @@ class AttentionSynthesizer(Pass):
                     for a in in0.attribute:
                         if a.name == "axis":
                             axis = a.i
-                    nodes_to_remove.add(n.name)
+                    nodes_to_remove.add(id(n))
                     if len(consumer_map.get(in0.output[0], [])) <= 1 and in0.output[0] not in graph_outputs:
-                        nodes_to_remove.add(in0.name)
+                        nodes_to_remove.add(id(in0))
+                    node_name = n.name or f"sm_matmul_{sm_count}"
                     sm_node = helper.make_node(
                         op_type="SoftmaxMatMul",
                         inputs=[scores, v],
                         outputs=[n.output[0]],
-                        name=f"{n.name}_fused_sm_matmul",
+                        name=f"{node_name}_fused_sm_matmul",
                         domain="custom.pytorch",
                         axis=axis,
                     )
-                    new_nodes.append(sm_node)
+                    replacements[id(n)] = sm_node
                     sm_count += 1
 
-        if not new_nodes:
+        if not replacements:
             return model
 
-        surviving = [n for n in graph.node if n.name not in nodes_to_remove] + new_nodes
+        surviving = []
+        for n in graph.node:
+            if id(n) in replacements:
+                surviving.append(replacements[id(n)])
+            elif id(n) not in nodes_to_remove:
+                surviving.append(n)
         del graph.node[:]
         graph.node.extend(surviving)
 
@@ -447,7 +459,7 @@ class AttentionSynthesizer(Pass):
     def _handle_k_transpose(
         tr_node: onnx.NodeProto,
         k_raw_input: str,
-        nodes_to_drop: set[str],
+        nodes_to_drop: set[int],
     ) -> str:
         """Handle transposition on K input, retaining head-permutation if not identity."""
         perm_attrs = [a for a in tr_node.attribute if a.name == "perm"]
@@ -455,7 +467,7 @@ class AttentionSynthesizer(Pass):
             p = list(perm_attrs[0].ints)
             new_perm = p[:-2] + [p[-1], p[-2]]
             if new_perm == list(range(len(p))):
-                nodes_to_drop.add(tr_node.name)
+                nodes_to_drop.add(id(tr_node))
                 return k_raw_input
             else:
                 perm_attrs[0].ints[:] = new_perm
@@ -463,7 +475,7 @@ class AttentionSynthesizer(Pass):
                     tr_node.input[0] = k_raw_input
                 return tr_node.output[0]
         else:
-            nodes_to_drop.add(tr_node.name)
+            nodes_to_drop.add(id(tr_node))
             return k_raw_input
 
     # -------------------------------------------------------------------------
@@ -476,8 +488,8 @@ class AttentionSynthesizer(Pass):
             out: n for n in graph.node for out in n.output
         }
         sm_nodes = [n for n in graph.node if n.op_type == "SoftmaxMatMul"]
-        new_nodes: list[onnx.NodeProto] = []
-        nodes_to_drop: set[str] = set()
+        replacements: dict[int, onnx.NodeProto] = {}
+        nodes_to_drop: set[int] = set()
 
         inits = {i.name for i in graph.initializer}
         for sm in sm_nodes:
@@ -505,7 +517,7 @@ class AttentionSynthesizer(Pass):
                 continue
 
             if scale_node_after_mm is not None:
-                nodes_to_drop.add(scale_node_after_mm.name)
+                nodes_to_drop.add(id(scale_node_after_mm))
 
             q_cand = node_by_output.get(mm.input[0])
             k_cand = node_by_output.get(mm.input[1])
@@ -514,7 +526,7 @@ class AttentionSynthesizer(Pass):
             has_scale_mul = (scale_node_after_mm is not None)
             if q_cand and q_cand.op_type in ("Mul", "Div"):
                 has_scale_mul = True
-                nodes_to_drop.add(q_cand.name)
+                nodes_to_drop.add(id(q_cand))
                 if q_cand.op_type == "Div":
                     q_inp = q_cand.input[0]
                 else:
@@ -540,7 +552,7 @@ class AttentionSynthesizer(Pass):
                             scale_cand = parent.input[0] if (parent.input[0] in inits or (in0_p and in0_p.op_type in ("Pow", "Constant"))) else parent.input[1]
                             val_cand = parent.input[1] if scale_cand == parent.input[0] else parent.input[0]
                             curr.input[0] = val_cand
-                        nodes_to_drop.add(parent.name)
+                        nodes_to_drop.add(id(parent))
                         break
                     curr = parent
 
@@ -548,7 +560,7 @@ class AttentionSynthesizer(Pass):
             if k_cand and k_cand.op_type == "Transpose":
                 k_sub = node_by_output.get(k_cand.input[0])
                 if k_sub and k_sub.op_type in ("Mul", "Div"):
-                    nodes_to_drop.add(k_sub.name)
+                    nodes_to_drop.add(id(k_sub))
                     if k_sub.op_type == "Div":
                         k_raw = k_sub.input[0]
                     else:
@@ -558,7 +570,7 @@ class AttentionSynthesizer(Pass):
                 else:
                     k_inp = self._handle_k_transpose(k_cand, k_cand.input[0], nodes_to_drop)
             elif k_cand and k_cand.op_type in ("Mul", "Div"):
-                nodes_to_drop.add(k_cand.name)
+                nodes_to_drop.add(id(k_cand))
                 if k_cand.op_type == "Div":
                     k_inp_cand = k_cand.input[0]
                 else:
@@ -589,22 +601,26 @@ class AttentionSynthesizer(Pass):
                 name=f"{sm.name}_sdpa",
                 domain="custom.pytorch",
             )
-            new_nodes.append(sdpa)
-            nodes_to_drop.add(sm.name)
-            nodes_to_drop.add(mm.name)
+            replacements[id(sm)] = sdpa
+            nodes_to_drop.add(id(sm))
+            nodes_to_drop.add(id(mm))
 
-        if not new_nodes:
+        if not replacements:
             return model
 
-        kept = [n for n in graph.node if n.name not in nodes_to_drop]
-        kept.extend(new_nodes)
+        kept = []
+        for n in graph.node:
+            if id(n) in replacements:
+                kept.append(replacements[id(n)])
+            elif id(n) not in nodes_to_drop:
+                kept.append(n)
         del graph.node[:]
         graph.node.extend(kept)
 
         if mode == "function_proto":
             self._attach_sdpa_function_def(model)
 
-        log.info("ScaledDotProductAttention Fusion: Fused %d attention blocks", len(new_nodes))
+        log.info("ScaledDotProductAttention Fusion: Fused %d attention blocks", len(replacements))
         return ShapeCanonicalizer().apply_dead_code_elimination(model)
 
     def _attach_sdpa_function_def(self, model: onnx.ModelProto) -> None:
@@ -615,7 +631,10 @@ class AttentionSynthesizer(Pass):
             return
         opset_standard = helper.make_opsetid("", 14)
         k_trans = helper.make_node("Transpose", inputs=["K"], outputs=["KT"], perm=[0, 1, 3, 2])
-        mm1 = helper.make_node("MatMul", inputs=["Q", "KT"], outputs=["Scores"])
+        mm1 = helper.make_node("MatMul", inputs=["Q", "KT"], outputs=["RawScores"])
+        scale_val = helper.make_tensor("scale_val", onnx.TensorProto.FLOAT, [1], [0.125])
+        c_scale = helper.make_node("Constant", inputs=[], outputs=["scale_const"], value=scale_val)
+        mul_scale = helper.make_node("Mul", inputs=["RawScores", "scale_const"], outputs=["Scores"])
         sm = helper.make_node("Softmax", inputs=["Scores"], outputs=["Probs"], axis=-1)
         mm2 = helper.make_node("MatMul", inputs=["Probs", "V"], outputs=["Y"])
         func = helper.make_function(
@@ -623,7 +642,7 @@ class AttentionSynthesizer(Pass):
             fname=func_name,
             inputs=["Q", "K", "V"],
             outputs=["Y"],
-            nodes=[k_trans, mm1, sm, mm2],
+            nodes=[k_trans, mm1, c_scale, mul_scale, sm, mm2],
             opset_imports=[opset_standard],
             doc_string="Scaled Dot-Product Attention function",
         )
@@ -638,8 +657,8 @@ class AttentionSynthesizer(Pass):
         node_by_output: dict[str, onnx.NodeProto] = {
             out: n for n in graph.node for out in n.output
         }
-        new_nodes: list[onnx.NodeProto] = []
-        nodes_to_drop: set[str] = set()
+        replacements: dict[int, onnx.NodeProto] = {}
+        nodes_to_drop: set[int] = set()
 
         unbind_nodes = [n for n in graph.node if n.op_type == "Unbind"]
         for unbind in unbind_nodes:
@@ -672,23 +691,27 @@ class AttentionSynthesizer(Pass):
                 domain="custom.pytorch",
                 num_heads=num_heads,
             )
-            new_nodes.append(sqkv)
-            nodes_to_drop.add(unbind.name)
-            nodes_to_drop.add(trans.name)
-            nodes_to_drop.add(reshape.name)
+            replacements[id(unbind)] = sqkv
+            nodes_to_drop.add(id(unbind))
+            nodes_to_drop.add(id(trans))
+            nodes_to_drop.add(id(reshape))
 
-        if not new_nodes:
+        if not replacements:
             return model
 
-        kept = [n for n in graph.node if n.name not in nodes_to_drop]
-        kept.extend(new_nodes)
+        kept = []
+        for n in graph.node:
+            if id(n) in replacements:
+                kept.append(replacements[id(n)])
+            elif id(n) not in nodes_to_drop:
+                kept.append(n)
         del graph.node[:]
         graph.node.extend(kept)
 
         if mode == "function_proto":
             self._attach_split_qkv_function_def(model)
 
-        log.info("SplitQKV Fusion: Fused %d SplitQKV instances", len(new_nodes))
+        log.info("SplitQKV Fusion: Fused %d SplitQKV instances", len(replacements))
         return ShapeCanonicalizer().apply_dead_code_elimination(model)
 
     def _attach_split_qkv_function_def(self, model: onnx.ModelProto) -> None:
@@ -721,8 +744,8 @@ class AttentionSynthesizer(Pass):
             for inp in n.input:
                 consumer_map[inp].append(n)
 
-        new_nodes: list[onnx.NodeProto] = []
-        nodes_to_drop: set[str] = set()
+        replacements: dict[int, onnx.NodeProto] = {}
+        nodes_to_drop: set[int] = set()
 
         gated_units = [n for n in graph.node if n.op_type == "GatedUnit"]
         for gu in gated_units:
@@ -745,15 +768,19 @@ class AttentionSynthesizer(Pass):
                 name=f"{r_node.name}_merge_heads",
                 domain="custom.pytorch",
             )
-            new_nodes.append(mh)
-            nodes_to_drop.add(t_node.name)
-            nodes_to_drop.add(r_node.name)
+            replacements[id(r_node)] = mh
+            nodes_to_drop.add(id(t_node))
+            nodes_to_drop.add(id(r_node))
 
-        if not new_nodes:
+        if not replacements:
             return model
 
-        kept = [n for n in graph.node if n.name not in nodes_to_drop]
-        kept.extend(new_nodes)
+        kept = []
+        for n in graph.node:
+            if id(n) in replacements:
+                kept.append(replacements[id(n)])
+            elif id(n) not in nodes_to_drop:
+                kept.append(n)
         del graph.node[:]
         graph.node.extend(kept)
 
@@ -920,6 +947,7 @@ class AttentionSynthesizer(Pass):
                     gate_unit_op=gated_unit.op_type,
                     norm_op=norm.op_type,
                     fingerprint=fp,
+                    num_inputs=len(attn_inputs),
                 )
 
         if not new_nodes:
@@ -944,6 +972,7 @@ class AttentionSynthesizer(Pass):
         gate_unit_op: str,
         norm_op: str,
         fingerprint: str,
+        num_inputs: int = 9,
     ) -> None:
         """Attach formal, content-hashed ONNX FunctionProto definition for GatedAttention."""
         if any(f.name == fname and f.domain == "custom.pytorch" for f in model.functions):
@@ -960,13 +989,17 @@ class AttentionSynthesizer(Pass):
         sdpa = helper.make_node("ScaledDotProductAttention", inputs=["Q_rot", "K_rot", "V"], outputs=["AttnScores"], domain="custom.pytorch")
         gated = helper.make_node(gate_unit_op, inputs=["AttnScores", "Gates"], outputs=["GatedScores"], domain="custom.pytorch")
         merge = helper.make_node("MergeHeads", inputs=["GatedScores"], outputs=["Merged"], domain="custom.pytorch")
-        to_out = helper.make_node("Linear", inputs=["Merged", "out_w"], outputs=["Y"], domain="custom.pytorch")
+        out_inputs = ["Merged", "out_w", "out_b"] if num_inputs >= 9 else ["Merged", "out_w"]
+        to_out = helper.make_node("Linear", inputs=out_inputs, outputs=["Y"], domain="custom.pytorch")
+
+        all_formal = ["X", "norm_gamma", "qkv_w", "qkv_b", "gates_w", "gates_b", "theta", "out_w", "out_b"]
+        formal_inputs = all_formal[:num_inputs]
 
         ensure_specialized_function_proto(
             model=model,
             domain="custom.pytorch",
             fname=fname,
-            formal_inputs=["X", "norm_gamma", "qkv_w", "qkv_b", "gates_w", "gates_b", "theta", "out_w", "out_b"],
+            formal_inputs=formal_inputs,
             formal_outputs=["Y"],
             body_nodes=[norm, to_qkv, to_gates, split_qkv, rope_q, rope_k, sdpa, gated, merge, to_out],
             opset_imports=[opset_standard, opset_custom],

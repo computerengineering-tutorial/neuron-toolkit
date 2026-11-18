@@ -99,6 +99,15 @@ class EGraph:
         """Total number of ENodes across all equivalence classes."""
         return sum(len(c.nodes) for c in self.classes.values())
 
+    def classes_for_op(self, op: str) -> list[tuple[EClassId, EClass]]:
+        """Return canonical (class_id, eclass) pairs containing at least one node with *op*."""
+        res: list[tuple[EClassId, EClass]] = []
+        for class_id, eclass in list(self.classes.items()):
+            can_id = self.find(class_id)
+            if any(n.op == op for n in eclass.nodes):
+                res.append((can_id, eclass))
+        return res
+
     def add(self, enode: ENode) -> EClassId:
         """Insert an ENode using hash-consing.
 

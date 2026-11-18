@@ -8,6 +8,8 @@ the compiler generates distinct, content-hashed FunctionProtos without collision
 from __future__ import annotations
 
 import io
+import os
+import tempfile
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -97,18 +99,23 @@ class AlternatingDeepMLPModel(nn.Module):
 
 
 def _export_to_onnx(torch_model: nn.Module, dummy_input: torch.Tensor) -> onnx.ModelProto:
-    buf = io.BytesIO()
-    torch.onnx.export(
-        torch_model,
-        dummy_input,
-        buf,
-        input_names=["input"],
-        output_names=["output"],
-        opset_version=18,
-        do_constant_folding=True,
-    )
-    buf.seek(0)
-    return onnx.load_model_from_string(buf.getvalue())
+    torch_model.eval()
+    with tempfile.NamedTemporaryFile(suffix=".onnx", delete=False) as tmp:
+        tmp_path = tmp.name
+    try:
+        torch.onnx.export(
+            torch_model,
+            dummy_input,
+            tmp_path,
+            input_names=["input"],
+            output_names=["output"],
+            opset_version=18,
+            do_constant_folding=True,
+        )
+        return onnx.load(tmp_path)
+    finally:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
 
 
 def test_content_hashed_feedforward_polymorphism():

@@ -372,9 +372,14 @@ class NeuronGraph:
 
     def to_dict(self) -> dict[str, Any]:
         """Export the model graph structure as a Python dictionary without raw weights."""
+        cached = getattr(self, "_cached_dict", None)
+        if cached is not None:
+            return cached.copy()
         from neuron_toolkit.exporter import export_graph_dict
 
-        return export_graph_dict(self)
+        res = export_graph_dict(self)
+        self._cached_dict = res
+        return res.copy()
 
     def to_json(self, path: str | None = None, indent: int = 2) -> str | None:
         """Export the model graph structure as a JSON string or save to a file path."""
@@ -419,6 +424,7 @@ class NeuronGraph:
         strict: bool = False,
     ) -> dict[str, list[str]]:
         """Replace weights/initializers in-place from a dictionary (like PyTorch load_state_dict)."""
+        self._cached_dict = None
         if hasattr(self._backend, "replace_weights"):
             return self._backend.replace_weights(weights_dict, strict=strict)
         if hasattr(self._backend, "tensor_map"):

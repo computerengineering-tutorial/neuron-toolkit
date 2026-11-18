@@ -263,31 +263,46 @@ class FeedForwardSynthesizer(Pass):
         graph.node.extend(kept)
 
         if mode == "function_proto":
-            self._attach_feedforward_swiglu_function_def(model)
+            has_bias = any(len(n.input) == 8 for n in new_nodes)
+            self._attach_feedforward_swiglu_function_def(model, has_bias=has_bias)
 
         log.info("FeedForward SwiGLU Fusion: Fused %d SwiGLU blocks", count)
         return model
 
-    def _attach_feedforward_swiglu_function_def(self, model: onnx.ModelProto) -> None:
+    def _attach_feedforward_swiglu_function_def(self, model: onnx.ModelProto, has_bias: bool = False) -> None:
         """Attach formal ONNX FunctionProto definition for FeedForwardSwiGLU."""
         func_name = "FeedForwardSwiGLU"
         domain = "custom.pytorch"
-        if any(f.name == func_name and f.domain == domain for f in model.functions):
+        expected_inps = 8 if has_bias else 5
+        if any(f.name == func_name and f.domain == domain and len(f.input) == expected_inps for f in model.functions):
             return
+        surviving_funcs = [f for f in model.functions if not (f.name == func_name and f.domain == domain)]
+        del model.functions[:]
+        model.functions.extend(surviving_funcs)
+
         opset_standard = helper.make_opsetid("", 14)
         opset_custom = helper.make_opsetid("custom.pytorch", 1)
 
         norm = helper.make_node("RMSNorm", inputs=["X", "gamma"], outputs=["X_norm"], domain="custom.pytorch", epsilon=1e-12)
-        gate = helper.make_node("Linear", inputs=["X_norm", "w_gate"], outputs=["H_gate"], domain="custom.pytorch")
-        up = helper.make_node("Linear", inputs=["X_norm", "w_up"], outputs=["H_up"], domain="custom.pytorch")
-        silu = helper.make_node("SiLU", inputs=["H_gate"], outputs=["H_act"], domain="custom.pytorch")
-        mul = helper.make_node("Mul", inputs=["H_act", "H_up"], outputs=["H_mul"])
-        down = helper.make_node("Linear", inputs=["H_mul", "w_down"], outputs=["Y"], domain="custom.pytorch")
+        if has_bias:
+            gate = helper.make_node("Linear", inputs=["X_norm", "w_gate", "b_gate"], outputs=["H_gate"], domain="custom.pytorch")
+            up = helper.make_node("Linear", inputs=["X_norm", "w_up", "b_up"], outputs=["H_up"], domain="custom.pytorch")
+            silu = helper.make_node("SiLU", inputs=["H_gate"], outputs=["H_act"], domain="custom.pytorch")
+            mul = helper.make_node("Mul", inputs=["H_act", "H_up"], outputs=["H_mul"])
+            down = helper.make_node("Linear", inputs=["H_mul", "w_down", "b_down"], outputs=["Y"], domain="custom.pytorch")
+            func_inputs = ["X", "gamma", "w_gate", "b_gate", "w_up", "b_up", "w_down", "b_down"]
+        else:
+            gate = helper.make_node("Linear", inputs=["X_norm", "w_gate"], outputs=["H_gate"], domain="custom.pytorch")
+            up = helper.make_node("Linear", inputs=["X_norm", "w_up"], outputs=["H_up"], domain="custom.pytorch")
+            silu = helper.make_node("SiLU", inputs=["H_gate"], outputs=["H_act"], domain="custom.pytorch")
+            mul = helper.make_node("Mul", inputs=["H_act", "H_up"], outputs=["H_mul"])
+            down = helper.make_node("Linear", inputs=["H_mul", "w_down"], outputs=["Y"], domain="custom.pytorch")
+            func_inputs = ["X", "gamma", "w_gate", "w_up", "w_down"]
 
         func = helper.make_function(
             domain=domain,
             fname=func_name,
-            inputs=["X", "gamma", "w_gate", "w_up", "w_down"],
+            inputs=func_inputs,
             outputs=["Y"],
             nodes=[norm, gate, up, silu, mul, down],
             opset_imports=[opset_standard, opset_custom],

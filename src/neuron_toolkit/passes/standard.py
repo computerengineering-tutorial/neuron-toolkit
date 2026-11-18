@@ -75,8 +75,7 @@ class ConstantFolding(BasePass):
 
     def run(self, graph: NeuronGraph) -> tuple[NeuronGraph, dict[str, Any]]:
         tensor_map = graph.tensor_map
-        folded_count = 0
-        rewriter = graph.rewriter()
+        folded_nodes: list[tuple[object, str, np.ndarray]] = []
 
         for node in list(graph.nodes):
             op_type = getattr(node, "op_type", "")
@@ -108,14 +107,16 @@ class ConstantFolding(BasePass):
                 if result_val is not None:
                     out_name = outputs[0]
                     res_arr = np.asarray(result_val)
-                    if hasattr(rewriter, "register_initializer"):
-                        rewriter.register_initializer(out_name, res_arr)
-                    rewriter.remove(node)
-                    folded_count += 1
+                    folded_nodes.append((node, out_name, res_arr))
 
-        if folded_count > 0:
+        if folded_nodes:
+            rewriter = graph.rewriter()
+            for node, out_name, res_arr in folded_nodes:
+                if hasattr(rewriter, "register_initializer"):
+                    rewriter.register_initializer(out_name, res_arr)
+                rewriter.remove(node)
             new_graph = rewriter.build_graph()
-            return new_graph, {"folded_nodes": folded_count}
+            return new_graph, {"folded_nodes": len(folded_nodes)}
 
         return graph, {"folded_nodes": 0}
 
@@ -126,9 +127,8 @@ class CommonSubexpressionElimination(BasePass):
     name: str = "CommonSubexpressionElimination"
 
     def run(self, graph: NeuronGraph) -> tuple[NeuronGraph, dict[str, Any]]:
-        rewriter = graph.rewriter()
         seen: dict[tuple[str, tuple[str, ...]], object] = {}
-        eliminated = 0
+        eliminations: list[tuple[object, str, str]] = []
 
         for node in list(graph.nodes):
             op_type = getattr(node, "op_type", "")
@@ -150,19 +150,20 @@ class CommonSubexpressionElimination(BasePass):
 
                 if primary_outs and secondary_out:
                     primary_out = primary_outs[0]
-                    # Replace secondary with Identity forwarding primary_out
-                    rewriter.replace(
-                        [node],
-                        "Identity",
-                        inputs=[primary_out],
-                        outputs=[secondary_out],
-                    )
-                    eliminated += 1
+                    eliminations.append((node, primary_out, secondary_out))
             else:
                 seen[key] = node
 
-        if eliminated > 0:
-            return rewriter.build_graph(), {"eliminated_nodes": eliminated}
+        if eliminations:
+            rewriter = graph.rewriter()
+            for node, primary_out, secondary_out in eliminations:
+                rewriter.replace(
+                    [node],
+                    "Identity",
+                    inputs=[primary_out],
+                    outputs=[secondary_out],
+                )
+            return rewriter.build_graph(), {"eliminated_nodes": len(eliminations)}
         return graph, {"eliminated_nodes": 0}
 
 

@@ -103,6 +103,22 @@ class PyTorchRunner:
             (f.domain, f.name): f for f in self.model.functions
         }
 
+        # Precompile execution plan: pre-resolve handlers and attributes once
+        self._execution_plan: list[
+            tuple[Any, list[str], list[str], dict[str, Any], Any]
+        ] = []
+        for node in self.sorted_nodes:
+            op_type = node.op_type
+            domain = node.domain or ""
+            attrs = self._extract_attributes(node)
+            handler = self.registry.get(domain, op_type)
+            fn_proto = (
+                self.functions.get((domain, op_type)) if handler is None else None
+            )
+            self._execution_plan.append(
+                (handler, list(node.input), list(node.output), attrs, fn_proto)
+            )
+
     def _extract_attributes(self, node: onnx.NodeProto) -> dict[str, Any]:
         """Convert ONNX NodeProto attributes to a Python dict."""
         attrs: dict[str, Any] = {}
@@ -138,46 +154,45 @@ class PyTorchRunner:
                 tensor_env[name] = torch.from_numpy(np.asarray(val)).to(self.device)
 
         with torch.no_grad():
-            for node in self.sorted_nodes:
-                op_type = node.op_type
-                domain = node.domain or ""
-
-                # Extract input tensors
-                node_inputs: list[torch.Tensor] = []
-                for inp_name in node.input:
+            for (
+                handler,
+                node_inputs_names,
+                node_outputs_names,
+                attrs,
+                fn_proto,
+            ) in self._execution_plan:
+                # Fast input extraction
+                node_inputs: list[torch.Tensor | None] = []
+                for inp_name in node_inputs_names:
                     if not inp_name:
-                        node_inputs.append(None)  # Optional input not provided
+                        node_inputs.append(None)
                     elif inp_name in tensor_env:
                         node_inputs.append(tensor_env[inp_name])
                     else:
-                        msg = f"Node {node.name!r} ({op_type}) requires missing input {inp_name!r}"
+                        msg = f"Operation requires missing input {inp_name!r}"
                         raise RuntimeError(msg)
 
-                attrs = self._extract_attributes(node)
-
-                # 1. Check registry first
-                handler = self.registry.get(domain, op_type)
+                # 1. Check registry handler
                 if handler is not None:
                     out = handler(node_inputs, attrs)
                     if isinstance(out, (list, tuple)):
                         for idx, out_tensor in enumerate(out):
-                            if idx < len(node.output) and node.output[idx]:
-                                tensor_env[node.output[idx]] = out_tensor
-                    elif len(node.output) >= 1:
-                        tensor_env[node.output[0]] = out
+                            if idx < len(node_outputs_names) and node_outputs_names[idx]:
+                                tensor_env[node_outputs_names[idx]] = out_tensor
+                    elif len(node_outputs_names) >= 1:
+                        tensor_env[node_outputs_names[0]] = out
                     continue
 
                 # 2. Check if it's a FunctionProto in model.functions
-                if (domain, op_type) in self.functions:
-                    fn_proto = self.functions[(domain, op_type)]
+                if fn_proto is not None:
                     fn_outputs = self._run_function(fn_proto, node_inputs, attrs)
                     for idx, out_tensor in enumerate(fn_outputs):
-                        if idx < len(node.output) and node.output[idx]:
-                            tensor_env[node.output[idx]] = out_tensor
+                        if idx < len(node_outputs_names) and node_outputs_names[idx]:
+                            tensor_env[node_outputs_names[idx]] = out_tensor
                     continue
 
                 # 3. Op not found
-                msg = f"No PyTorch runtime handler registered for op '{op_type}' in domain '{domain}' (Node name: {node.name})"
+                msg = "No PyTorch runtime handler registered for operation"
                 raise NotImplementedError(msg)
 
         # Collect outputs

@@ -849,10 +849,25 @@ class OpRegistry:
                     theta = theta[..., :seq_len, :]
                 cos = torch.cos(theta)
                 sin = torch.sin(theta)
-            orig_shape = x.shape
-            x_reshaped = x.reshape(*orig_shape[:-1], -1, 2)
-            rot = torch.stack((-x_reshaped[..., 1], x_reshaped[..., 0]), dim=-1).reshape(orig_shape)
-            return (x * cos) + (rot * sin)
+
+            rotary_dim = cos.shape[-1]
+            head_dim = x.shape[-1]
+
+            if rotary_dim < head_dim:
+                x_rot = x[..., :rotary_dim]
+                x_pass = x[..., rotary_dim:]
+            else:
+                x_rot = x
+                x_pass = None
+
+            orig_rot_shape = x_rot.shape
+            x_reshaped = x_rot.reshape(*orig_rot_shape[:-1], -1, 2)
+            rot = torch.stack((-x_reshaped[..., 1], x_reshaped[..., 0]), dim=-1).reshape(orig_rot_shape)
+            out_rot = (x_rot * cos) + (rot * sin)
+
+            if x_pass is not None:
+                return torch.cat((out_rot, x_pass), dim=-1)
+            return out_rot
 
         @self.register("custom.pytorch", "Unbind")
         @self.register("", "Unbind")
@@ -866,8 +881,13 @@ class OpRegistry:
             x, gate = inputs[0], inputs[1]
             act_name = attrs.get("activation", "sigmoid").lower()
             if gate.dim() == 3 and x.dim() == 4:
-                # gate: (B, S, H) -> (B, H, S, 1) to match x: (B, H, S, D)
-                gate = gate.transpose(1, 2).unsqueeze(-1)
+                # x: (B, H, S, D)
+                if gate.shape[1] == x.shape[1]:
+                    gate = gate.unsqueeze(-1)
+                elif gate.shape[2] == x.shape[1]:
+                    gate = gate.transpose(1, 2).unsqueeze(-1)
+                else:
+                    gate = gate.unsqueeze(-1)
             if act_name in ("silu", "swish"):
                 g_act = F.silu(gate)
             elif act_name == "gelu":
@@ -908,6 +928,8 @@ class OpRegistry:
             else:
                 s = q.shape[-1] ** -0.25
             scores = torch.matmul(q * s, (k * s).transpose(-1, -2))
+            if len(inputs) > 3 and inputs[3] is not None and inputs[3].numel() > 0:
+                scores = scores + inputs[3]
             probs = torch.softmax(scores, dim=-1)
             return torch.matmul(probs, v)
 
@@ -917,6 +939,11 @@ class OpRegistry:
             x = inputs[0]
             num_heads = int(attrs.get("num_heads", 4))
             orig_shape = x.shape
+            if len(orig_shape) == 2:
+                B, total_d = orig_shape[0], orig_shape[1]
+                D = total_d // (3 * num_heads)
+                reshaped = x.view(B, 3, num_heads, D).permute(1, 0, 2, 3)
+                return [reshaped[0], reshaped[1], reshaped[2]]
             B, S, total_d = orig_shape[0], orig_shape[1], orig_shape[2]
             D = total_d // (3 * num_heads)
             reshaped = x.view(B, S, 3, num_heads, D).permute(2, 0, 3, 1, 4)
@@ -1092,13 +1119,34 @@ class OpRegistry:
             if has_norm:
                 x = inputs[0]
                 gamma = inputs[1]
-                beta = inputs[2] if len(inputs) > 2 and inputs[2] is not None and inputs[2].numel() > 0 else None
-                x_norm = F.layer_norm(x, [gamma.shape[0]], weight=gamma, bias=beta)
-                w = inputs[3]
-                b = inputs[4] if len(inputs) > 4 and inputs[4] is not None and inputs[4].numel() > 0 else None
-                h = torch.matmul(x_norm, w)
-                if b is not None:
-                    h = h + b
+                rem = inputs[2:]
+                beta = None
+                w = None
+                b = None
+                if rem:
+                    if rem[0].dim() == 1 and rem[0].shape == gamma.shape:
+                        beta = rem[0]
+                        if len(rem) > 1:
+                            w = rem[1]
+                        if len(rem) > 2:
+                            b = rem[2]
+                    else:
+                        w = rem[0]
+                        if len(rem) > 1:
+                            b = rem[1]
+                if beta is not None and beta.numel() > 0:
+                    x_norm = F.layer_norm(x, [gamma.shape[0]], weight=gamma, bias=beta)
+                else:
+                    norm = torch.norm(x, p=2, dim=-1, keepdim=True)
+                    scale = (x.shape[-1] ** 0.5) / torch.clamp(norm, min=1e-12)
+                    x_norm = x * scale * gamma
+
+                if w is not None:
+                    h = torch.matmul(x_norm, w)
+                    if b is not None and b.numel() > 0:
+                        h = h + b
+                else:
+                    h = x_norm
             else:
                 x = inputs[0]
                 w = inputs[1]
@@ -1119,14 +1167,40 @@ class OpRegistry:
         def _spatial_gating_unit(inputs: list[torch.Tensor], attrs: dict[str, Any]) -> torch.Tensor:
             x = inputs[0]
             u, v = torch.chunk(x, 2, dim=-1)
-            v_norm = F.layer_norm(v, [v.shape[-1]])
-            w = inputs[1]
-            b = inputs[2] if len(inputs) > 2 and inputs[2] is not None and inputs[2].numel() > 0 else None
-            if w.shape[-1] == v.shape[1] and w.shape[0] == v.shape[1]:
+            rem = inputs[1:]
+            gamma = None
+            beta = None
+            w = None
+            b = None
+            w_idx = None
+            for idx, t in enumerate(rem):
+                if t is not None and t.dim() == 2:
+                    w_idx = idx
+                    break
+            if w_idx is not None:
+                norm_params = rem[:w_idx]
+                if len(norm_params) >= 1:
+                    gamma = norm_params[0]
+                if len(norm_params) >= 2:
+                    beta = norm_params[1]
+                w = rem[w_idx]
+                if len(rem) > w_idx + 1:
+                    b = rem[w_idx + 1]
+            else:
+                w = rem[0]
+                if len(rem) > 1:
+                    b = rem[1]
+
+            if gamma is not None:
+                v_norm = F.layer_norm(v, [v.shape[-1]], weight=gamma, bias=beta)
+            else:
+                v_norm = F.layer_norm(v, [v.shape[-1]])
+
+            if w.dim() == 2 and w.shape[-1] == v.shape[1] and w.shape[0] == v.shape[1]:
                 gate = torch.matmul(v_norm.transpose(1, 2), w).transpose(1, 2)
             else:
                 gate = torch.matmul(v_norm, w)
-            if b is not None:
+            if b is not None and b.numel() > 0:
                 gate = gate + b
             return u * gate
 
@@ -1144,20 +1218,43 @@ class OpRegistry:
             x = inputs[0]
             w1, b1 = inputs[1], inputs[2]
             w2, b2 = inputs[3], inputs[4]
-            pooled = x.mean(dim=(-2, -1), keepdim=True)
-            fc1 = F.conv2d(pooled, w1, b1) if w1.dim() == 4 else torch.matmul(pooled.squeeze(-1).squeeze(-1), w1) + b1
-            act = F.relu(fc1)
-            fc2 = F.conv2d(act, w2, b2) if w2.dim() == 4 else torch.matmul(act, w2) + b2
-            scale = torch.sigmoid(fc2 if w1.dim() == 4 else fc2.unsqueeze(-1).unsqueeze(-1))
+            if x.dim() == 4:
+                pooled = x.mean(dim=(-2, -1), keepdim=True)
+                fc1 = F.conv2d(pooled, w1, b1) if w1.dim() == 4 else torch.matmul(pooled.squeeze(-1).squeeze(-1), w1) + b1
+                act = F.relu(fc1)
+                fc2 = F.conv2d(act, w2, b2) if w2.dim() == 4 else torch.matmul(act, w2) + b2
+                scale = torch.sigmoid(fc2 if w1.dim() == 4 else fc2.unsqueeze(-1).unsqueeze(-1))
+            else:
+                pooled = x.mean(dim=-2)
+                fc1 = torch.matmul(pooled, w1) + b1
+                act = F.relu(fc1)
+                fc2 = torch.matmul(act, w2) + b2
+                scale = torch.sigmoid(fc2).unsqueeze(-2)
             return x * scale
 
         @self.register("custom.pytorch", "MultiHeadAttention")
         @self.register("", "MultiHeadAttention")
         def _mha_composite(inputs: list[torch.Tensor], attrs: dict[str, Any]) -> torch.Tensor:
-            x = inputs[0]
+            qkv = inputs[0]
             out_w = inputs[1]
             out_b = inputs[2] if len(inputs) > 2 and inputs[2] is not None and inputs[2].numel() > 0 else None
-            out = torch.matmul(x, out_w)
+            num_heads = int(attrs.get("num_heads", 4))
+            scale = attrs.get("scale", None)
+
+            B, S, total_d = qkv.shape
+            d_head = total_d // (3 * num_heads)
+            qkv_reshaped = qkv.view(B, S, 3, num_heads, d_head)
+            q = qkv_reshaped[:, :, 0].transpose(1, 2)
+            k = qkv_reshaped[:, :, 1].transpose(1, 2)
+            v = qkv_reshaped[:, :, 2].transpose(1, 2)
+
+            s = float(scale) ** 0.5 if scale is not None else d_head ** -0.25
+            scores = torch.matmul(q * s, (k * s).transpose(-1, -2))
+            probs = torch.softmax(scores, dim=-1)
+            attn_out = torch.matmul(probs, v)
+
+            merged = attn_out.transpose(1, 2).contiguous().view(B, S, num_heads * d_head)
+            out = torch.matmul(merged, out_w)
             if out_b is not None:
                 out = out + out_b
             return out

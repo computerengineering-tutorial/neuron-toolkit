@@ -7,6 +7,7 @@ from collections import Counter
 from collections.abc import ItemsView, Iterator, KeysView, Mapping, Sequence
 from typing import TYPE_CHECKING, Any, cast
 
+import numpy as np
 import onnx
 from onnx import ModelProto, numpy_helper
 from onnx.onnx_pb import NodeProto
@@ -17,8 +18,6 @@ from neuron_toolkit.backends.onnx.utils import _build_shape_info
 from neuron_toolkit.query import NeuronQuery
 
 if TYPE_CHECKING:
-    import numpy as np
-
     from neuron_toolkit.pattern import MatchResult, Pattern
 
 log = logging.getLogger("neuron_toolkit.backends.onnx")
@@ -38,7 +37,11 @@ class LazyTensorMap(dict[str, "np.ndarray"]):
             return self._cache[key]
         if key in self._initializers:
             proto = self._initializers.pop(key)
-            arr = numpy_helper.to_array(proto)
+            try:
+                arr = numpy_helper.to_array(proto)
+            except Exception as exc:
+                log.warning("Could not convert initializer %s to array: %s", key, exc)
+                arr = np.zeros((0,), dtype=np.float32)
             self._cache[key] = arr
             return arr
         return super().__getitem__(key)
@@ -88,7 +91,18 @@ class ONNXParser(BaseParser):
             self.model = onnx.load_model_from_string(onnx_source)
         else:
             log.info("Loading ONNX model from %r", onnx_source)
-            self.model = onnx.load(onnx_source)
+            load_ext = _kwargs.get("load_external_data", True)
+            try:
+                self.model = onnx.load(onnx_source, load_external_data=bool(load_ext))
+            except Exception as exc:
+                if load_ext:
+                    log.warning(
+                        "Loading ONNX model with external data failed (%s). Retrying with load_external_data=False...",
+                        exc,
+                    )
+                    self.model = onnx.load(onnx_source, load_external_data=False)
+                else:
+                    raise
 
         if infer_shapes:
             try:

@@ -37,8 +37,7 @@ class CommutativeRule(EGraphRule):
         applied = 0
         to_union: list[tuple[EClassId, ENode]] = []
 
-        for class_id, eclass in list(egraph.classes.items()):
-            can_id = egraph.find(class_id)
+        for can_id, eclass in egraph.classes_for_op(self.op):
             for node in eclass.nodes:
                 if node.op == self.op and len(node.children) == 2:
                     a, b = node.children
@@ -71,8 +70,7 @@ class IdentityRule(EGraphRule):
         applied = 0
         to_union: list[tuple[EClassId, EClassId]] = []
 
-        for class_id, eclass in list(egraph.classes.items()):
-            can_id = egraph.find(class_id)
+        for can_id, eclass in egraph.classes_for_op(self.op):
             for node in eclass.nodes:
                 if node.op == self.op and len(node.children) == 2:
                     c0, c1 = node.children
@@ -172,8 +170,7 @@ class SiluFusionRule(EGraphRule):
         applied = 0
         to_add: list[tuple[EClassId, EClassId]] = []
 
-        for class_id, eclass in list(egraph.classes.items()):
-            can_id = egraph.find(class_id)
+        for can_id, eclass in egraph.classes_for_op("Mul"):
             for node in eclass.nodes:
                 if node.op == "Mul" and len(node.children) == 2:
                     c0, c1 = node.children
@@ -235,7 +232,7 @@ def saturate(
     egraph: EGraph,
     rules: list[EGraphRule] | None = None,
     max_iterations: int = 12,
-    node_limit: int = 5000,
+    node_limit: int = 15000,
 ) -> dict[str, Any]:
     """Run equality saturation until fixed point, iteration limit, or node limit is reached."""
     active_rules = rules or default_rules()

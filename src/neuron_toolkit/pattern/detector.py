@@ -10,6 +10,7 @@ except ImportError:
 
 from neuron_toolkit._utils import ShapeInfo, _GraphShim
 from neuron_toolkit.pattern._matcher import MatchContext, MatchingMixin
+from neuron_toolkit.pattern.dsl import _ANY_OF, _CONST_PAT, _WILDCARD
 from neuron_toolkit.pattern.models import MatchResult
 
 if TYPE_CHECKING:
@@ -91,9 +92,55 @@ class PatternDetector(MatchingMixin):
             bindings=ctx.bindings,
         )
 
+    @property
+    def op_to_nodes(self) -> dict[str, list[object]]:
+        """Index mapping operator types to lists of matching nodes in the graph."""
+        if not hasattr(self, "_op_index"):
+            idx: dict[str, list[object]] = {}
+            for n in self._nodes:
+                op = getattr(n, "op_type", None)
+                if op:
+                    idx.setdefault(op, []).append(n)
+            self._op_index = idx
+        return self._op_index
+
     def find_all(self, pattern: Pattern) -> list[MatchResult]:
-        """Find all matches for *pattern* in the reachable subgraph."""
-        candidates = self._descendant_nodes() if self.start is not None else self._nodes
+        """Find all matches for *pattern* in the reachable subgraph using root-op indexing."""
+        if self.start is not None:
+            candidates = self._descendant_nodes()
+            if pattern.op_type and pattern.op_type not in (_ANY_OF, _CONST_PAT, _WILDCARD):
+                candidates = [
+                    n for n in candidates if getattr(n, "op_type", None) == pattern.op_type
+                ]
+            elif pattern.op_type == _ANY_OF and pattern.alternatives:
+                allowed = {
+                    alt.op_type
+                    for alt in pattern.alternatives
+                    if alt.op_type and alt.op_type not in (_ANY_OF, _CONST_PAT, _WILDCARD)
+                }
+                if len(allowed) == len(pattern.alternatives):
+                    candidates = [
+                        n for n in candidates if getattr(n, "op_type", None) in allowed
+                    ]
+        else:
+            if pattern.op_type and pattern.op_type not in (_ANY_OF, _CONST_PAT, _WILDCARD):
+                candidates = self.op_to_nodes.get(pattern.op_type, [])
+            elif pattern.op_type == _ANY_OF and pattern.alternatives:
+                allowed = {
+                    alt.op_type
+                    for alt in pattern.alternatives
+                    if alt.op_type and alt.op_type not in (_ANY_OF, _CONST_PAT, _WILDCARD)
+                }
+                if len(allowed) == len(pattern.alternatives):
+                    cand_list: list[object] = []
+                    for op in allowed:
+                        cand_list.extend(self.op_to_nodes.get(op, []))
+                    candidates = cand_list
+                else:
+                    candidates = self._nodes
+            else:
+                candidates = self._nodes
+
         orig_start = self.start
         results: list[MatchResult] = []
         try:

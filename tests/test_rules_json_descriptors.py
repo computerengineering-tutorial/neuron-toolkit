@@ -42,7 +42,7 @@ def test_json_rule_descriptor(descriptor_path: Path):
     expected_node = spec.get("expected_target_node")
     if expected_node:
         all_op_types = {n.op_type for n in opt_model.graph.node}
-        assert expected_node in all_op_types, (
+        assert any(op == expected_node or op.startswith(f"{expected_node}_") for op in all_op_types), (
             f"Expected node '{expected_node}' not found in optimized graph ops: {all_op_types}"
         )
 

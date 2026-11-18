@@ -126,7 +126,9 @@ class MathCanonicalizer(Pass):
                             w_arr = init_arrays[w_name]
                             w_trans = np.ascontiguousarray(w_arr.T)
                             trans_name = f"{w_name}_transposed"
-                            graph.initializer.append(numpy_helper.from_array(w_trans, name=trans_name))
+                            if trans_name not in init_arrays:
+                                init_arrays[trans_name] = w_trans
+                                graph.initializer.append(numpy_helper.from_array(w_trans, name=trans_name))
                             w_name = trans_name
                         else:
                             # Dynamic tensor with transB=1 cannot be fused directly into standard Linear
@@ -169,6 +171,10 @@ class MathCanonicalizer(Pass):
         if mode == "function_proto":
             self._attach_linear_function_def(model)
 
+        custom_domain = "custom.pytorch"
+        if not any(op.domain == custom_domain for op in model.opset_import):
+            model.opset_import.append(helper.make_opsetid(custom_domain, 1))
+
         log.info("Linear Fusion: Fused %d Linear instances", len(new_nodes))
         return model
 
@@ -179,17 +185,33 @@ class MathCanonicalizer(Pass):
         if any(f.name == func_name and f.domain == domain for f in model.functions):
             return
         opset_standard = helper.make_opsetid("", 14)
-        mm = helper.make_node("MatMul", inputs=["X", "W"], outputs=["MM"])
-        add = helper.make_node("Add", inputs=["MM", "bias"], outputs=["Y"])
-        func = helper.make_function(
-            domain=domain,
-            fname=func_name,
-            inputs=["X", "W", "bias"],
-            outputs=["Y"],
-            nodes=[mm, add],
-            opset_imports=[opset_standard],
-            doc_string="Linear layer projection function",
-        )
+
+        lin_nodes = [n for n in model.graph.node if n.op_type == "Linear" and (n.domain == domain or not n.domain)]
+        has_biased = any(len(n.input) >= 3 and n.input[2] for n in lin_nodes)
+
+        if has_biased:
+            mm = helper.make_node("MatMul", inputs=["X", "W"], outputs=["MM"])
+            add = helper.make_node("Add", inputs=["MM", "bias"], outputs=["Y"])
+            func = helper.make_function(
+                domain=domain,
+                fname=func_name,
+                inputs=["X", "W", "bias"],
+                outputs=["Y"],
+                nodes=[mm, add],
+                opset_imports=[opset_standard],
+                doc_string="Linear layer projection function with bias",
+            )
+        else:
+            mm = helper.make_node("MatMul", inputs=["X", "W"], outputs=["Y"])
+            func = helper.make_function(
+                domain=domain,
+                fname=func_name,
+                inputs=["X", "W"],
+                outputs=["Y"],
+                nodes=[mm],
+                opset_imports=[opset_standard],
+                doc_string="Linear layer projection function (unbiased)",
+            )
         model.functions.append(func)
 
     # -------------------------------------------------------------------------
@@ -258,9 +280,7 @@ class MathCanonicalizer(Pass):
                                 outputs=[out_name],
                                 name=f"math_fold_{math_count}",
                                 value=numpy_helper.from_array(res, name=out_name),
-                            )
-                            new_const.attribute.append(
-                                helper.make_attribute("folded_expr", expr_str)
+                                doc_string=expr_str,
                             )
                             nodes_to_remove.add(node.name or out_name)
                             nodes_to_remove.add(out_name)
@@ -283,12 +303,11 @@ class MathCanonicalizer(Pass):
         if not nodes_to_remove:
             return model
 
-        kept_nodes = [
+        kept_nodes = list(new_nodes) + [
             n
             for n in graph.node
             if (n.name or (n.output[0] if n.output else "")) not in nodes_to_remove
         ]
-        kept_nodes.extend(new_nodes)
         del graph.node[:]
         graph.node.extend(kept_nodes)
 

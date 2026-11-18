@@ -62,6 +62,7 @@ class AxialSynthesizer(Pass):
         for n in graph.node:
             for inp in n.input:
                 consumer_map.setdefault(inp, []).append(n)
+        graph_outputs = {o.name for o in graph.output}
 
         constant_values: dict[str, np.ndarray] = {
             init.name: numpy_helper.to_array(init) for init in graph.initializer
@@ -171,7 +172,8 @@ class AxialSynthesizer(Pass):
                 new_route_nodes.append(new_route)
                 route_count += 1
 
-                nodes_to_remove.add(gather_node.name or gather_out)
+                if len(consumer_map.get(gather_out, [])) <= 1 and gather_out not in graph_outputs:
+                    nodes_to_remove.add(gather_node.name or gather_out)
                 nodes_to_remove.add(slice_node.name or final_out)
 
                 if ends_name and ends_name in node_by_output:
@@ -280,28 +282,36 @@ class AxialSynthesizer(Pass):
         graph.node.extend(surviving)
 
         if mode == "function_proto":
-            self._attach_unbind_function_def(model)
+            num_outputs = len(new_nodes[0].output) if new_nodes else 3
+            self._attach_unbind_function_def(model, num_outputs=num_outputs)
 
         log.info("Unbind Fusion: Fused %d Unbind instances", unbind_count)
         return ShapeCanonicalizer().apply_dead_code_elimination(model)
 
-    def _attach_unbind_function_def(self, model: onnx.ModelProto) -> None:
+    def _attach_unbind_function_def(self, model: onnx.ModelProto, num_outputs: int = 3) -> None:
         """Attach formal ONNX FunctionProto definition for Unbind."""
         func_name = "Unbind"
         domain = "custom.pytorch"
-        if any(f.name == func_name and f.domain == domain for f in model.functions):
+        if any(f.name == func_name and f.domain == domain and len(f.output) == num_outputs for f in model.functions):
             return
+        surviving = [f for f in model.functions if not (f.name == func_name and f.domain == domain)]
+        del model.functions[:]
+        model.functions.extend(surviving)
+
         opset_standard = helper.make_opsetid("", 14)
-        sp_node = helper.make_node("Split", inputs=["x"], outputs=["s0", "s1", "s2"], axis=0)
-        sq0 = helper.make_node("Squeeze", inputs=["s0"], outputs=["y0"])
-        sq1 = helper.make_node("Squeeze", inputs=["s1"], outputs=["y1"])
-        sq2 = helper.make_node("Squeeze", inputs=["s2"], outputs=["y2"])
+        s_outputs = [f"s{i}" for i in range(num_outputs)]
+        y_outputs = [f"y{i}" for i in range(num_outputs)]
+        sp_node = helper.make_node("Split", inputs=["x"], outputs=s_outputs, axis=0)
+        sq_nodes = [
+            helper.make_node("Squeeze", inputs=[s_outputs[i]], outputs=[y_outputs[i]])
+            for i in range(num_outputs)
+        ]
         unbind_func = helper.make_function(
             domain=domain,
             fname=func_name,
             inputs=["x"],
-            outputs=["y0", "y1", "y2"],
-            nodes=[sp_node, sq0, sq1, sq2],
+            outputs=y_outputs,
+            nodes=[sp_node] + sq_nodes,
             opset_imports=[opset_standard],
             doc_string="Unbind multi-head projections along axis",
         )

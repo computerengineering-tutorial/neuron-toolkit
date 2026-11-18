@@ -99,20 +99,24 @@ class NormCanonicalizer(Pass):
 
             # Convert scale and bias inits to 1D
             if scale_name in inits_dict:
-                scale_1d = inits_dict[scale_name].flatten()
                 scale_1d_name = f"{scale_name}_1d"
-                graph.initializer.append(
-                    numpy_helper.from_array(scale_1d, name=scale_1d_name)
-                )
+                if scale_1d_name not in inits_dict:
+                    scale_1d = inits_dict[scale_name].flatten()
+                    inits_dict[scale_1d_name] = scale_1d
+                    graph.initializer.append(
+                        numpy_helper.from_array(scale_1d, name=scale_1d_name)
+                    )
             else:
                 scale_1d_name = scale_name
 
             if bias_name in inits_dict:
-                bias_1d = inits_dict[bias_name].flatten()
                 bias_1d_name = f"{bias_name}_1d"
-                graph.initializer.append(
-                    numpy_helper.from_array(bias_1d, name=bias_1d_name)
-                )
+                if bias_1d_name not in inits_dict:
+                    bias_1d = inits_dict[bias_name].flatten()
+                    inits_dict[bias_1d_name] = bias_1d
+                    graph.initializer.append(
+                        numpy_helper.from_array(bias_1d, name=bias_1d_name)
+                    )
             else:
                 bias_1d_name = bias_name
 
@@ -181,9 +185,14 @@ class NormCanonicalizer(Pass):
         del graph.node[:]
         graph.node.extend(kept)
 
-        custom_domain = "custom.pytorch"
-        if not any(op.domain == custom_domain for op in model.opset_import):
-            model.opset_import.append(helper.make_opsetid(custom_domain, 1))
+        if mode == "modern_onnx":
+            for op in model.opset_import:
+                if op.domain in ("", "ai.onnx") and op.version < 21:
+                    op.version = 21
+        else:
+            custom_domain = "custom.pytorch"
+            if not any(op.domain == custom_domain for op in model.opset_import):
+                model.opset_import.append(helper.make_opsetid(custom_domain, 1))
 
         if mode == "function_proto":
             self._attach_groupnorm_function_def(model)
@@ -364,9 +373,14 @@ class NormCanonicalizer(Pass):
         del graph.node[:]
         graph.node.extend(surviving)
 
-        custom_domain = "custom.pytorch"
-        if not any(op.domain == custom_domain for op in model.opset_import):
-            model.opset_import.append(helper.make_opsetid(custom_domain, 1))
+        if mode == "modern_onnx":
+            for op in model.opset_import:
+                if op.domain in ("", "ai.onnx") and op.version < 23:
+                    op.version = 23
+        else:
+            custom_domain = "custom.pytorch"
+            if not any(op.domain == custom_domain for op in model.opset_import):
+                model.opset_import.append(helper.make_opsetid(custom_domain, 1))
 
         if mode == "function_proto":
             self._attach_rmsnorm_function_def(model)
@@ -483,6 +497,7 @@ class NormCanonicalizer(Pass):
                 inputs=[x, scale, bias],
                 outputs=[final_out],
                 name=f"layernorm_{count}",
+                domain="" if mode == "modern_onnx" else "custom.pytorch",
                 axis=-1,
                 epsilon=1e-5,
             )
@@ -497,9 +512,16 @@ class NormCanonicalizer(Pass):
         del graph.node[:]
         graph.node.extend(kept)
 
-        req_domain = "com.microsoft" if mode == "modern_onnx" else "custom.pytorch"
-        if not any(op.domain == req_domain for op in model.opset_import):
-            model.opset_import.append(helper.make_opsetid(req_domain, 1))
+        if mode == "modern_onnx":
+            for op in model.opset_import:
+                if op.domain in ("", "ai.onnx") and op.version < 17:
+                    op.version = 17
+        else:
+            req_domain = "custom.pytorch"
+            if not any(op.domain == req_domain for op in model.opset_import):
+                model.opset_import.append(helper.make_opsetid(req_domain, 1))
+            if mode == "function_proto":
+                self._attach_layernorm_function_def(model)
 
         return model
 
@@ -528,12 +550,13 @@ class NormCanonicalizer(Pass):
                     # Only fuse if Add is consumed solely by this norm and not an output
                     if len(consumer_map.get(add_node.output[0], [])) == 1 and add_node.output[0] not in graph_outputs:
                         res0, res1 = add_node.input[0], add_node.input[1]
-                        gamma = n.input[1]
+                        gamma = n.input[1] if len(n.input) > 1 else ""
                         out = n.output[0]
                         nodes_to_remove.update({add_node.name or add_node.output[0], n.name or n.output[0]})
+                        skip_inputs = [res0, res1, gamma] if gamma else [res0, res1]
                         skip_node = helper.make_node(
                             "SkipSimplifiedLayerNormalization",
-                            inputs=[res0, res1, gamma],
+                            inputs=skip_inputs,
                             outputs=[out],
                             name=f"skip_rmsnorm_{count}",
                             domain="com.microsoft" if mode == "modern_onnx" else "custom.pytorch",
@@ -546,13 +569,18 @@ class NormCanonicalizer(Pass):
                     add_node = node_by_output[x_in]
                     if len(consumer_map.get(add_node.output[0], [])) == 1 and add_node.output[0] not in graph_outputs:
                         res0, res1 = add_node.input[0], add_node.input[1]
-                        scale = n.input[1]
+                        scale = n.input[1] if len(n.input) > 1 else ""
                         bias = n.input[2] if len(n.input) > 2 else ""
                         out = n.output[0]
                         nodes_to_remove.update({add_node.name or add_node.output[0], n.name or n.output[0]})
+                        skip_inputs = [res0, res1]
+                        if scale:
+                            skip_inputs.append(scale)
+                            if bias:
+                                skip_inputs.append(bias)
                         skip_node = helper.make_node(
                             "SkipLayerNormalization",
-                            inputs=[res0, res1, scale, bias] if bias else [res0, res1, scale],
+                            inputs=skip_inputs,
                             outputs=[out],
                             name=f"skip_layernorm_{count}",
                             domain="com.microsoft" if mode == "modern_onnx" else "custom.pytorch",
@@ -572,4 +600,72 @@ class NormCanonicalizer(Pass):
         if not any(op.domain == req_domain for op in model.opset_import):
             model.opset_import.append(helper.make_opsetid(req_domain, 1))
 
+        if mode == "function_proto":
+            self._attach_skip_norm_function_def(model)
+
         return model
+
+    def _attach_layernorm_function_def(self, model: onnx.ModelProto) -> None:
+        """Attach formal ONNX FunctionProto definition for LayerNormalization."""
+        func_name = "LayerNormalization"
+        domain = "custom.pytorch"
+        if any(f.name == func_name and f.domain == domain for f in model.functions):
+            return
+        opset_standard = helper.make_opsetid("", 14)
+        rm_m = helper.make_node("ReduceMean", inputs=["x"], outputs=["mean_out"], axes=[-1], keepdims=1)
+        sub = helper.make_node("Sub", inputs=["x", "mean_out"], outputs=["sub_out"])
+        pow_n = helper.make_node("Pow", inputs=["sub_out", "two"], outputs=["pow_out"])
+        rm_v = helper.make_node("ReduceMean", inputs=["pow_out"], outputs=["var_out"], axes=[-1], keepdims=1)
+        add1 = helper.make_node("Add", inputs=["var_out", "eps"], outputs=["var_eps"])
+        sqrt = helper.make_node("Sqrt", inputs=["var_eps"], outputs=["std_out"])
+        div = helper.make_node("Div", inputs=["sub_out", "std_out"], outputs=["norm_out"])
+        mul = helper.make_node("Mul", inputs=["norm_out", "scale"], outputs=["scaled_out"])
+        add2 = helper.make_node("Add", inputs=["scaled_out", "bias"], outputs=["y"])
+        two_init = helper.make_node("Constant", inputs=[], outputs=["two"], value=helper.make_tensor("two", onnx.TensorProto.FLOAT, [], [2.0]))
+        eps_init = helper.make_node("Constant", inputs=[], outputs=["eps"], value=helper.make_tensor("eps", onnx.TensorProto.FLOAT, [], [1e-5]))
+        ln_func = helper.make_function(
+            domain=domain,
+            fname=func_name,
+            inputs=["x", "scale", "bias"],
+            outputs=["y"],
+            nodes=[two_init, eps_init, rm_m, sub, pow_n, rm_v, add1, sqrt, div, mul, add2],
+            opset_imports=[opset_standard],
+            doc_string="LayerNormalization custom function",
+        )
+        model.functions.append(ln_func)
+
+    def _attach_skip_norm_function_def(self, model: onnx.ModelProto) -> None:
+        """Attach formal ONNX FunctionProto definition for SkipNorm variants."""
+        domain = "custom.pytorch"
+        opset_standard = helper.make_opsetid("", 14)
+        opset_custom = helper.make_opsetid("custom.pytorch", 1)
+
+        if not any(f.name == "SkipSimplifiedLayerNormalization" and f.domain == domain for f in model.functions):
+            add_n = helper.make_node("Add", inputs=["x1", "x2"], outputs=["res"])
+            norm_n = helper.make_node("RMSNorm", inputs=["res", "gamma"], outputs=["y"], domain=domain)
+            func_rms = helper.make_function(
+                domain=domain,
+                fname="SkipSimplifiedLayerNormalization",
+                inputs=["x1", "x2", "gamma"],
+                outputs=["y"],
+                nodes=[add_n, norm_n],
+                opset_imports=[opset_standard, opset_custom],
+                doc_string="SkipSimplifiedLayerNormalization function",
+            )
+            model.functions.append(func_rms)
+            self._attach_rmsnorm_function_def(model)
+
+        if not any(f.name == "SkipLayerNormalization" and f.domain == domain for f in model.functions):
+            add_n = helper.make_node("Add", inputs=["x1", "x2"], outputs=["res"])
+            ln_n = helper.make_node("LayerNormalization", inputs=["res", "scale", "bias"], outputs=["y"], domain=domain)
+            func_ln = helper.make_function(
+                domain=domain,
+                fname="SkipLayerNormalization",
+                inputs=["x1", "x2", "scale", "bias"],
+                outputs=["y"],
+                nodes=[add_n, ln_n],
+                opset_imports=[opset_standard, opset_custom],
+                doc_string="SkipLayerNormalization function",
+            )
+            model.functions.append(func_ln)
+            self._attach_layernorm_function_def(model)

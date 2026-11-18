@@ -104,6 +104,7 @@ class MacroBlockSynthesizer(CompilerPass):
                         norm_op=norm_node.op_type if has_norm else None,
                         has_norm=has_norm,
                         fingerprint=fp,
+                        num_inputs=len(inputs),
                     )
 
         if not new_nodes:
@@ -124,6 +125,7 @@ class MacroBlockSynthesizer(CompilerPass):
         norm_op: str | None,
         has_norm: int,
         fingerprint: str,
+        num_inputs: int = 5,
     ) -> None:
         """Attach formal, content-hashed ONNX FunctionProto definition with exact inner activation and norm."""
         if any(f.name == fname and f.domain == "custom.pytorch" for f in model.functions):
@@ -131,18 +133,38 @@ class MacroBlockSynthesizer(CompilerPass):
 
         opset_standard = helper.make_opsetid("", 14)
         if has_norm and norm_op:
-            ln_node = helper.make_node(norm_op, inputs=["x", "gamma", "beta"], outputs=["norm_out"])
-            lin_node = helper.make_node("MatMul", inputs=["norm_out", "w"], outputs=["mm_out"])
-            add_node = helper.make_node("Add", inputs=["mm_out", "b"], outputs=["lin_out"])
-            act_node = helper.make_node(act_name, inputs=["lin_out"], outputs=["y"])
-            body_nodes = [ln_node, lin_node, add_node, act_node]
-            formal_inputs = ["x", "gamma", "beta", "w", "b"]
+            if num_inputs == 3:
+                ln_node = helper.make_node(norm_op, inputs=["x", "gamma"], outputs=["norm_out"])
+                lin_node = helper.make_node("MatMul", inputs=["norm_out", "w"], outputs=["lin_out"])
+                act_node = helper.make_node(act_name, inputs=["lin_out"], outputs=["y"])
+                body_nodes = [ln_node, lin_node, act_node]
+                formal_inputs = ["x", "gamma", "w"]
+            elif num_inputs == 4:
+                ln_node = helper.make_node(norm_op, inputs=["x", "gamma"], outputs=["norm_out"])
+                lin_node = helper.make_node("MatMul", inputs=["norm_out", "w"], outputs=["mm_out"])
+                add_node = helper.make_node("Add", inputs=["mm_out", "b"], outputs=["lin_out"])
+                act_node = helper.make_node(act_name, inputs=["lin_out"], outputs=["y"])
+                body_nodes = [ln_node, lin_node, add_node, act_node]
+                formal_inputs = ["x", "gamma", "w", "b"]
+            else:
+                ln_node = helper.make_node(norm_op, inputs=["x", "gamma", "beta"], outputs=["norm_out"])
+                lin_node = helper.make_node("MatMul", inputs=["norm_out", "w"], outputs=["mm_out"])
+                add_node = helper.make_node("Add", inputs=["mm_out", "b"], outputs=["lin_out"])
+                act_node = helper.make_node(act_name, inputs=["lin_out"], outputs=["y"])
+                body_nodes = [ln_node, lin_node, add_node, act_node]
+                formal_inputs = ["x", "gamma", "beta", "w", "b"]
         else:
-            lin_node = helper.make_node("MatMul", inputs=["x", "w"], outputs=["mm_out"])
-            add_node = helper.make_node("Add", inputs=["mm_out", "b"], outputs=["lin_out"])
-            act_node = helper.make_node(act_name, inputs=["lin_out"], outputs=["y"])
-            body_nodes = [lin_node, add_node, act_node]
-            formal_inputs = ["x", "w", "b"]
+            if num_inputs == 2:
+                lin_node = helper.make_node("MatMul", inputs=["x", "w"], outputs=["lin_out"])
+                act_node = helper.make_node(act_name, inputs=["lin_out"], outputs=["y"])
+                body_nodes = [lin_node, act_node]
+                formal_inputs = ["x", "w"]
+            else:
+                lin_node = helper.make_node("MatMul", inputs=["x", "w"], outputs=["mm_out"])
+                add_node = helper.make_node("Add", inputs=["mm_out", "b"], outputs=["lin_out"])
+                act_node = helper.make_node(act_name, inputs=["lin_out"], outputs=["y"])
+                body_nodes = [lin_node, add_node, act_node]
+                formal_inputs = ["x", "w", "b"]
 
         ensure_specialized_function_proto(
             model=model,
@@ -170,28 +192,37 @@ class MacroBlockSynthesizer(CompilerPass):
 
         for n in graph.node:
             if n.op_type == "Mul" and len(n.input) == 2:
-                # One branch should be the gate (Linear output), one is the pass-through
-                lin_cand = node_by_output.get(n.input[0]) or node_by_output.get(n.input[1])
-                other_inp = n.input[1] if lin_cand and lin_cand.output[0] == n.input[0] else n.input[0]
+                in0_node = node_by_output.get(n.input[0])
+                in1_node = node_by_output.get(n.input[1])
+                lin_cand = None
+                other_inp = None
+                if in0_node and in0_node.op_type in ("Linear", "MatMul"):
+                    lin_cand = in0_node
+                    other_inp = n.input[1]
+                elif in1_node and in1_node.op_type in ("Linear", "MatMul"):
+                    lin_cand = in1_node
+                    other_inp = n.input[0]
 
-                if lin_cand and lin_cand.op_type in ("Linear", "MatMul"):
+                if lin_cand:
                     norm_cand = node_by_output.get(lin_cand.input[0])
                     # Check if norm_cand and other_inp trace to the same Split node
                     split_cand = None
-                    if norm_cand and norm_cand.op_type in ("LayerNormalization", "RMSNorm"):
+                    if norm_cand and norm_cand.op_type in ("LayerNormalization", "RMSNorm", "SimplifiedLayerNormalization"):
                         split_cand = node_by_output.get(norm_cand.input[0])
                     else:
                         split_cand = node_by_output.get(lin_cand.input[0])
 
                     other_split = node_by_output.get(other_inp)
-                    if split_cand and other_split and split_cand.name == other_split.name and split_cand.op_type in ("Split", "SplitQKV"):
+                    if split_cand and other_split and (split_cand.name == other_split.name or split_cand == other_split) and split_cand.op_type in ("Split", "SplitQKV"):
                         nodes_to_drop.update({n.name, lin_cand.name, split_cand.name})
+                        norm_inputs = []
                         if norm_cand:
                             nodes_to_drop.add(norm_cand.name)
+                            norm_inputs = list(norm_cand.input[1:])
 
                         sgu_node = helper.make_node(
                             "SpatialGatingUnit",
-                            inputs=[split_cand.input[0]] + list(lin_cand.input[1:]),
+                            inputs=[split_cand.input[0]] + norm_inputs + list(lin_cand.input[1:]),
                             outputs=[n.output[0]],
                             name=f"{n.name}_fused_sgu",
                             domain="custom.pytorch",
@@ -218,16 +249,43 @@ class MacroBlockSynthesizer(CompilerPass):
         if any(f.name == func_name and f.domain == domain for f in model.functions):
             return
         opset_standard = helper.make_opsetid("", 14)
+
+        sgu_nodes = [n for n in model.graph.node if n.op_type == func_name and (n.domain == domain or not n.domain)]
+        max_inputs = max([len(n.input) for n in sgu_nodes], default=2)
+
         sp_node = helper.make_node("Split", inputs=["x"], outputs=["u", "v"], axis=-1)
-        ln_node = helper.make_node("LayerNormalization", inputs=["v"], outputs=["v_norm"])
-        mm_node = helper.make_node("MatMul", inputs=["v_norm", "w"], outputs=["gate"])
+        if max_inputs == 2:
+            formal_inputs = ["x", "w"]
+            ln_node = helper.make_node("LayerNormalization", inputs=["v"], outputs=["v_norm"])
+            mm_node = helper.make_node("MatMul", inputs=["v_norm", "w"], outputs=["gate"])
+            body_nodes = [sp_node, ln_node, mm_node]
+        elif max_inputs == 3:
+            formal_inputs = ["x", "gamma", "w"]
+            ln_node = helper.make_node("LayerNormalization", inputs=["v", "gamma"], outputs=["v_norm"])
+            mm_node = helper.make_node("MatMul", inputs=["v_norm", "w"], outputs=["gate"])
+            body_nodes = [sp_node, ln_node, mm_node]
+        elif max_inputs == 4:
+            formal_inputs = ["x", "gamma", "w", "b"]
+            ln_node = helper.make_node("LayerNormalization", inputs=["v", "gamma"], outputs=["v_norm"])
+            mm_node = helper.make_node("MatMul", inputs=["v_norm", "w"], outputs=["mm"])
+            add_node = helper.make_node("Add", inputs=["mm", "b"], outputs=["gate"])
+            body_nodes = [sp_node, ln_node, mm_node, add_node]
+        else:
+            formal_inputs = ["x", "gamma", "beta", "w", "b"]
+            ln_node = helper.make_node("LayerNormalization", inputs=["v", "gamma", "beta"], outputs=["v_norm"])
+            mm_node = helper.make_node("MatMul", inputs=["v_norm", "w"], outputs=["mm"])
+            add_node = helper.make_node("Add", inputs=["mm", "b"], outputs=["gate"])
+            body_nodes = [sp_node, ln_node, mm_node, add_node]
+
         mul_node = helper.make_node("Mul", inputs=["u", "gate"], outputs=["y"])
+        body_nodes.append(mul_node)
+
         func = helper.make_function(
             domain=domain,
             fname=func_name,
-            inputs=["x", "w"],
+            inputs=formal_inputs,
             outputs=["y"],
-            nodes=[sp_node, ln_node, mm_node, mul_node],
+            nodes=body_nodes,
             opset_imports=[opset_standard],
             doc_string="Spatial Gating Unit (gMLP)",
         )
@@ -261,10 +319,11 @@ class MacroBlockSynthesizer(CompilerPass):
                 if gated_cand and carry_mul and carry_mul.op_type == "Mul":
                     sub_cand = node_by_output.get(carry_mul.input[0]) or node_by_output.get(carry_mul.input[1])
                     if sub_cand and sub_cand.op_type == "Sub":
+                        carry_x = carry_mul.input[1] if sub_cand.output[0] == carry_mul.input[0] else carry_mul.input[0]
                         nodes_to_drop.update({n.name, gated_cand.name, carry_mul.name, sub_cand.name})
                         hw_node = helper.make_node(
                             "HighwayBlock",
-                            inputs=[gated_cand.input[0], gated_cand.input[1]],
+                            inputs=[gated_cand.input[0], gated_cand.input[1], carry_x],
                             outputs=[n.output[0]],
                             name=f"{n.name}_fused_highway",
                             domain="custom.pytorch",
@@ -371,9 +430,11 @@ class MacroBlockSynthesizer(CompilerPass):
             return
         opset_standard = helper.make_opsetid("", 14)
         pool = helper.make_node("GlobalAveragePool", inputs=["x"], outputs=["pooled"])
-        fc1 = helper.make_node("Conv", inputs=["pooled", "w1", "b1"], outputs=["fc1_out"])
+        fc1_mm = helper.make_node("MatMul", inputs=["pooled", "w1"], outputs=["fc1_mm"])
+        fc1 = helper.make_node("Add", inputs=["fc1_mm", "b1"], outputs=["fc1_out"])
         relu = helper.make_node("Relu", inputs=["fc1_out"], outputs=["act_out"])
-        fc2 = helper.make_node("Conv", inputs=["act_out", "w2", "b2"], outputs=["fc2_out"])
+        fc2_mm = helper.make_node("MatMul", inputs=["act_out", "w2"], outputs=["fc2_mm"])
+        fc2 = helper.make_node("Add", inputs=["fc2_mm", "b2"], outputs=["fc2_out"])
         sig = helper.make_node("Sigmoid", inputs=["fc2_out"], outputs=["scale"])
         mul = helper.make_node("Mul", inputs=["x", "scale"], outputs=["y"])
         func = helper.make_function(
@@ -381,7 +442,7 @@ class MacroBlockSynthesizer(CompilerPass):
             fname=func_name,
             inputs=["x", "w1", "b1", "w2", "b2"],
             outputs=["y"],
-            nodes=[pool, fc1, relu, fc2, sig, mul],
+            nodes=[pool, fc1_mm, fc1, relu, fc2_mm, fc2, sig, mul],
             opset_imports=[opset_standard],
             doc_string="Squeeze-and-Excitation channel gating",
         )
@@ -431,5 +492,33 @@ class MacroBlockSynthesizer(CompilerPass):
         del graph.node[:]
         graph.node.extend(kept)
 
+        if mode == "function_proto":
+            self._attach_mha_composite_function_def(model)
+
         log.info("MultiHeadAttention Composite Fusion: Fused %d blocks", count)
         return ShapeCanonicalizer().apply_dead_code_elimination(model)
+
+    def _attach_mha_composite_function_def(self, model: onnx.ModelProto) -> None:
+        """Attach formal ONNX FunctionProto definition for MultiHeadAttention."""
+        func_name = "MultiHeadAttention"
+        domain = "custom.pytorch"
+        if any(f.name == func_name and f.domain == domain for f in model.functions):
+            return
+        opset_standard = helper.make_opsetid("", 14)
+        opset_custom = helper.make_opsetid("custom.pytorch", 1)
+
+        sp = helper.make_node("SplitQKV", inputs=["x"], outputs=["q", "k", "v"], domain=domain)
+        sdpa = helper.make_node("ScaledDotProductAttention", inputs=["q", "k", "v"], outputs=["attn_out"], domain=domain)
+        mh = helper.make_node("MergeHeads", inputs=["attn_out"], outputs=["merged"], domain=domain)
+        lin = helper.make_node("Linear", inputs=["merged", "w_out"], outputs=["y"], domain=domain)
+
+        func = helper.make_function(
+            domain=domain,
+            fname=func_name,
+            inputs=["x", "w_out"],
+            outputs=["y"],
+            nodes=[sp, sdpa, mh, lin],
+            opset_imports=[opset_standard, opset_custom],
+            doc_string="Multi-Head Attention composite block",
+        )
+        model.functions.append(func)

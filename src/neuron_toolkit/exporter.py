@@ -104,22 +104,22 @@ def compute_weight_stats(tensor: Any) -> dict[str, Any]:
             has_nan = False
             has_inf = False
             t_sum = float(np.sum(arr, dtype=np.float64))
-            t_mean = float(np.mean(arr, dtype=np.float64))
+            t_mean = float(t_sum / numel) if numel > 0 else 0.0
             t_min = float(arr.min())
             t_max = float(arr.max())
             t_std = float(arr.std(dtype=np.float64))
         else:
             # Floating-point path: fast reduction without array copy
             with np.errstate(all="ignore"):
-                t_sum = float(np.sum(arr, dtype=np.float64))
                 t_min = float(arr.min())
                 t_max = float(arr.max())
 
-                # Fast check for NaN/Inf: if all scalar stats are finite, no NaN/Inf exist
-                if np.isfinite(t_sum) and np.isfinite(t_min) and np.isfinite(t_max):
+                # Fast check for NaN/Inf: if min and max are finite, no NaN/Inf exist
+                if np.isfinite(t_min) and np.isfinite(t_max):
                     has_nan = False
                     has_inf = False
-                    t_mean = float(np.mean(arr, dtype=np.float64))
+                    t_sum = float(np.sum(arr, dtype=np.float64))
+                    t_mean = float(t_sum / numel) if numel > 0 else 0.0
                     t_std = float(arr.std(dtype=np.float64))
                 else:
                     has_nan = bool(np.isnan(arr).any())
@@ -129,7 +129,7 @@ def compute_weight_stats(tensor: Any) -> dict[str, Any]:
                     if finite_mask.any():
                         finite_arr = arr[finite_mask]
                         t_sum = float(np.sum(finite_arr, dtype=np.float64))
-                        t_mean = float(np.mean(finite_arr, dtype=np.float64))
+                        t_mean = float(t_sum / finite_arr.size)
                         t_min = float(finite_arr.min())
                         t_max = float(finite_arr.max())
                         t_std = float(finite_arr.std(dtype=np.float64))

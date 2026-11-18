@@ -1,6 +1,24 @@
 """Property-based testing with Hypothesis verifying graph invariants."""
 
-from hypothesis import given, settings, strategies as st
+import pytest
+
+try:
+    from hypothesis import given, settings, strategies as st
+except ImportError:
+    pytestmark = pytest.mark.skip(reason="hypothesis is not installed")
+
+    def given(*args, **kwargs):
+        return lambda f: f
+
+    def settings(*args, **kwargs):
+        return lambda f: f
+
+    class _DummySt:
+        def __getattr__(self, name):
+            return lambda *args, **kwargs: None
+
+    st = _DummySt()
+
 from onnx import TensorProto, helper
 
 from neuron_toolkit.graph import NeuronGraph

@@ -88,3 +88,28 @@ class PassManager:
 
         stats.final_nodes = len(curr_graph.nodes)
         return curr_graph, stats
+
+    def run_until_fixed_point(
+        self, graph: NeuronGraph, max_iterations: int = 10
+    ) -> tuple[NeuronGraph, PassStats]:
+        """Execute registered passes iteratively until graph node count stabilizes."""
+        stats = PassStats(initial_nodes=len(graph.nodes))
+        curr_graph = graph
+
+        for iteration in range(max_iterations):
+            prev_node_count = len(curr_graph.nodes)
+            iter_changed = False
+            for p in self.passes:
+                before_nodes = len(curr_graph.nodes)
+                curr_graph, p_stats = p.run(curr_graph)
+                p_stats["pass_name"] = f"{p.name}_iter{iteration}"
+                stats.pass_results.append(p_stats)
+                if len(curr_graph.nodes) != before_nodes:
+                    iter_changed = True
+
+            # Early exit if passes reached a fixed point
+            if not iter_changed and len(curr_graph.nodes) == prev_node_count:
+                break
+
+        stats.final_nodes = len(curr_graph.nodes)
+        return curr_graph, stats

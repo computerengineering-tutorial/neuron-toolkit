@@ -19,6 +19,11 @@ import numpy as np
 import onnx
 from onnx import helper, numpy_helper
 
+try:
+    from onnx.reference import ReferenceEvaluator
+except ImportError:
+    ReferenceEvaluator = None
+
 from neuron_toolkit.compiler.base import CompilerContext, Pass
 from neuron_toolkit.compiler.passes.canonicalization.shape_canonicalizer import (
     ShapeCanonicalizer,
@@ -80,20 +85,34 @@ class StaticFolder(Pass):
         rewired_outputs: dict[str, str] = {}
         for sn in scatter_nodes:
             data_name = sn.input[0]
-            # Resolve data_name through previous rewires if chained
+            indices_name = sn.input[1]
+            updates_name = sn.input[2]
+            # Resolve through previous rewires if chained
             while data_name in rewired_outputs:
                 data_name = rewired_outputs[data_name]
+            while indices_name in rewired_outputs:
+                indices_name = rewired_outputs[indices_name]
+            while updates_name in rewired_outputs:
+                updates_name = rewired_outputs[updates_name]
 
-            if data_name not in init_arrays:
+            if data_name not in init_arrays or indices_name not in init_arrays or updates_name not in init_arrays:
                 continue
 
             data_arr = init_arrays[data_name]
-            out_name = sn.output[0]
+            indices_arr = init_arrays[indices_name]
+            updates_arr = init_arrays[updates_name]
 
-            # In transformer RoPE position caches, data is an [S, D] frequency grid.
+            try:
+                idx_tuple = tuple(indices_arr[..., i] for i in range(indices_arr.shape[-1]))
+                target_slice = data_arr[idx_tuple]
+                if not np.array_equal(target_slice, updates_arr):
+                    continue
+            except Exception:
+                continue
+
+            out_name = sn.output[0]
             # When ScatterND updates data with matching frequencies or self-identity,
             # consumers (RotaryEmbedding, Slice) slice up to seq_len.
-            # Check if this ScatterND is a self-buffering cache update:
             rewired_outputs[out_name] = data_name
             log.info(
                 "Identity ScatterND Fold: Rewired %r -> %r (shape=%s)",
@@ -172,6 +191,74 @@ class StaticFolder(Pass):
 
         if not foldable_nodes:
             return model
+
+        # Collect static array values for initializers and constants
+        static_values: dict[str, np.ndarray] = {
+            i.name: numpy_helper.to_array(i) for i in graph.initializer
+        }
+        for n in graph.node:
+            if n.op_type == "Constant":
+                for attr in n.attribute:
+                    if attr.name == "value" and n.output:
+                        try:
+                            static_values[n.output[0]] = numpy_helper.to_array(attr.t)
+                        except Exception:
+                            pass
+
+        folded_nodes_set: set[int] = set()
+        for n in foldable_nodes:
+            if not n.input or not all(inp in static_values for inp in n.input if inp):
+                continue
+            try:
+                # Try evaluating via ReferenceEvaluator
+                sub_inputs = [
+                    helper.make_tensor_value_info(
+                        inp,
+                        onnx.mapping.NP_TYPE_TO_TENSOR_TYPE[static_values[inp].dtype],
+                        static_values[inp].shape,
+                    )
+                    for inp in n.input
+                    if inp
+                ]
+                sub_outputs = [
+                    helper.make_tensor_value_info(out, onnx.TensorProto.FLOAT, None)
+                    for out in n.output
+                    if out
+                ]
+                sub_graph = helper.make_graph([n], "sub", sub_inputs, sub_outputs)
+                sub_model = helper.make_model(sub_graph, opset_imports=model.opset_import)
+                sess = ReferenceEvaluator(sub_model)
+                in_tensors = {inp: static_values[inp] for inp in n.input if inp}
+                res = sess.run(None, in_tensors)
+                for out_name, out_arr in zip(n.output, res):
+                    if out_name:
+                        static_values[out_name] = out_arr
+                        graph.initializer.append(numpy_helper.from_array(out_arr, name=out_name))
+                folded_nodes_set.add(id(n))
+            except Exception:
+                # Fallback to direct numpy arithmetic for basic ops
+                try:
+                    if n.op_type == "Add" and len(n.input) == 2:
+                        val = static_values[n.input[0]] + static_values[n.input[1]]
+                    elif n.op_type == "Sub" and len(n.input) == 2:
+                        val = static_values[n.input[0]] - static_values[n.input[1]]
+                    elif n.op_type == "Mul" and len(n.input) == 2:
+                        val = static_values[n.input[0]] * static_values[n.input[1]]
+                    elif n.op_type == "Div" and len(n.input) == 2:
+                        val = static_values[n.input[0]] / static_values[n.input[1]]
+                    else:
+                        continue
+                    out_name = n.output[0]
+                    static_values[out_name] = val
+                    graph.initializer.append(numpy_helper.from_array(val, name=out_name))
+                    folded_nodes_set.add(id(n))
+                except Exception:
+                    pass
+
+        if folded_nodes_set:
+            remaining_nodes = [n for n in graph.node if id(n) not in folded_nodes_set]
+            del graph.node[:]
+            graph.node.extend(remaining_nodes)
 
         # Prune via DCE after folding constants
         shape_pass = ShapeCanonicalizer()

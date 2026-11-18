@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import importlib.util
 import pytest
+
+if importlib.util.find_spec("pytest_benchmark") is None:
+    pytestmark = pytest.mark.skip(reason="pytest-benchmark is not installed")
 
 from neuron_toolkit import NeuronGraph
 from neuron_toolkit.passes import (

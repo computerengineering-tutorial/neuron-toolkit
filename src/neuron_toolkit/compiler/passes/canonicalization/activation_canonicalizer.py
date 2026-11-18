@@ -407,7 +407,74 @@ class ActivationCanonicalizer(Pass):
         kept.extend(fused_nodes)
         del graph.node[:]
         graph.node.extend(kept)
+
+        if mode == "function_proto":
+            self._attach_tanh_gelu_function_def(model)
+
         return model
+
+    def _attach_tanh_gelu_function_def(self, model: onnx.ModelProto) -> None:
+        """Attach formal ONNX FunctionProto definition for Gelu with Tanh approximation."""
+        domain = "custom.pytorch"
+        opset_standard = helper.make_opsetid("", 14)
+        custom_domain = "custom.pytorch"
+        if not any(op.domain == custom_domain for op in model.opset_import):
+            model.opset_import.append(helper.make_opsetid(custom_domain, 1))
+
+        # Check if a tanh-specific function or Gelu function already exists with Tanh
+        if any("Gelu" in f.name and f.domain == domain and any(n.op_type == "Tanh" for n in f.node) for f in model.functions):
+            return
+
+        c_sqrt = helper.make_node(
+            "Constant",
+            inputs=[],
+            outputs=["c_sqrt"],
+            value=helper.make_tensor("c_sqrt_t", onnx.TensorProto.FLOAT, [1], [0.79788456]),
+        )
+        c_coeff = helper.make_node(
+            "Constant",
+            inputs=[],
+            outputs=["c_coeff"],
+            value=helper.make_tensor("c_coeff_t", onnx.TensorProto.FLOAT, [1], [0.044715]),
+        )
+        c_three = helper.make_node(
+            "Constant",
+            inputs=[],
+            outputs=["c_three"],
+            value=helper.make_tensor("c_three_t", onnx.TensorProto.FLOAT, [1], [3.0]),
+        )
+        c_one = helper.make_node(
+            "Constant",
+            inputs=[],
+            outputs=["c_one"],
+            value=helper.make_tensor("c_one_t", onnx.TensorProto.FLOAT, [1], [1.0]),
+        )
+        c_half = helper.make_node(
+            "Constant",
+            inputs=[],
+            outputs=["c_half"],
+            value=helper.make_tensor("c_half_t", onnx.TensorProto.FLOAT, [1], [0.5]),
+        )
+        pow3 = helper.make_node("Pow", inputs=["x", "c_three"], outputs=["x_cubed"])
+        mul_c = helper.make_node("Mul", inputs=["x_cubed", "c_coeff"], outputs=["mul_c_out"])
+        add_x = helper.make_node("Add", inputs=["x", "mul_c_out"], outputs=["add_x_out"])
+        mul_sqrt = helper.make_node("Mul", inputs=["add_x_out", "c_sqrt"], outputs=["mul_sqrt_out"])
+        tanh_n = helper.make_node("Tanh", inputs=["mul_sqrt_out"], outputs=["tanh_out"])
+        add1 = helper.make_node("Add", inputs=["tanh_out", "c_one"], outputs=["add1_out"])
+        mul_x = helper.make_node("Mul", inputs=["x", "add1_out"], outputs=["mul_x_out"])
+        mul_h = helper.make_node("Mul", inputs=["mul_x_out", "c_half"], outputs=["y"])
+
+        fname = "Gelu" if not any(f.name == "Gelu" and f.domain == domain for f in model.functions) else "Gelu_tanh"
+        func = helper.make_function(
+            domain=domain,
+            fname=fname,
+            inputs=["x"],
+            outputs=["y"],
+            nodes=[c_sqrt, c_coeff, c_three, c_one, c_half, pow3, mul_c, add_x, mul_sqrt, tanh_n, add1, mul_x, mul_h],
+            opset_imports=[opset_standard],
+            doc_string="Formal FunctionProto definition of Tanh-approximated GELU",
+        )
+        model.functions.append(func)
 
     # -------------------------------------------------------------------------
     # SiLU / Swish Fusion
@@ -462,6 +529,14 @@ class ActivationCanonicalizer(Pass):
         kept.extend(new_nodes)
         del graph.node[:]
         graph.node.extend(kept)
+
+        custom_domain = "custom.pytorch"
+        if mode != "modern_onnx":
+            if not any(op.domain == custom_domain for op in model.opset_import):
+                model.opset_import.append(helper.make_opsetid(custom_domain, 1))
+            if mode == "function_proto":
+                self._attach_silu_function_def(model)
+
         return model
 
     # -------------------------------------------------------------------------
@@ -530,6 +605,14 @@ class ActivationCanonicalizer(Pass):
         kept.extend(new_nodes)
         del graph.node[:]
         graph.node.extend(kept)
+
+        custom_domain = "custom.pytorch"
+        if mode != "modern_onnx":
+            if not any(op.domain == custom_domain for op in model.opset_import):
+                model.opset_import.append(helper.make_opsetid(custom_domain, 1))
+            if mode == "function_proto":
+                self._attach_hardswish_function_def(model)
+
         return model
 
     # -------------------------------------------------------------------------
@@ -573,6 +656,15 @@ class ActivationCanonicalizer(Pass):
                         del n.input[1:]
                     if mode != "modern_onnx":
                         n.domain = "custom.pytorch"
+
+        if mode != "modern_onnx":
+            custom_domain = "custom.pytorch"
+            if any(n.op_type == "Relu6" and n.domain == custom_domain for n in graph.node):
+                if not any(op.domain == custom_domain for op in model.opset_import):
+                    model.opset_import.append(helper.make_opsetid(custom_domain, 1))
+                if mode == "function_proto":
+                    self._attach_relu6_function_def(model)
+
         return model
 
     # -------------------------------------------------------------------------
@@ -630,6 +722,14 @@ class ActivationCanonicalizer(Pass):
         kept.extend(new_nodes)
         del graph.node[:]
         graph.node.extend(kept)
+
+        custom_domain = "custom.pytorch"
+        if mode != "modern_onnx":
+            if not any(op.domain == custom_domain for op in model.opset_import):
+                model.opset_import.append(helper.make_opsetid(custom_domain, 1))
+            if mode == "function_proto":
+                self._attach_mish_function_def(model)
+
         return model
 
     # -------------------------------------------------------------------------
@@ -671,6 +771,27 @@ class ActivationCanonicalizer(Pass):
             for attr in sum_node.attribute:
                 if attr.name == "axes" and attr.ints:
                     axis = attr.ints[-1]
+            if len(sum_node.input) > 1:
+                axes_name = sum_node.input[1]
+                init_map = {i.name: i for i in graph.initializer}
+                if axes_name in init_map:
+                    try:
+                        arr = numpy_helper.to_array(init_map[axes_name])
+                        if arr.size > 0:
+                            axis = int(arr.flat[-1])
+                    except Exception:
+                        pass
+                else:
+                    cand_const = node_by_output.get(axes_name)
+                    if cand_const and cand_const.op_type == "Constant":
+                        for a in cand_const.attribute:
+                            if a.name == "value":
+                                try:
+                                    arr = numpy_helper.to_array(a.t)
+                                    if arr.size > 0:
+                                        axis = int(arr.flat[-1])
+                                except Exception:
+                                    pass
 
             # Case A: Shifted softmax with ReduceMax -> Sub
             exp_in = exp_node.input[0]
@@ -718,3 +839,85 @@ class ActivationCanonicalizer(Pass):
         graph.node.extend(kept)
         log.info("Softmax Canonicalization: Fused %d decomposed Softmax instances", count)
         return model
+
+    def _attach_silu_function_def(self, model: onnx.ModelProto) -> None:
+        """Attach formal ONNX FunctionProto definition for SiLU."""
+        func_name = "SiLU"
+        domain = "custom.pytorch"
+        if any(f.name == func_name and f.domain == domain for f in model.functions):
+            return
+        opset_standard = helper.make_opsetid("", 14)
+        sig = helper.make_node("Sigmoid", inputs=["x"], outputs=["sig_out"])
+        mul = helper.make_node("Mul", inputs=["x", "sig_out"], outputs=["y"])
+        func = helper.make_function(
+            domain=domain,
+            fname=func_name,
+            inputs=["x"],
+            outputs=["y"],
+            nodes=[sig, mul],
+            opset_imports=[opset_standard],
+            doc_string="SiLU activation function (x * sigmoid(x))",
+        )
+        model.functions.append(func)
+
+    def _attach_hardswish_function_def(self, model: onnx.ModelProto) -> None:
+        """Attach formal ONNX FunctionProto definition for HardSwish."""
+        func_name = "HardSwish"
+        domain = "custom.pytorch"
+        if any(f.name == func_name and f.domain == domain for f in model.functions):
+            return
+        opset_standard = helper.make_opsetid("", 14)
+        hsig = helper.make_node("HardSigmoid", inputs=["x"], outputs=["hsig_out"], alpha=1.0 / 6.0, beta=0.5)
+        mul = helper.make_node("Mul", inputs=["x", "hsig_out"], outputs=["y"])
+        func = helper.make_function(
+            domain=domain,
+            fname=func_name,
+            inputs=["x"],
+            outputs=["y"],
+            nodes=[hsig, mul],
+            opset_imports=[opset_standard],
+            doc_string="HardSwish activation function",
+        )
+        model.functions.append(func)
+
+    def _attach_relu6_function_def(self, model: onnx.ModelProto) -> None:
+        """Attach formal ONNX FunctionProto definition for Relu6."""
+        func_name = "Relu6"
+        domain = "custom.pytorch"
+        if any(f.name == func_name and f.domain == domain for f in model.functions):
+            return
+        opset_standard = helper.make_opsetid("", 14)
+        zero = helper.make_node("Constant", inputs=[], outputs=["zero"], value=helper.make_tensor("zero", onnx.TensorProto.FLOAT, [], [0.0]))
+        six = helper.make_node("Constant", inputs=[], outputs=["six"], value=helper.make_tensor("six", onnx.TensorProto.FLOAT, [], [6.0]))
+        clip = helper.make_node("Clip", inputs=["x", "zero", "six"], outputs=["y"])
+        func = helper.make_function(
+            domain=domain,
+            fname=func_name,
+            inputs=["x"],
+            outputs=["y"],
+            nodes=[zero, six, clip],
+            opset_imports=[opset_standard],
+            doc_string="Relu6 activation function",
+        )
+        model.functions.append(func)
+
+    def _attach_mish_function_def(self, model: onnx.ModelProto) -> None:
+        """Attach formal ONNX FunctionProto definition for Mish."""
+        func_name = "Mish"
+        domain = "custom.pytorch"
+        if any(f.name == func_name and f.domain == domain for f in model.functions):
+            return
+        opset_standard = helper.make_opsetid("", 14)
+        sp = helper.make_node("Softplus", inputs=["x"], outputs=["sp_out"])
+        tanh = helper.make_node("Tanh", inputs=["sp_out"], outputs=["t_out"])
+        mul = helper.make_node("Mul", inputs=["x", "t_out"], outputs=["y"])
+        func = helper.make_function(
+            domain=domain,
+            fname=func_name,
+            inputs=["x"],
+            outputs=["y"],
+            nodes=[sp, tanh, mul],
+            opset_imports=[opset_standard],
+            doc_string="Mish activation function (x * tanh(softplus(x)))",
+        )
+        model.functions.append(func)

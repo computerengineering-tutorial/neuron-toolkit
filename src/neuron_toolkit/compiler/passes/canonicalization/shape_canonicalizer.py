@@ -99,12 +99,22 @@ class ShapeCanonicalizer(Pass):
             return model
 
         # Update initializers: remove old inits if no remaining consumers outside nodes_to_remove
-        consumed_raw = {
-            inp
-            for n in graph.node
-            if (n.name or n.output[0]) not in nodes_to_remove
-            for inp in n.input
-        }
+        consumed_raw: set[str] = set()
+
+        def collect_consumed(g_proto: onnx.GraphProto) -> None:
+            for n in g_proto.node:
+                if (n.name or (n.output[0] if n.output else "")) not in nodes_to_remove:
+                    for inp in n.input:
+                        if inp:
+                            consumed_raw.add(inp)
+                for attr in n.attribute:
+                    if attr.type == onnx.AttributeProto.GRAPH and attr.g:
+                        collect_consumed(attr.g)
+                    elif attr.type == onnx.AttributeProto.GRAPHS:
+                        for sub_g in attr.graphs:
+                            collect_consumed(sub_g)
+
+        collect_consumed(graph)
         filtered_inits = [
             init
             for init in graph.initializer
@@ -353,8 +363,9 @@ class ShapeCanonicalizer(Pass):
                             arr = numpy_helper.to_array(attr.t)
                             key = (arr.dtype.str, tuple(arr.shape), arr.tobytes())
                             if key in const_val_map:
-                                rewrites[n.output[0]] = const_val_map[key]
-                                nodes_to_drop.add(n.name or n.output[0])
+                                if n.output and n.output[0] not in graph_outputs:
+                                    rewrites[n.output[0]] = const_val_map[key]
+                                    nodes_to_drop.add(n.name or n.output[0])
                             else:
                                 const_val_map[key] = n.output[0]
                         except Exception:
@@ -440,11 +451,21 @@ class ShapeCanonicalizer(Pass):
         graph = model.graph
         graph_outputs = {o.name for o in graph.output}
 
+        def collect_used_inputs(nodes) -> set[str]:
+            used = set()
+            for n in nodes:
+                for inp in n.input:
+                    used.add(inp)
+                for attr in n.attribute:
+                    if attr.HasField("g"):
+                        used.update(collect_used_inputs(attr.g.node))
+                    for sub_g in attr.graphs:
+                        used.update(collect_used_inputs(sub_g.node))
+            return used
+
         for _ in range(5):
             used_outputs = set(graph_outputs)
-            for n in graph.node:
-                for inp in n.input:
-                    used_outputs.add(inp)
+            used_outputs.update(collect_used_inputs(graph.node))
 
             surviving = [
                 n
