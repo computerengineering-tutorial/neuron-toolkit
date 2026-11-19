@@ -18,7 +18,7 @@
 - 🧩 **Pattern Matching DSL**: Declarative subgraph pattern matching with operator overloads (`x * Pattern.op("Sigmoid", x)`), captures, wildcards, and commutative matching.
 - ⚡ **Optimization Passes (`PassManager`)**: Composable transformation pipelines including `FuseConvBN`, `ConstantFolding`, `DeadCodeElimination`, `CommonSubexpressionElimination`, `FuseGELU`, `FuseLayerNorm`, and `FuseConvActivation` with automated metric reports.
 - 🚀 **3-Stage Compiler Pipeline**: Micro-canonicalization (Pad-Conv fusion, Reshape collapse, Cast folding), macro-block synthesis (SDPA, Gemma-2 softcapping, DeepSeek MLA), and Netron FunctionProto dual-mode export with fixed-point iterative convergence.
-- 📜 **Declarative JSON Rules Engine**: 39 pre-built declarative JSON rewrite rules for automated graph rewriting and custom operator fusion.
+- 📜 **Declarative JSON Rules Engine**: 53 pre-built declarative JSON rewrite rules for automated graph rewriting and custom operator fusion.
 - ⚡ **PyTorch Execution & Differential Cross-Verification**: Standalone vectorized runtime (`PyTorchRunner`) for standard & custom ONNX ops with automated bitwise and tolerance checks against ONNX Runtime (`CrossVerifier`).
 - 🧠 **Architectural Block Detection & Fingerprinting**: Automatic detection of Transformer, DiT, Mamba/SSM, GNN, and ConvNeXt architectural motifs with polymorphic 8-character SHA-256 fingerprinting.
 - 🌐 **Unified Intermediate Representation (IR)**: Decoupled `IRGraph`, `IRNode`, and `IRTensor` with $O(1)$ producer/consumer lookups and format SPI adapters.

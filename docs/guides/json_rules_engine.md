@@ -96,7 +96,7 @@ Each JSON rule file defines four core sections:
 
 ## Built-In Rules Catalog
 
-The toolkit includes 50 pre-built declarative JSON rule definitions in `neuron_toolkit/rules/definitions/`:
+The toolkit includes 53 pre-built declarative JSON rule definitions in `neuron_toolkit/rules/definitions/`:
 
 | Rule Category | Rule ID | Description |
 | --- | --- | --- |
@@ -141,6 +141,8 @@ The toolkit includes 50 pre-built declarative JSON rule definitions in `neuron_t
 | | `transformer_block_composite_fusion` | Fuses Attention -> Add -> FeedForward -> Add into `TransformerBlock` |
 | | `transformer_encoder_layer_fusion` | Fuses PyTorch `nn.TransformerEncoderLayer` into `TransformerBlock` |
 | | `multi_field_embedding_fusion` | Fuses cascading multi-token feature Gather tables + Add tree into `MultiFieldEmbedding` |
+| | `attention_key_padding_mask_fusion` | Fuses Cast -> Where / masked_fill patterns into `AttentionKeyPaddingMask` |
+| | `sequence_classifier_head_fusion` | Fuses LayerNorm -> Linear classification head into `SequenceClassifierHead` |
 | **Graph Simplification** | `cast_initializer_folding` | Folds static initializer `Cast` nodes at compile time |
 | | `cast_same_dtype_elimination` | Eliminates redundant `Cast` operators where input dtype equals target dtype |
 | | `common_subexpression_elimination` | Prunes redundant identical computation subtrees |

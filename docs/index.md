@@ -19,7 +19,7 @@
 - 🔬 **Differential Verification**: Extract subgraphs between arbitrary points and verify numerical equivalence against PyTorch or ONNXRuntime with automated tolerance checks (MAE, MSE, cosine similarity).
 - 🚀 **3-Stage Compiler Pipeline**: Iterative fixed-point convergence engine with micro-canonicalization (Pad-Conv fusion, Reshape collapse, Cast folding), macro-block synthesis (SDPA, Gemma-2 softcapping, DeepSeek MLA), and Netron FunctionProto dual-mode export (`NeuronCompiler.compile`).
 - 🧠 **Architecture Signatures & Fingerprinting**: Declarative JSON block signatures and deterministic polymorphic subgraph fingerprinting.
-- 📜 **Declarative JSON Rules Engine**: Extensible declarative graph transformation engine with 39 pre-built JSON rewrite rules (`JSONRuleEngine`).
+- 📜 **Declarative JSON Rules Engine**: Extensible declarative graph transformation engine with 53 pre-built JSON rewrite rules (`JSONRuleEngine`).
 - ⚡ **PyTorch Execution & Cross-Verification**: Standalone vectorized execution of custom ONNX graphs via `PyTorchRunner` (including `GlobalAveragePool`, `RNN`, `LogitsSoftCap`, `MLA`) with automated differential equivalence testing against ONNX Runtime.
 - 🧭 **AST Code Intelligence & CLI**: Automated Python AST codemap generation, regex symbol querying, docstring indexing, and coverage reporting via `neuron ast`.
 
