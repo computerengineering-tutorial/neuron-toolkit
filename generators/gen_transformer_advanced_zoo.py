@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import math
+
 import torch
 import torch.nn.functional as F
 from torch import nn
@@ -141,7 +142,7 @@ class ViT_Block(nn.Module):
     input_names=["x"],
     output_names=["out"],
     dynamic_axes=SEQ_DYN_AXES,
-    expected_target_node="MultiHeadLatentAttention_KVProjection",
+    expected_target_node="MultiHeadLatentAttention",
     init_args=(64, 4, 16),
 )
 class MultiHeadLatentAttention_MLA(nn.Module):

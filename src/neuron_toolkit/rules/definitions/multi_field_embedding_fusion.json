@@ -7,13 +7,13 @@
       {
         "id": "g1",
         "op_type": "Gather",
-        "inputs": ["$w1", "$indices"],
+        "inputs": ["$w1", "$indices1"],
         "outputs": ["$e1"]
       },
       {
         "id": "g2",
         "op_type": "Gather",
-        "inputs": ["$w2", "$indices"],
+        "inputs": ["$w2", "$indices2"],
         "outputs": ["$e2"]
       },
       {

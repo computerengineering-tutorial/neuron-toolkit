@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-import numpy as np
 import onnx
-from onnx import helper, numpy_helper
+from onnx import helper
 
 from neuron_toolkit.compiler.analyzer.block_predictor import ArchitectureBlockPredictor
 

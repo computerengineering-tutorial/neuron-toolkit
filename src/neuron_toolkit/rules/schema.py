@@ -83,9 +83,7 @@ class RuleAction:
             if not action_type:
                 action_type = "replace_op"
 
-        if not action_type:
-            action_type = "replace_op"
-        elif action_type == "replace":
+        if not action_type or action_type == "replace":
             action_type = "replace_op"
 
         return cls(

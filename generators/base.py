@@ -12,13 +12,10 @@ Features:
 from __future__ import annotations
 
 import hashlib
-import json
-import os
-import random
 import sys
 import warnings
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Any, Sequence
 
 _SRC_DIR = Path(__file__).resolve().parent.parent / "src"
 if _SRC_DIR.exists() and str(_SRC_DIR) not in sys.path:
@@ -27,6 +24,15 @@ if _SRC_DIR.exists() and str(_SRC_DIR) not in sys.path:
 import onnx
 import torch
 from torch import nn
+
+try:
+    import inspect
+
+    from torch.onnx._internal.torchscript_exporter import utils as _ts_utils
+    if hasattr(_ts_utils.setup_onnx_logging, "__wrapped__") and not inspect.isgeneratorfunction(_ts_utils.setup_onnx_logging.__wrapped__):
+        _ts_utils.setup_onnx_logging = _ts_utils.setup_onnx_logging.__wrapped__
+except (ImportError, AttributeError):
+    pass
 
 from generators.obfuscation import ObfuscationRegistry
 
@@ -107,9 +113,10 @@ def export_model(
                 model, seed=opset * 100 + len(base_name)
             )
 
-        # 1. Export with TorchScript ONNX exporter (dynamo=False for stability across 14-20)
+        # 1. Export with TorchScript ONNX exporter (utils.export for stability across 14-20)
         try:
-            torch.onnx.export(
+            current_model.eval()
+            torch.onnx.utils.export(
                 current_model,
                 dummy_inputs_tuple,
                 str(tmp_path),
@@ -118,7 +125,6 @@ def export_model(
                 opset_version=opset,
                 do_constant_folding=True,
                 dynamic_axes=dynamic_axes,
-                dynamo=False,
             )
             m_proto = onnx.load(str(tmp_path))
             onnx.checker.check_model(m_proto)

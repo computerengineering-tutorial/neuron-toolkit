@@ -15,14 +15,12 @@ import numpy as np
 import onnx
 from onnx import helper, numpy_helper
 
-from neuron_toolkit.compiler.base import CompilerContext
 from neuron_toolkit.compiler.passes.canonicalization.shape_canonicalizer import (
     ShapeCanonicalizer,
 )
 from neuron_toolkit.compiler.passes.synthesis.attention_synthesizer import (
     AttentionSynthesizer,
 )
-from neuron_toolkit.compiler.pipeline import NeuronCompiler
 
 
 def test_consecutive_reshape_collapsing():

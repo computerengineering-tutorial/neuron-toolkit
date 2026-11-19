@@ -17,9 +17,9 @@ from generators.registry import ModelRegistry, ModelSpec
 __all__ = [
     "ModelRegistry",
     "ModelSpec",
-    "register_architecture",
-    "export_model",
-    "compute_graph_topology_hash",
     "ObfuscationRegistry",
+    "compute_graph_topology_hash",
+    "export_model",
+    "register_architecture",
     "register_obfuscation_strategy",
 ]

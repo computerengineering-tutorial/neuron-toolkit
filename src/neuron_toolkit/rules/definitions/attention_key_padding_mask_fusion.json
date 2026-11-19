@@ -1,0 +1,45 @@
+{
+  "rule_id": "attention_key_padding_mask_fusion",
+  "name": "Attention Key Padding Mask Generator Fusion",
+  "description": "Fuses key padding mask Cast and Where (additive attention bias) into AttentionKeyPaddingMask with FunctionProto Netron expandability.",
+  "pattern": {
+    "nodes": [
+      {
+        "id": "c0",
+        "op_type": "Cast",
+        "inputs": ["$pad_mask"],
+        "outputs": ["$cast_out"]
+      },
+      {
+        "id": "w0",
+        "op_type": "Where",
+        "inputs": ["$cast_out", "$const_inf", "$const_zero"],
+        "outputs": ["$attn_mask"]
+      }
+    ]
+  },
+  "action": {
+    "type": "fuse_to_function",
+    "op_type": "AttentionKeyPaddingMask",
+    "domain": "custom.pytorch",
+    "inputs": ["$pad_mask"],
+    "outputs": ["$attn_mask"],
+    "targets": {
+      "modern_onnx": {
+        "op_type": "AttentionKeyPaddingMask",
+        "domain": "custom.pytorch",
+        "inputs": ["$pad_mask"]
+      },
+      "function_proto": {
+        "op_type": "AttentionKeyPaddingMask",
+        "domain": "custom.pytorch",
+        "inputs": ["$pad_mask"]
+      },
+      "pytorch_custom": {
+        "op_type": "AttentionKeyPaddingMask",
+        "domain": "custom.pytorch",
+        "inputs": ["$pad_mask"]
+      }
+    }
+  }
+}

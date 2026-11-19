@@ -141,3 +141,39 @@ def test_cross_verify_model1_onnx():
     assert report.metrics["downbeat"].cosine_similarity >= 0.99999
     assert report.metrics["beat"].mse < 1e-5
     assert report.metrics["downbeat"].mse < 1e-5
+
+
+@pytest.mark.skipif(
+    not (MODELS_DIR / "model6.onnx").exists(), reason="model6.onnx not found"
+)
+def test_cross_verify_model6_onnx():
+    """Verify model6.onnx: MultiFieldEmbedding, AttentionKeyPaddingMask, TransformerBlock, SequenceClassifierHead."""
+    model_path = str(MODELS_DIR / "model6.onnx")
+    orig_model = onnx.load(model_path)
+    orig_node_count = len(orig_model.graph.node)
+
+    engine = JSONRuleEngine(mode="function_proto")
+    opt_model = engine.apply(orig_model, options={"enable_macro_blocks": True})
+
+    opt_node_count = len(opt_model.graph.node)
+    eliminated = orig_node_count - opt_node_count
+
+    # Verify dramatic graph minification (from 475 down to <= 15 nodes: > 450 nodes eliminated, 97%+ reduction!)
+    assert opt_node_count <= 15, f"Expected <= 15 nodes, got {opt_node_count}"
+    assert eliminated >= 450, f"Expected >= 450 nodes eliminated, got {eliminated}"
+
+    # Differential cross-verification against ONNX Runtime
+    verifier = CrossVerifier(orig_model, opt_model, rtol=1e-4, atol=1e-4)
+    rng = np.random.RandomState(42)
+    inputs = {
+        "features": rng.randint(0, 4, size=(1, 384, 9), dtype=np.int64),
+        "pad_mask": np.zeros((1, 384), dtype=bool),
+    }
+
+    report = verifier.verify(inputs=inputs)
+    print("\n" + report.summary())
+
+    assert report.all_passed, f"Cross-verification failed: {report.summary()}"
+    assert report.metrics["logits"].cosine_similarity >= 0.99999
+    assert report.metrics["logits"].mse < 1e-5
+

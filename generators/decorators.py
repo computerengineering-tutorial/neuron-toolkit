@@ -4,12 +4,12 @@
 from __future__ import annotations
 
 import re
-from typing import Any, Callable, Sequence
+from collections.abc import Callable, Sequence
+from typing import Any
+
 import torch
-from torch import nn
 
 from generators.registry import ModelRegistry, ModelSpec
-from generators.obfuscation import ObfuscationRegistry, register_obfuscation_strategy
 
 
 def _to_snake_case(name: str) -> str:

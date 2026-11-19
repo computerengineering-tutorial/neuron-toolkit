@@ -16,8 +16,8 @@ from typing import Any
 
 import numpy as np
 import onnx
-from onnx import TensorProto, helper
 import torch
+from onnx import TensorProto, helper
 from torch import nn
 
 # Ensure workspace root and generators are in path
@@ -26,11 +26,6 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 from generators.decorators import register_architecture
-from generators.obfuscation import (
-    ObfuscationRegistry,
-    PyTorchMathematicalObfuscator,
-    register_obfuscation_strategy,
-)
 
 OUT_DIR = Path(".helper/models/obfuscated_stress")
 OUT_DIR.mkdir(parents=True, exist_ok=True)

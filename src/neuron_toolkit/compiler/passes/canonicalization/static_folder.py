@@ -98,25 +98,68 @@ class StaticFolder(Pass):
             while updates_name in rewired_outputs:
                 updates_name = rewired_outputs[updates_name]
 
-            if (
-                data_name not in init_arrays
-                or indices_name not in init_arrays
-                or updates_name not in init_arrays
-            ):
-                continue
+            is_identity = False
+            data_arr = init_arrays.get(data_name)
+            if data_arr is not None:
+                if indices_name in init_arrays and updates_name in init_arrays:
+                    indices_arr = init_arrays[indices_name]
+                    updates_arr = init_arrays[updates_name]
+                    try:
+                        idx_tuple = tuple(
+                            indices_arr[..., i] for i in range(indices_arr.shape[-1])
+                        )
+                        target_slice = data_arr[idx_tuple]
+                        if np.array_equal(target_slice, updates_arr):
+                            is_identity = True
+                    except Exception:
+                        pass
 
-            data_arr = init_arrays[data_name]
-            indices_arr = init_arrays[indices_name]
-            updates_arr = init_arrays[updates_name]
+                # Check dynamic RoPE frequency cache write:
+                # where data_name is a precomputed positional frequency buffer (e.g. Constant/initializer)
+                # and consumers slice/apply up to dynamic seq_len.
+                if not is_identity:
+                    consumers = [
+                        c for c in graph.node if sn.output[0] in c.input and c != sn
+                    ]
+                    all_rope_or_scatter = bool(consumers) and all(
+                        c.op_type in ("RotaryEmbedding", "ScatterND")
+                        or "rotary" in c.name.lower()
+                        or "rope" in c.name.lower()
+                        for c in consumers
+                    )
+                    node_by_out = {
+                        out: n for n in graph.node for out in n.output if out
+                    }
+                    has_freq_origin = False
+                    visited = set()
+                    queue = [updates_name]
+                    while queue and len(visited) < 30:
+                        curr_t = queue.pop(0)
+                        if curr_t in visited:
+                            continue
+                        visited.add(curr_t)
+                        if any(
+                            tag in curr_t.lower()
+                            for tag in ("freq", "rotary", "theta")
+                        ):
+                            has_freq_origin = True
+                            break
+                        producer = node_by_out.get(curr_t)
+                        if producer:
+                            if "rotary" in producer.name.lower() or producer.op_type in (
+                                "Einsum",
+                                "Range",
+                            ):
+                                has_freq_origin = True
+                                break
+                            for pinp in producer.input:
+                                if pinp:
+                                    queue.append(pinp)
 
-            try:
-                idx_tuple = tuple(
-                    indices_arr[..., i] for i in range(indices_arr.shape[-1])
-                )
-                target_slice = data_arr[idx_tuple]
-                if not np.array_equal(target_slice, updates_arr):
-                    continue
-            except Exception:
+                    if all_rope_or_scatter and has_freq_origin:
+                        is_identity = True
+
+            if not is_identity:
                 continue
 
             out_name = sn.output[0]

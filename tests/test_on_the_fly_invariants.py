@@ -15,10 +15,18 @@ import io
 import sys
 from pathlib import Path
 
-import numpy as np
 import onnx
 import pytest
 import torch
+
+try:
+    import inspect
+
+    from torch.onnx._internal.torchscript_exporter import utils as _ts_utils
+    if hasattr(_ts_utils.setup_onnx_logging, "__wrapped__") and not inspect.isgeneratorfunction(_ts_utils.setup_onnx_logging.__wrapped__):
+        _ts_utils.setup_onnx_logging = _ts_utils.setup_onnx_logging.__wrapped__
+except (ImportError, AttributeError):
+    pass
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(_REPO_ROOT) not in sys.path:
@@ -37,10 +45,10 @@ RULE_SPECS = [s for s in ModelRegistry.list_models() if s.expected_target_node]
 
 def _export_in_memory(spec: ModelSpec, opset: int = 18) -> onnx.ModelProto:
     """Export a ModelSpec to an in-memory ONNX ModelProto without touching disk."""
-    model = spec.instantiate()
+    model = spec.instantiate().eval()
     dummy = spec.get_dummy_inputs()
     buf = io.BytesIO()
-    torch.onnx.export(
+    torch.onnx.utils.export(
         model,
         dummy,
         buf,
@@ -48,11 +56,9 @@ def _export_in_memory(spec: ModelSpec, opset: int = 18) -> onnx.ModelProto:
         output_names=spec.output_names,
         opset_version=opset,
         dynamic_axes=spec.dynamic_axes,
-        dynamo=False,
     )
     buf.seek(0)
-    m = onnx.load_model_from_string(buf.getvalue())
-    return m
+    return onnx.load_model_from_string(buf.getvalue())
 
 
 # =============================================================================

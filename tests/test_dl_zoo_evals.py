@@ -12,19 +12,19 @@ Tests optimization, custom op synthesis, and differential numerical parity
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import onnx
 import pytest
 
-import sys
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
+from generators.registry import ModelRegistry
 from neuron_toolkit.compiler.pipeline import NeuronCompiler
 from neuron_toolkit.runtime.cross_verifier import CrossVerifier
-from generators.registry import ModelRegistry
 
 ModelRegistry.discover(_REPO_ROOT / "generators")
 _ADDON_SPECS = ModelRegistry.get_by_category("addons")

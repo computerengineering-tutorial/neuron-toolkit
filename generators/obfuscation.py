@@ -11,13 +11,13 @@ from __future__ import annotations
 
 import copy
 import random
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Callable, Literal, Sequence
+from typing import Any, Literal
 
-import numpy as np
 import onnx
-from onnx import TensorProto, helper
 import torch
+from onnx import TensorProto, helper
 from torch import nn
 
 

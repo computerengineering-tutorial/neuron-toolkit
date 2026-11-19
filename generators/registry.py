@@ -8,12 +8,11 @@ import importlib
 import importlib.util
 import inspect
 import json
-import os
 import sys
 import time
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Sequence
 
 _SRC_DIR = Path(__file__).resolve().parent.parent / "src"
 if _SRC_DIR.exists() and str(_SRC_DIR) not in sys.path:
@@ -77,9 +76,7 @@ class ModelSpec:
 
     def instantiate(self) -> nn.Module:
         """Instantiate the PyTorch nn.Module instance."""
-        if inspect.isclass(self.target) and issubclass(self.target, nn.Module):
-            model = self.target(*self.init_args, **self.init_kwargs)
-        elif callable(self.target):
+        if (inspect.isclass(self.target) and issubclass(self.target, nn.Module)) or callable(self.target):
             model = self.target(*self.init_args, **self.init_kwargs)
         else:
             raise TypeError(f"Target for {self.name} must be a class or callable, got {type(self.target)}")

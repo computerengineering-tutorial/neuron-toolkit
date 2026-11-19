@@ -1153,20 +1153,23 @@ class OpRegistry:
             inputs: list[torch.Tensor], attrs: dict[str, Any]
         ) -> torch.Tensor:
             x = inputs[0]
-            gamma = (
-                inputs[1]
-                if len(inputs) > 1 and inputs[1] is not None and inputs[1].numel() > 0
-                else None
-            )
-            # Remaining inputs can be:
-            # [w_gate, w_up, w_down] or [w_gate, b_gate, w_up, b_up, w_down, b_down]
-            eps = float(attrs.get("epsilon", 1e-12))
-            norm = torch.norm(x, p=2, dim=-1, keepdim=True)
-            scale = (x.shape[-1] ** 0.5) / torch.clamp(norm, min=eps)
-            x_norm = x * scale
-            if gamma is not None:
-                x_norm = x_norm * gamma
-            rest = inputs[2:]
+            if len(inputs) in (5, 8):
+                gamma = (
+                    inputs[1]
+                    if inputs[1] is not None and inputs[1].numel() > 0
+                    else None
+                )
+                eps = float(attrs.get("epsilon", 1e-12))
+                norm = torch.norm(x, p=2, dim=-1, keepdim=True)
+                scale = (x.shape[-1] ** 0.5) / torch.clamp(norm, min=eps)
+                x_norm = x * scale
+                if gamma is not None:
+                    x_norm = x_norm * gamma
+                rest = inputs[2:]
+            else:
+                x_norm = x
+                rest = inputs[1:]
+
             if len(rest) == 3:
                 w_gate, w_up, w_down = rest
                 b_gate, b_up, b_down = None, None, None
@@ -1189,13 +1192,14 @@ class OpRegistry:
             return out
 
         @self.register("custom.pytorch", "RotaryEmbedding")
+        @self.register("custom.pytorch", "PartialRotaryEmbedding")
         @self.register("", "RotaryEmbedding")
         def _rotary_embedding(
             inputs: list[torch.Tensor], attrs: dict[str, Any]
         ) -> torch.Tensor:
             x = inputs[0]
             seq_len = x.shape[-2]
-            if len(inputs) == 3:
+            if len(inputs) >= 3:
                 cos, sin = inputs[1], inputs[2]
                 if cos.shape[-2] > seq_len:
                     cos = cos[..., :seq_len, :]
@@ -1217,11 +1221,19 @@ class OpRegistry:
                 x_rot = x
                 x_pass = None
 
-            orig_rot_shape = x_rot.shape
-            x_reshaped = x_rot.reshape(*orig_rot_shape[:-1], -1, 2)
-            rot = torch.stack(
-                (-x_reshaped[..., 1], x_reshaped[..., 0]), dim=-1
-            ).reshape(orig_rot_shape)
+            interleaved = int(attrs.get("interleaved", 0 if "rotate_half" in str(attrs.get("mode", "")) or attrs.get("interleaved") == 0 else 1))
+            if interleaved == 0:
+                d = x_rot.shape[-1]
+                x1 = x_rot[..., : d // 2]
+                x2 = x_rot[..., d // 2 :]
+                rot = torch.cat((-x2, x1), dim=-1)
+            else:
+                orig_rot_shape = x_rot.shape
+                x_reshaped = x_rot.reshape(*orig_rot_shape[:-1], -1, 2)
+                rot = torch.stack(
+                    (-x_reshaped[..., 1], x_reshaped[..., 0]), dim=-1
+                ).reshape(orig_rot_shape)
+
             out_rot = (x_rot * cos) + (rot * sin)
 
             if x_pass is not None:
@@ -1419,10 +1431,21 @@ class OpRegistry:
                     th = th[..., :seq_len, :]
                 cos = torch.cos(th)
                 sin = torch.sin(th)
-                o_shp = t.shape
-                t_r = t.reshape(*o_shp[:-1], -1, 2)
+                rotary_dim = cos.shape[-1]
+                head_dim = t.shape[-1]
+                if rotary_dim < head_dim:
+                    t_rot = t[..., :rotary_dim]
+                    t_pass = t[..., rotary_dim:]
+                else:
+                    t_rot = t
+                    t_pass = None
+                o_shp = t_rot.shape
+                t_r = t_rot.reshape(*o_shp[:-1], -1, 2)
                 rot = torch.stack((-t_r[..., 1], t_r[..., 0]), dim=-1).reshape(o_shp)
-                return (t * cos) + (rot * sin)
+                res = (t_rot * cos) + (rot * sin)
+                if t_pass is not None:
+                    res = torch.cat([res, t_pass], dim=-1)
+                return res
 
             q_rot = _apply_rope(q, theta)
             k_rot = _apply_rope(k, theta)
@@ -1695,26 +1718,67 @@ class OpRegistry:
             return x * scale
 
         @self.register("custom.pytorch", "MultiHeadAttention")
+        @self.register("custom.pytorch", "CrossAttention")
+        @self.register("custom.pytorch", "StatefulAttention")
+        @self.register("custom.pytorch", "GroupedQueryAttention")
         @self.register("", "MultiHeadAttention")
         def _mha_composite(
             inputs: list[torch.Tensor], attrs: dict[str, Any]
         ) -> torch.Tensor:
+            num_heads = int(attrs.get("num_heads", 4))
+            scale = attrs.get("scale")
+
+            # Case 1: Separate Q, K, V passed (e.g. [q, k, v, out_w, out_b] or [q, k, v, out_w])
+            if len(inputs) >= 3 and inputs[0] is not None and inputs[0].dim() == 4 and inputs[1] is not None and inputs[1].dim() == 4:
+                q, k, v = inputs[0], inputs[1], inputs[2]
+                out_w = inputs[3] if len(inputs) > 3 and inputs[3] is not None and inputs[3].dim() == 2 else None
+                out_b = inputs[4] if len(inputs) > 4 and inputs[4] is not None and inputs[4].numel() > 0 else None
+
+                # Handle GQA KV head repetition if k heads < q heads
+                if k.shape[1] < q.shape[1]:
+                    repeat_factor = q.shape[1] // k.shape[1]
+                    k = k.repeat_interleave(repeat_factor, dim=1)
+                    v = v.repeat_interleave(repeat_factor, dim=1)
+
+                d_head = q.shape[-1]
+                s = float(scale) if scale is not None else (1.0 / (d_head ** 0.5))
+                scores = torch.matmul(q * s, k.transpose(-1, -2))
+                probs = torch.softmax(scores, dim=-1)
+                attn_out = torch.matmul(probs, v)
+
+                B, H, S, D = attn_out.shape
+                merged = attn_out.transpose(1, 2).contiguous().view(B, S, H * D)
+                if out_w is not None:
+                    out = torch.matmul(merged, out_w)
+                    if out_b is not None:
+                        out = out + out_b
+                    return out
+                return merged
+
+            # Case 2: Unified QKV tensor
             qkv = inputs[0]
-            out_w = inputs[1]
+            out_w = inputs[1] if len(inputs) > 1 and inputs[1] is not None and inputs[1].dim() == 2 else None
             out_b = (
                 inputs[2]
                 if len(inputs) > 2 and inputs[2] is not None and inputs[2].numel() > 0
                 else None
             )
-            num_heads = int(attrs.get("num_heads", 4))
-            scale = attrs.get("scale")
+
+            if qkv.dim() == 2:
+                qkv = qkv.unsqueeze(0)
+            if qkv.dim() == 4:
+                B, H, S, D = qkv.shape
+                qkv = qkv.transpose(1, 2).contiguous().view(B, S, H * D)
 
             B, S, total_d = qkv.shape
-            d_head = total_d // (3 * num_heads)
-            qkv_reshaped = qkv.view(B, S, 3, num_heads, d_head)
-            q = qkv_reshaped[:, :, 0].transpose(1, 2)
-            k = qkv_reshaped[:, :, 1].transpose(1, 2)
-            v = qkv_reshaped[:, :, 2].transpose(1, 2)
+            d_head = total_d // (3 * num_heads) if total_d % (3 * num_heads) == 0 else total_d // num_heads
+            if total_d % (3 * num_heads) == 0:
+                qkv_reshaped = qkv.view(B, S, 3, num_heads, d_head)
+                q = qkv_reshaped[:, :, 0].transpose(1, 2)
+                k = qkv_reshaped[:, :, 1].transpose(1, 2)
+                v = qkv_reshaped[:, :, 2].transpose(1, 2)
+            else:
+                q = k = v = qkv.view(B, S, num_heads, d_head).transpose(1, 2)
 
             s = float(scale) ** 0.5 if scale is not None else d_head**-0.25
             scores = torch.matmul(q * s, (k * s).transpose(-1, -2))
@@ -1724,10 +1788,12 @@ class OpRegistry:
             merged = (
                 attn_out.transpose(1, 2).contiguous().view(B, S, num_heads * d_head)
             )
-            out = torch.matmul(merged, out_w)
-            if out_b is not None:
-                out = out + out_b
-            return out
+            if out_w is not None:
+                out = torch.matmul(merged, out_w)
+                if out_b is not None:
+                    out = out + out_b
+                return out
+            return merged
 
         @self.register("custom.pytorch", "GatedMultiHeadAttention")
         @self.register("", "GatedMultiHeadAttention")
@@ -1740,6 +1806,58 @@ class OpRegistry:
                 if w.dim() == 2 and x.dim() >= 2 and x.shape[-1] == w.shape[0]:
                     return torch.matmul(x, w)
             return x
+
+        @self.register("custom.pytorch", "MultiFieldEmbedding")
+        @self.register("", "MultiFieldEmbedding")
+        def _multi_field_embedding(
+            inputs: list[torch.Tensor], attrs: dict[str, Any]
+        ) -> torch.Tensor:
+            features = inputs[0]
+            weights = inputs[1:]
+            pe = None
+            if len(weights) > 1 and weights[-1].dim() == features.dim():
+                pe = weights[-1]
+                weights = weights[:-1]
+            out = None
+            for idx, w in enumerate(weights):
+                idx_slice = features[..., idx]
+                emb = F.embedding(idx_slice, w)
+                out = emb if out is None else out + emb
+            if pe is not None:
+                out = out + pe
+            return out
+
+        @self.register("custom.pytorch", "AttentionKeyPaddingMask")
+        @self.register("", "AttentionKeyPaddingMask")
+        def _attention_key_padding_mask(
+            inputs: list[torch.Tensor], attrs: dict[str, Any]
+        ) -> torch.Tensor:
+            pad_mask = inputs[0]
+            val = float(attrs.get("mask_value", -10000.0))
+            mask = torch.zeros_like(pad_mask, dtype=torch.float32)
+            return mask.masked_fill(pad_mask.bool(), val)
+
+        @self.register("custom.pytorch", "SequenceClassifierHead")
+        @self.register("", "SequenceClassifierHead")
+        def _sequence_classifier_head(
+            inputs: list[torch.Tensor], attrs: dict[str, Any]
+        ) -> torch.Tensor:
+            x = inputs[0]
+            norm_w = inputs[1] if len(inputs) > 1 else None
+            norm_b = inputs[2] if len(inputs) > 2 else None
+            lin_w = inputs[3] if len(inputs) > 3 else None
+            lin_b = inputs[4] if len(inputs) > 4 else None
+
+            if norm_w is not None:
+                x = F.layer_norm(x, [x.shape[-1]], weight=norm_w, bias=norm_b)
+            if lin_w is not None:
+                if lin_w.dim() == 2 and lin_w.shape[0] == x.shape[-1]:
+                    x = torch.matmul(x, lin_w)
+                    if lin_b is not None:
+                        x = x + lin_b
+                else:
+                    x = F.linear(x, lin_w, lin_b)
+            return x.squeeze(-1)
 
 
 

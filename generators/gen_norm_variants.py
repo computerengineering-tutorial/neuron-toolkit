@@ -90,7 +90,14 @@ class GroupNormModule(nn.Module):
         self.gn = nn.GroupNorm(num_groups=num_groups, num_channels=num_channels)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.gn(x)
+        return torch.group_norm(
+            x,
+            self.gn.num_groups,
+            self.gn.weight,
+            self.gn.bias,
+            self.gn.eps,
+            torch.backends.cudnn.enabled,
+        )
 
 
 @register_architecture(

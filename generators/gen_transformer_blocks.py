@@ -54,7 +54,7 @@ class FeedForwardGeluBlock(nn.Module):
     shapes=[(2, 8, 32)],
     input_names=["input"],
     output_names=["output"],
-    expected_target_node="GatedUnit",
+    expected_target_node="FeedForwardSwiGLU",
     min_expected_reduction=0.3,
     init_args=(32, 64),
 )

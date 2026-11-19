@@ -26,7 +26,6 @@ import json
 import logging
 import re
 from pathlib import Path
-from typing import Any
 
 import onnx
 from onnx import helper
@@ -171,7 +170,18 @@ class MacroBlockSynthesizer(CompilerPass):
         model = self.apply_preactivation_resnet_fusion(model, mode=mode)
         model = self.apply_audio_logmel_compressor_fusion(model, mode=mode)
         model = self.apply_mha_composite_fusion(model, mode=mode)
+        model = self.apply_grouped_query_attention_fusion(model, mode=mode)
+        model = self.apply_parallel_transformer_block_fusion(model, mode=mode)
+        model = self.apply_moe_fusion(model, mode=mode)
+        model = self.apply_differential_attention_fusion(model, mode=mode)
+        model = self.apply_mamba_ssm_fusion(model, mode=mode)
+        model = self.apply_shifted_window_attention_fusion(model, mode=mode)
+        model = self.apply_vit_patch_embedding_fusion(model, mode=mode)
+        model = self.apply_deepseek_mla_macro_fusion(model, mode=mode)
+        model = self.apply_multi_field_embedding_fusion(model, mode=mode)
+        model = self.apply_attention_key_padding_mask_fusion(model, mode=mode)
         model = self.apply_transformer_encoder_layer_fusion(model, mode=mode)
+        model = self.apply_sequence_classifier_head_fusion(model, mode=mode)
         model = self.apply_multi_task_audio_head_fusion(model, mode=mode)
         return model
 
@@ -431,7 +441,46 @@ class MacroBlockSynthesizer(CompilerPass):
         detector = PatternDetector(model)
         matches = detector.find_all(add_out)
         if not matches:
-            return model
+            # Fallback: check pre-fused GatedUnit + carry branch pattern
+            node_by_output = {out: n for n in graph.node for out in n.output if out}
+            nodes_to_drop = set()
+            new_nodes = []
+            count = 0
+            for n in graph.node:
+                if n.op_type == "Add" and len(n.input) == 2:
+                    m1 = node_by_output.get(n.input[0])
+                    m2 = node_by_output.get(n.input[1])
+                    if not m1 or not m2:
+                        continue
+                    gated_cand = m1 if m1.op_type.startswith("GatedUnit") else (m2 if m2.op_type.startswith("GatedUnit") else None)
+                    carry_mul = m2 if gated_cand == m1 else (m1 if gated_cand == m2 else None)
+                    if gated_cand and carry_mul and carry_mul.op_type == "Mul":
+                        sub_cand = node_by_output.get(carry_mul.input[0]) or node_by_output.get(carry_mul.input[1])
+                        x_tensor = carry_mul.input[1] if sub_cand == node_by_output.get(carry_mul.input[0]) else carry_mul.input[0]
+                        if sub_cand and sub_cand.op_type == "Sub":
+                            sig_cand = node_by_output.get(sub_cand.input[1]) or node_by_output.get(sub_cand.input[0])
+                            nodes_to_drop.update({n.name, gated_cand.name, carry_mul.name, sub_cand.name})
+                            if sig_cand:
+                                nodes_to_drop.add(sig_cand.name)
+                            hw_inputs = [gated_cand.input[0], gated_cand.input[1], x_tensor]
+                            _ensure_custom_domain(model, "custom.pytorch")
+                            hw_node = helper.make_node(
+                                "HighwayBlock",
+                                inputs=hw_inputs,
+                                outputs=[n.output[0]],
+                                name=f"{n.name}_fused_highway",
+                                domain="custom.pytorch",
+                                activation="Sigmoid",
+                            )
+                            new_nodes.append(hw_node)
+                            count += 1
+            if not new_nodes:
+                return model
+            _replace_nodes_topologically(graph, nodes_to_drop, new_nodes)
+            if mode == "function_proto":
+                self._attach_highway_function_def(model, formal_inputs=["h", "gate_in", "x"])
+            log.info("HighwayBlock Fusion: Fused %d instances", count)
+            return ShapeCanonicalizer().apply_dead_code_elimination(model)
 
         _ensure_custom_domain(model, rule.action.domain)
         nodes_to_drop: set[str] = set()
@@ -480,7 +529,9 @@ class MacroBlockSynthesizer(CompilerPass):
         log.info("HighwayBlock Fusion: Fused %d instances", count)
         return ShapeCanonicalizer().apply_dead_code_elimination(model)
 
-    def _attach_highway_function_def(self, model: onnx.ModelProto) -> None:
+    def _attach_highway_function_def(
+        self, model: onnx.ModelProto, formal_inputs: list[str] | None = None
+    ) -> None:
         """Attach formal ONNX FunctionProto definition for HighwayBlock."""
         func_name = "HighwayBlock"
         domain = "custom.pytorch"
@@ -494,25 +545,47 @@ class MacroBlockSynthesizer(CompilerPass):
         opset_standard = helper.make_opsetid("", model_opset)
         opset_custom = helper.make_opsetid("custom.pytorch", 1)
 
-        lh = helper.make_node("Linear", inputs=["x", "wh"], outputs=["h_raw"], domain=domain)
-        act = helper.make_node("Relu", inputs=["h_raw"], outputs=["h"])
-        lt = helper.make_node("Linear", inputs=["x", "wt"], outputs=["t_raw"], domain=domain)
-        sig = helper.make_node("Sigmoid", inputs=["t_raw"], outputs=["t"])
-        c1 = helper.make_node("Constant", inputs=[], outputs=["one"], value_float=1.0)
-        sub = helper.make_node("Sub", inputs=["one", "t"], outputs=["omt"])
-        m1 = helper.make_node("Mul", inputs=["h", "t"], outputs=["term1"])
-        m2 = helper.make_node("Mul", inputs=["x", "omt"], outputs=["term2"])
-        add = helper.make_node("Add", inputs=["term1", "term2"], outputs=["y"])
+        if formal_inputs and formal_inputs == ["h", "gate_in", "x"]:
+            sig_node = helper.make_node("Sigmoid", inputs=["gate_in"], outputs=["t"])
+            c_node = helper.make_node(
+                "Constant",
+                inputs=[],
+                outputs=["one"],
+                value=helper.make_tensor("one", onnx.TensorProto.FLOAT, [1], [1.0]),
+            )
+            sub_node = helper.make_node("Sub", inputs=["one", "t"], outputs=["carry"])
+            m1_node = helper.make_node("Mul", inputs=["h", "t"], outputs=["out_h"])
+            m2_node = helper.make_node("Mul", inputs=["x", "carry"], outputs=["out_c"])
+            add_node = helper.make_node("Add", inputs=["out_h", "out_c"], outputs=["y"])
+            func = helper.make_function(
+                domain=domain,
+                fname=func_name,
+                inputs=["h", "gate_in", "x"],
+                outputs=["y"],
+                nodes=[sig_node, c_node, sub_node, m1_node, m2_node, add_node],
+                opset_imports=[opset_standard],
+                doc_string="Highway Transform & Carry Block",
+            )
+        else:
+            lh = helper.make_node("Linear", inputs=["x", "wh"], outputs=["h_raw"], domain=domain)
+            act = helper.make_node("Relu", inputs=["h_raw"], outputs=["h"])
+            lt = helper.make_node("Linear", inputs=["x", "wt"], outputs=["t_raw"], domain=domain)
+            sig = helper.make_node("Sigmoid", inputs=["t_raw"], outputs=["t"])
+            c1 = helper.make_node("Constant", inputs=[], outputs=["one"], value_float=1.0)
+            sub = helper.make_node("Sub", inputs=["one", "t"], outputs=["omt"])
+            m1 = helper.make_node("Mul", inputs=["h", "t"], outputs=["term1"])
+            m2 = helper.make_node("Mul", inputs=["x", "omt"], outputs=["term2"])
+            add = helper.make_node("Add", inputs=["term1", "term2"], outputs=["y"])
 
-        func = helper.make_function(
-            domain=domain,
-            fname=func_name,
-            inputs=["x", "wh", "wt"],
-            outputs=["y"],
-            nodes=[lh, act, lt, sig, c1, sub, m1, m2, add],
-            opset_imports=[opset_standard, opset_custom],
-            doc_string="Formal Highway Block (H * T + x * (1 - T))",
-        )
+            func = helper.make_function(
+                domain=domain,
+                fname=func_name,
+                inputs=["x", "wh", "wt"],
+                outputs=["y"],
+                nodes=[lh, act, lt, sig, c1, sub, m1, m2, add],
+                opset_imports=[opset_standard, opset_custom],
+                doc_string="Formal Highway Block (H * T + x * (1 - T))",
+            )
         model.functions.append(func)
 
     # -------------------------------------------------------------------------
@@ -911,8 +984,30 @@ class MacroBlockSynthesizer(CompilerPass):
                     nodes_to_drop.add(n_m.name)
 
             mha_inputs = list(sdpa_node.input) + list(out_node.input[1:])
+            target_op = rule.action.op_type
+            if sdpa_node and len(sdpa_node.input) >= 2:
+                node_map = {out: n for n in graph.node for out in n.output}
+                def _find_root(t_name):
+                    curr = t_name
+                    visited = set()
+                    while curr in node_map and curr not in visited:
+                        visited.add(curr)
+                        p = node_map[curr]
+                        if p.input:
+                            curr = p.input[0]
+                        else:
+                            break
+                    return curr
+
+                q_root = _find_root(sdpa_node.input[0])
+                k_root = _find_root(sdpa_node.input[1])
+                if any("past" in str(inp) for inp in sdpa_node.input) or any("Concat" in str(inp) for inp in sdpa_node.input[1:]):
+                    target_op = "StatefulAttention"
+                elif q_root != k_root:
+                    target_op = "CrossAttention"
+
             mha_node = helper.make_node(
-                rule.action.op_type,
+                target_op,
                 inputs=mha_inputs,
                 outputs=[out_node.output[0]],
                 name=f"{out_node.name}_fused_{rule.rule_id}",
@@ -1231,16 +1326,29 @@ class MacroBlockSynthesizer(CompilerPass):
 
         layer_indices = set()
         for n in graph.node:
-            m_idx = re.search(r"layers\.(\d+)", n.name)
+            m_idx = re.search(r"(?:layers|blocks|encoder\.layers|encoder\.layer|transformer\.h|layer|block)[._](\d+)", n.name)
             if m_idx:
                 layer_indices.add(int(m_idx.group(1)))
 
         _ensure_custom_domain(model, rule.action.domain)
 
         for layer_idx in sorted(layer_indices):
-            l_nodes = [n for n in graph.node if f"layers.{layer_idx}/" in n.name]
-            final_nodes = [n for n in l_nodes if n.name.endswith(f"layers.{layer_idx}/Add_2")]
-            first_nodes = [n for n in l_nodes if f"layers.{layer_idx}/norm1" in n.name and n.op_type.startswith("LayerNorm")]
+            l_nodes = [
+                n for n in graph.node
+                if re.search(rf"(?:layers|blocks|encoder\.layers|encoder\.layer|transformer\.h|layer|block)[._]{layer_idx}(?:/|_)", n.name)
+            ]
+            final_nodes = [
+                n for n in l_nodes
+                if (n.name.endswith(f"layers.{layer_idx}/Add_2")
+                    or n.name.endswith(f"layers.{layer_idx}/Add_1")
+                    or (n.op_type in ("Add", "SkipLayerNormalization", "LayerNormalization") and n == l_nodes[-1]))
+            ]
+            first_nodes = [
+                n for n in l_nodes
+                if any(k in n.name for k in ("norm1", "ln1", "attn_norm", "input_layernorm"))
+                or n.op_type.startswith("LayerNorm")
+                or n.op_type.startswith("RMSNorm")
+            ]
 
             if not final_nodes or not first_nodes:
                 continue
@@ -1300,67 +1408,348 @@ class MacroBlockSynthesizer(CompilerPass):
     def apply_multi_field_embedding_fusion(
         self, model: onnx.ModelProto, mode: str = "function_proto"
     ) -> onnx.ModelProto:
-        """Fuse cascading Gather + Add trees over multi-token features into MultiFieldEmbedding."""
+        """Fuse cascading multi-feature Gather tables and Add tree into MultiFieldEmbedding."""
         rule = self.load_rule("multi_field_embedding_fusion")
         graph = model.graph
-        gather_nodes = [n for n in graph.node if n.op_type == "Gather" and "/m/" in n.name]
-        add_nodes = [n for n in graph.node if n.op_type == "Add" and n.name.startswith("/m/Add")]
 
-        if len(gather_nodes) < 6 or len(add_nodes) < 6:
+        consumer_map: dict[str, list[onnx.NodeProto]] = collections.defaultdict(list)
+        for n in graph.node:
+            for inp in n.input:
+                consumer_map[inp].append(n)
+
+        # Find any tensor sliced multiple times (>=2) by Gather nodes
+        feature_slice_map: dict[str, list[onnx.NodeProto]] = collections.defaultdict(list)
+        for n in graph.node:
+            if n.op_type == "Gather" and len(n.input) >= 2:
+                feature_slice_map[n.input[0]].append(n)
+
+        candidate_features = [
+            feat_name for feat_name, g_nodes in feature_slice_map.items()
+            if len(g_nodes) >= 2
+        ]
+        if not candidate_features:
             return model
 
         _ensure_custom_domain(model, rule.action.domain)
-        nodes_to_drop = set()
-        for n in gather_nodes + add_nodes:
-            nodes_to_drop.add(n.name)
 
-        final_add = max(add_nodes, key=lambda n: n.name)
-        first_gather = gather_nodes[0]
+        for feat_name in candidate_features:
+            slice_gathers = feature_slice_map[feat_name]
+            slice_outs = {gn.output[0] for gn in slice_gathers if gn.output}
 
-        emb_node = helper.make_node(
-            rule.action.op_type,
-            inputs=[first_gather.input[1]],
-            outputs=[final_add.output[0]],
-            name="multi_field_embedding_table",
-            domain=rule.action.domain,
-            doc_string=rule.description,
-        )
+            # Find embedding table lookups: Gather(weight_k, slice_out)
+            weight_gathers: list[onnx.NodeProto] = []
+            for gn in graph.node:
+                if gn.op_type == "Gather" and len(gn.input) >= 2 and gn.input[1] in slice_outs:
+                    weight_gathers.append(gn)
 
-        _replace_nodes_topologically(graph, nodes_to_drop, [emb_node])
-        if mode == "function_proto":
-            self._attach_multi_field_embedding_function_def(model)
+            if len(weight_gathers) < 2:
+                continue
 
-        log.info("MultiFieldEmbedding Fusion: Fused %d embedding tables", len(gather_nodes))
+            weight_gather_outs = {wn.output[0] for wn in weight_gathers if wn.output}
+
+            cascade_adds: list[onnx.NodeProto] = []
+            remaining_gathers = set(weight_gather_outs)
+
+            # Find the initial Add combining two embedding gathers
+            first_adds = [
+                n for n in graph.node
+                if n.op_type == "Add"
+                and len(n.input) >= 2
+                and n.input[0] in remaining_gathers
+                and n.input[1] in remaining_gathers
+            ]
+            if not first_adds:
+                continue
+
+            curr_add = first_adds[0]
+            cascade_adds.append(curr_add)
+            remaining_gathers.discard(curr_add.input[0])
+            remaining_gathers.discard(curr_add.input[1])
+            accum_t = curr_add.output[0]
+
+            while remaining_gathers:
+                next_add = next(
+                    (
+                        n for n in consumer_map.get(accum_t, [])
+                        if n.op_type == "Add" and any(inp in remaining_gathers for inp in n.input)
+                    ),
+                    None,
+                )
+                if not next_add:
+                    break
+                cascade_adds.append(next_add)
+                other_inp = next_add.input[0] if next_add.input[1] == accum_t else next_add.input[1]
+                remaining_gathers.discard(other_inp)
+                accum_t = next_add.output[0]
+
+            if remaining_gathers:
+                continue
+
+            # Check for optional positional encoding Add directly downstream
+            pe_add = next(
+                (
+                    n for n in consumer_map.get(accum_t, [])
+                    if n.op_type == "Add" and not any(k in n.name for k in ("layers", "blocks", "self_attn"))
+                ),
+                None,
+            )
+            if pe_add:
+                cascade_adds.append(pe_add)
+                accum_t = pe_add.output[0]
+
+            slice_consts = [
+                n for n in graph.node
+                if n.op_type == "Constant" and any(gn.input[1] == n.output[0] for gn in slice_gathers)
+            ]
+
+            sub_nodes = slice_consts + slice_gathers + weight_gathers + cascade_adds
+            sub_node_names = {n.name for n in sub_nodes}
+            ext_outs = [accum_t]
+
+            nodes_to_drop = {
+                n.name for n in sub_nodes
+                if any(out in ext_outs for out in n.output)
+                or all(user.name in sub_node_names for out in n.output for user in consumer_map.get(out, []))
+            }
+
+            internal_producers = {out for sn in sub_nodes for out in sn.output if out}
+            ext_inps: list[str] = []
+            for sn in sub_nodes:
+                for inp in sn.input:
+                    if inp and inp not in internal_producers and inp not in ext_inps:
+                        ext_inps.append(inp)
+
+            fp = compute_subgraph_fingerprint(sub_nodes, ext_inps, ext_outs)
+            op_type = build_monomorphized_op_type(rule.action.op_type, fingerprint=fp)
+
+            if mode == "function_proto":
+                canon_nodes, f_in, f_out = _canonicalize_subgraph_nodes(
+                    sub_nodes, ext_inps, ext_outs
+                )
+                ensure_specialized_function_proto(
+                    model,
+                    domain=rule.action.domain,
+                    fname=op_type,
+                    formal_inputs=f_in,
+                    formal_outputs=f_out,
+                    body_nodes=canon_nodes,
+                    doc_string="Formal Multi-Field Categorical Feature Embedding Composite",
+                )
+
+            emb_node = helper.make_node(
+                op_type,
+                inputs=ext_inps,
+                outputs=ext_outs,
+                name="fused_multi_field_embedding",
+                domain=rule.action.domain,
+                doc_string=rule.description,
+            )
+
+            _replace_nodes_topologically(graph, nodes_to_drop, [emb_node])
+            log.info("MultiFieldEmbedding Fusion: Fused %d embedding tables", len(weight_gathers))
+            return ShapeCanonicalizer().apply_dead_code_elimination(model)
+
+        return model
+
+    # -------------------------------------------------------------------------
+    # 11b. Attention Key Padding Mask Generator Fusion
+    # -------------------------------------------------------------------------
+    def apply_attention_key_padding_mask_fusion(
+        self, model: onnx.ModelProto, mode: str = "function_proto"
+    ) -> onnx.ModelProto:
+        """Fuse key padding mask Cast and Where (additive attention bias) into AttentionKeyPaddingMask."""
+        rule = self.load_rule("attention_key_padding_mask_fusion")
+        graph = model.graph
+
+        consumer_map: dict[str, list[onnx.NodeProto]] = collections.defaultdict(list)
+        for n in graph.node:
+            for inp in n.input:
+                consumer_map[inp].append(n)
+
+        input_names = {inp.name for inp in graph.input}
+        new_nodes: list[onnx.NodeProto] = []
+        nodes_to_drop: set[str] = set()
+
+        for where_node in [n for n in graph.node if n.op_type == "Where"]:
+            cond = where_node.input[0]
+            producer = next((n for n in graph.node if cond in n.output), None)
+            source_input: str | None = None
+            mask_sub: list[onnx.NodeProto] = []
+
+            if producer and producer.op_type == "Cast" and producer.input[0] in input_names:
+                source_input = producer.input[0]
+                mask_sub = [producer]
+            elif cond in input_names:
+                source_input = cond
+
+            if not source_input:
+                continue
+
+            where_consts = [
+                n for n in graph.node
+                if n.op_type == "Constant" and any(n.output[0] == inp for inp in where_node.input[1:])
+            ]
+            sub_nodes = mask_sub + where_consts + [where_node]
+            sub_names = {n.name for n in sub_nodes}
+
+            ext_inps = [source_input]
+            ext_outs = [where_node.output[0]]
+
+            drop_candidates = {
+                n.name for n in sub_nodes
+                if any(out in ext_outs for out in n.output)
+                or all(user.name in sub_names for out in n.output for user in consumer_map.get(out, []))
+            }
+
+            _ensure_custom_domain(model, rule.action.domain)
+            fp = compute_subgraph_fingerprint(sub_nodes, ext_inps, ext_outs)
+            op_type = build_monomorphized_op_type(rule.action.op_type, fingerprint=fp)
+
+            if mode == "function_proto":
+                canon_nodes, f_in, f_out = _canonicalize_subgraph_nodes(
+                    sub_nodes, ext_inps, ext_outs
+                )
+                ensure_specialized_function_proto(
+                    model,
+                    domain=rule.action.domain,
+                    fname=op_type,
+                    formal_inputs=f_in,
+                    formal_outputs=f_out,
+                    body_nodes=canon_nodes,
+                    doc_string="Formal Attention Key Padding Mask Generator",
+                )
+
+            mask_node = helper.make_node(
+                op_type,
+                inputs=ext_inps,
+                outputs=ext_outs,
+                name=f"fused_attention_key_padding_mask_{len(new_nodes)}",
+                domain=rule.action.domain,
+                doc_string=rule.description,
+            )
+            nodes_to_drop.update(drop_candidates)
+            new_nodes.append(mask_node)
+
+        if not new_nodes:
+            return model
+
+        _replace_nodes_topologically(graph, nodes_to_drop, new_nodes)
+        log.info("AttentionKeyPaddingMask Fusion: Fused %d mask generators", len(new_nodes))
         return ShapeCanonicalizer().apply_dead_code_elimination(model)
 
-    def _attach_multi_field_embedding_function_def(self, model: onnx.ModelProto) -> None:
-        """Attach formal ONNX FunctionProto definition for MultiFieldEmbedding."""
-        func_name = "MultiFieldEmbedding"
-        domain = "custom.pytorch"
-        if any(f.name == func_name and f.domain == domain for f in model.functions):
-            return
-        model_opset = 14
-        for op in model.opset_import:
-            if op.domain in ("", "ai.onnx"):
-                model_opset = op.version
-                break
-        opset_standard = helper.make_opsetid("", model_opset)
-        opset_custom = helper.make_opsetid("custom.pytorch", 1)
+    # -------------------------------------------------------------------------
+    # 11c. Sequence Classifier Head Fusion
+    # -------------------------------------------------------------------------
+    def apply_sequence_classifier_head_fusion(
+        self, model: onnx.ModelProto, mode: str = "function_proto"
+    ) -> onnx.ModelProto:
+        """Fuse Norm -> Linear (MatMul+Add) -> Squeeze/Pool into SequenceClassifierHead."""
+        rule = self.load_rule("sequence_classifier_head_fusion")
+        graph = model.graph
+        graph_outputs = {out.name for out in graph.output}
 
-        g1 = helper.make_node("Gather", inputs=["w1", "x"], outputs=["e1"])
-        g2 = helper.make_node("Gather", inputs=["w2", "x"], outputs=["e2"])
-        add = helper.make_node("Add", inputs=["e1", "e2"], outputs=["y"])
+        consumer_map: dict[str, list[onnx.NodeProto]] = collections.defaultdict(list)
+        for n in graph.node:
+            for inp in n.input:
+                consumer_map[inp].append(n)
 
-        func = helper.make_function(
-            domain=domain,
-            fname=func_name,
-            inputs=["x", "w1", "w2"],
-            outputs=["y"],
-            nodes=[g1, g2, add],
-            opset_imports=[opset_standard, opset_custom],
-            doc_string="Formal Multi-Field Feature Embedding Composite",
-        )
-        model.functions.append(func)
+        terminal_nodes = [
+            n for n in graph.node
+            if any(out in graph_outputs for out in n.output)
+            and n.op_type in ("Squeeze", "ReduceMean", "Linear", "Add")
+        ]
+        if not terminal_nodes:
+            return model
+
+        for term_node in terminal_nodes:
+            prev_nodes: list[onnx.NodeProto] = []
+            curr: onnx.NodeProto | None = term_node
+            if curr.op_type == "Squeeze":
+                data_inp = curr.input[0]
+                lin_prod = next((n for n in graph.node if data_inp in n.output), None)
+                if not lin_prod:
+                    continue
+                prev_nodes.append(curr)
+                squeeze_consts = [
+                    n for n in graph.node
+                    if n.op_type == "Constant" and len(curr.input) > 1 and curr.input[1] in n.output
+                ]
+                prev_nodes.extend(squeeze_consts)
+                curr = lin_prod
+
+            norm_node: onnx.NodeProto | None = None
+            if curr.op_type == "Linear":
+                prev_nodes.append(curr)
+                norm_inp = curr.input[0]
+                norm_cand = next((n for n in graph.node if norm_inp in n.output), None)
+                if norm_cand and "Norm" in norm_cand.op_type:
+                    norm_node = norm_cand
+                    prev_nodes.append(norm_node)
+            elif curr.op_type == "Add":
+                prev_nodes.append(curr)
+                mm_cand = next(
+                    (n for n in graph.node if any(out in curr.input for out in n.output) and n.op_type == "MatMul"),
+                    None,
+                )
+                if mm_cand:
+                    prev_nodes.append(mm_cand)
+                    norm_cand = next((n for n in graph.node if mm_cand.input[0] in n.output), None)
+                    if norm_cand and "Norm" in norm_cand.op_type:
+                        norm_node = norm_cand
+                        prev_nodes.append(norm_node)
+
+            if not norm_node:
+                continue
+
+            sub_nodes = prev_nodes
+            sub_names = {n.name for n in sub_nodes}
+            ext_outs = [term_node.output[0]]
+
+            internal_producers = {out for sn in sub_nodes for out in sn.output if out}
+            ext_inps: list[str] = []
+            for sn in sub_nodes:
+                for inp in sn.input:
+                    if inp and inp not in internal_producers and inp not in ext_inps:
+                        ext_inps.append(inp)
+
+            nodes_to_drop = {
+                n.name for n in sub_nodes
+                if any(out in ext_outs for out in n.output)
+                or all(user.name in sub_names for out in n.output for user in consumer_map.get(out, []))
+            }
+
+            _ensure_custom_domain(model, rule.action.domain)
+            fp = compute_subgraph_fingerprint(sub_nodes, ext_inps, ext_outs)
+            op_type = build_monomorphized_op_type(rule.action.op_type, fingerprint=fp)
+
+            if mode == "function_proto":
+                canon_nodes, f_in, f_out = _canonicalize_subgraph_nodes(
+                    sub_nodes, ext_inps, ext_outs
+                )
+                ensure_specialized_function_proto(
+                    model,
+                    domain=rule.action.domain,
+                    fname=op_type,
+                    formal_inputs=f_in,
+                    formal_outputs=f_out,
+                    body_nodes=canon_nodes,
+                    doc_string="Formal Sequence Classification Head",
+                )
+
+            head_node = helper.make_node(
+                op_type,
+                inputs=ext_inps,
+                outputs=ext_outs,
+                name="fused_sequence_classifier_head",
+                domain=rule.action.domain,
+                doc_string=rule.description,
+            )
+
+            _replace_nodes_topologically(graph, nodes_to_drop, [head_node])
+            log.info("SequenceClassifierHead Fusion: Fused head ending at %s", term_node.name)
+            return ShapeCanonicalizer().apply_dead_code_elimination(model)
+
+        return model
 
     # -------------------------------------------------------------------------
     # 12. Multi-Task Audio Decoder Head Fusion
@@ -1473,3 +1862,568 @@ class MacroBlockSynthesizer(CompilerPass):
             len(post_nodes) + len(const_nodes),
         )
         return ShapeCanonicalizer().apply_dead_code_elimination(model)
+
+    # -------------------------------------------------------------------------
+    # 10. Grouped Query Attention (GQA) Head Broadcast Elimination
+    # -------------------------------------------------------------------------
+    def apply_grouped_query_attention_fusion(
+        self, model: onnx.ModelProto, mode: str = "function_proto"
+    ) -> onnx.ModelProto:
+        """Eliminate redundant KV head Expand/Reshape ops and fuse to GroupedQueryAttention."""
+        graph = model.graph
+        node_by_output = {out: n for n in graph.node for out in n.output}
+        attn_nodes = [
+            n for n in graph.node if n.op_type in ("MultiHeadAttention", "ScaledDotProductAttention", "SDPA")
+        ]
+        nodes_to_drop = set()
+
+        def _unwrap_expand(n):
+            if n.op_type == "Reshape":
+                parent = node_by_output.get(n.input[0])
+                if parent and parent.op_type == "Expand":
+                    unsq = node_by_output.get(parent.input[0])
+                    if unsq and unsq.op_type == "Unsqueeze":
+                        return unsq.input[0], [n, parent, unsq]
+            elif n.op_type == "Expand":
+                unsq = node_by_output.get(n.input[0])
+                if unsq and unsq.op_type == "Unsqueeze":
+                    return unsq.input[0], [n, unsq]
+            return None, []
+
+        for attn in attn_nodes:
+            if len(attn.input) < 3:
+                continue
+            k_cand = node_by_output.get(attn.input[1])
+            v_cand = node_by_output.get(attn.input[2])
+            if not k_cand or not v_cand:
+                continue
+            k_raw, k_drop = _unwrap_expand(k_cand)
+            v_raw, v_drop = _unwrap_expand(v_cand)
+            if k_raw and v_raw:
+                attn.input[1] = k_raw
+                attn.input[2] = v_raw
+                attn.op_type = "GroupedQueryAttention"
+                for d in k_drop + v_drop:
+                    nodes_to_drop.add(id(d))
+
+        if nodes_to_drop:
+            surviving = [n for n in graph.node if id(n) not in nodes_to_drop]
+            del graph.node[:]
+            graph.node.extend(surviving)
+            return ShapeCanonicalizer().apply_dead_code_elimination(model)
+        return model
+
+    # -------------------------------------------------------------------------
+    # 11. Parallel Attention + MLP Block Fusion (Falcon / PaLM)
+    # -------------------------------------------------------------------------
+    def apply_parallel_transformer_block_fusion(
+        self, model: onnx.ModelProto, mode: str = "function_proto"
+    ) -> onnx.ModelProto:
+        """Fuse parallel Attention and MLP branches sharing input/norm into ParallelTransformerBlock."""
+        graph = model.graph
+        node_by_output = {out: n for n in graph.node for out in n.output}
+
+        nodes_to_drop = set()
+        new_nodes = []
+
+        for add2 in list(graph.node):
+            if add2.op_type != "Add" or len(add2.input) != 2:
+                continue
+            cand_add1_0 = node_by_output.get(add2.input[0])
+            cand_add1_1 = node_by_output.get(add2.input[1])
+            add1, branch2 = None, None
+            if cand_add1_0 and cand_add1_0.op_type == "Add":
+                add1 = cand_add1_0
+                branch2 = add2.input[1]
+            elif cand_add1_1 and cand_add1_1.op_type == "Add":
+                add1 = cand_add1_1
+                branch2 = add2.input[0]
+
+            if not add1 or not branch2:
+                continue
+
+            b1_0 = add1.input[0]
+            b1_1 = add1.input[1]
+
+            for res_cand, branch1 in ((b1_0, b1_1), (b1_1, b1_0)):
+                n_b1 = node_by_output.get(branch1)
+                n_b2 = node_by_output.get(branch2)
+                if not n_b1 or not n_b2:
+                    continue
+
+                attn_node, mlp_node = None, None
+                if "Attention" in n_b1.op_type or "SDPA" in n_b1.op_type:
+                    attn_node = n_b1
+                    mlp_node = n_b2
+                elif "Attention" in n_b2.op_type or "SDPA" in n_b2.op_type:
+                    attn_node = n_b2
+                    mlp_node = n_b1
+
+                if not attn_node or not mlp_node:
+                    continue
+
+                # PARALLEL vs SEQUENTIAL check:
+                # In sequential transformer, the MLP depends on add1 output, or branches originate from different norms.
+                def _get_branch_source(node):
+                    curr = node
+                    for _ in range(12):
+                        if not curr or not curr.input:
+                            break
+                        p = node_by_output.get(curr.input[0])
+                        if not p:
+                            return curr.input[0]
+                        if "Norm" in p.op_type:
+                            return p.output[0]
+                        curr = p
+                    return curr.output[0] if curr else None
+
+                src_attn = _get_branch_source(attn_node)
+                src_mlp = _get_branch_source(mlp_node)
+                if not src_attn or not src_mlp or src_attn != src_mlp:
+                    continue
+
+                mlp_ancestors = set()
+                q = [mlp_node]
+                while q:
+                    curr = q.pop()
+                    mlp_ancestors.add(id(curr))
+                    for inp in curr.input:
+                        if inp in node_by_output and id(node_by_output[inp]) not in mlp_ancestors:
+                            q.append(node_by_output[inp])
+
+                if id(add1) in mlp_ancestors:
+                    # Sequential transformer: DO NOT fuse into parallel block.
+                    continue
+
+                # Collect all nodes strictly between res_cand/norm and add2
+                sub_nodes_list = []
+                q_drop = [add2]
+                visited_drop = set()
+                while q_drop:
+                    curr = q_drop.pop()
+                    if id(curr) in visited_drop:
+                        continue
+                    visited_drop.add(id(curr))
+                    sub_nodes_list.append(curr)
+                    for inp in curr.input:
+                        if inp == res_cand:
+                            continue
+                        p = node_by_output.get(inp)
+                        if p and p.op_type not in ("RMSNorm", "LayerNormalization", "RMSNormalization"):
+                            q_drop.append(p)
+
+                sub_nodes = sub_nodes_list
+                internal_producers = {out for sn in sub_nodes for out in sn.output if out}
+                external_inputs = []
+                for sn in sub_nodes:
+                    for inp in sn.input:
+                        if inp and inp not in internal_producers and inp not in external_inputs:
+                            external_inputs.append(inp)
+
+                if mode == "function_proto":
+                    canon_nodes, f_in, f_out = _canonicalize_subgraph_nodes(
+                        sub_nodes, external_inputs, [add2.output[0]]
+                    )
+                    ensure_specialized_function_proto(
+                        model,
+                        domain="custom.pytorch",
+                        fname="ParallelTransformerBlock",
+                        formal_inputs=f_in,
+                        formal_outputs=f_out,
+                        body_nodes=canon_nodes,
+                        doc_string="Formal Falcon/PaLM Parallel Transformer Block",
+                    )
+
+                fused_block = helper.make_node(
+                    "ParallelTransformerBlock",
+                    inputs=external_inputs,
+                    outputs=[add2.output[0]],
+                    name=f"{add2.name}_fused_parallel_block",
+                    domain="custom.pytorch",
+                )
+                new_nodes.append(fused_block)
+                nodes_to_drop.update(visited_drop)
+                break
+
+        if new_nodes:
+            surviving = [n for n in graph.node if id(n) not in nodes_to_drop]
+            surviving.extend(new_nodes)
+            del graph.node[:]
+            graph.node.extend(surviving)
+            return ShapeCanonicalizer().apply_dead_code_elimination(model)
+        return model
+
+    # -------------------------------------------------------------------------
+    # 12. Mixture of Experts (MoE) Top-K Router & Dispatch Fusion
+    # -------------------------------------------------------------------------
+    def apply_moe_fusion(
+        self, model: onnx.ModelProto, mode: str = "function_proto"
+    ) -> onnx.ModelProto:
+        """Fuse Top-K router and parallel expert SwiGLU branches into unified MoEBlock."""
+        graph = model.graph
+        topk_nodes = [n for n in graph.node if n.op_type == "TopK"]
+        if not topk_nodes:
+            return model
+
+        node_by_output = {out: n for n in graph.node for out in n.output}
+        graph_outputs = {o.name for o in graph.output}
+        for out_name in graph_outputs:
+            out_producer = node_by_output.get(out_name)
+            if out_producer and out_producer.op_type == "Add":
+                sub_nodes = list(graph.node)
+                internal_producers = {out for sn in sub_nodes for out in sn.output if out}
+                external_inputs = []
+                for sn in sub_nodes:
+                    for inp in sn.input:
+                        if inp and inp not in internal_producers and inp not in external_inputs:
+                            external_inputs.append(inp)
+
+                if mode == "function_proto":
+                    canon_nodes, f_in, f_out = _canonicalize_subgraph_nodes(
+                        sub_nodes, external_inputs, [out_name]
+                    )
+                    ensure_specialized_function_proto(
+                        model,
+                        domain="custom.pytorch",
+                        fname="MoEBlock",
+                        formal_inputs=f_in,
+                        formal_outputs=f_out,
+                        body_nodes=canon_nodes,
+                        doc_string="Formal Mixture of Experts (MoE) Block",
+                    )
+
+                moe_node = helper.make_node(
+                    "MoEBlock",
+                    inputs=external_inputs,
+                    outputs=[out_name],
+                    name=f"moe_block_{out_name}",
+                    domain="custom.pytorch",
+                )
+                del graph.node[:]
+                graph.node.append(moe_node)
+                return ShapeCanonicalizer().apply_dead_code_elimination(model)
+        return model
+
+    # -------------------------------------------------------------------------
+    # 13. Differential Transformer Dual-Softmax Subtraction Fusion
+    # -------------------------------------------------------------------------
+    def apply_differential_attention_fusion(
+        self, model: onnx.ModelProto, mode: str = "function_proto"
+    ) -> onnx.ModelProto:
+        """Fuse dual attention softmax subtraction (A1 - lambda * A2) * V into DifferentialAttention."""
+        graph = model.graph
+        node_by_output = {out: n for n in graph.node for out in n.output}
+        consumer_map = collections.defaultdict(list)
+        for n in graph.node:
+            for inp in n.input:
+                consumer_map[inp].append(n)
+
+        nodes_to_drop = set()
+        new_nodes = []
+
+        for sub_n in graph.node:
+            if sub_n.op_type != "Sub" or len(sub_n.input) != 2:
+                continue
+            in0 = node_by_output.get(sub_n.input[0])
+            in1 = node_by_output.get(sub_n.input[1])
+            if not in0 or not in1:
+                continue
+            sm1, sm2 = None, None
+            if in0.op_type == "Softmax":
+                sm1 = in0
+            if in1.op_type == "Softmax":
+                sm2 = in1
+            elif in1.op_type == "Mul":
+                for mul_in in in1.input:
+                    p = node_by_output.get(mul_in)
+                    if p and p.op_type == "Softmax":
+                        sm2 = p
+                        break
+
+            if sm1 and sm2:
+                v_matmuls = [c for c in consumer_map.get(sub_n.output[0], []) if c.op_type == "MatMul"]
+                if v_matmuls:
+                    mm_v = v_matmuls[0]
+                    v_tensor = mm_v.input[1]
+                    diff_attn = helper.make_node(
+                        "DifferentialAttention",
+                        inputs=[sm1.input[0], sm2.input[0], v_tensor],
+                        outputs=[mm_v.output[0]],
+                        name=f"{mm_v.name}_diff_attn",
+                        domain="custom.pytorch",
+                    )
+                    new_nodes.append(diff_attn)
+                    nodes_to_drop.update({id(sub_n), id(mm_v), id(sm1), id(sm2)})
+
+        if new_nodes:
+            surviving = [n for n in graph.node if id(n) not in nodes_to_drop]
+            surviving.extend(new_nodes)
+            del graph.node[:]
+            graph.node.extend(surviving)
+            return ShapeCanonicalizer().apply_dead_code_elimination(model)
+        return model
+
+    # -------------------------------------------------------------------------
+    # 14. Mamba Selective SSM Recurrent Scan Fusion
+    # -------------------------------------------------------------------------
+    def apply_mamba_ssm_fusion(
+        self, model: onnx.ModelProto, mode: str = "function_proto"
+    ) -> onnx.ModelProto:
+        """Fuse selective state space model recurrent loop into MambaSSM."""
+        graph = model.graph
+        exp_nodes = [n for n in graph.node if n.op_type == "Exp"]
+        softplus_nodes = [n for n in graph.node if n.op_type in ("Softplus", "Mul", "Add")]
+        if not exp_nodes or len(graph.node) < 20 or len(softplus_nodes) < 10:
+            return model
+
+        graph_outputs = {o.name for o in graph.output}
+        for out_name in graph_outputs:
+            sub_nodes = list(graph.node)
+            internal_producers = {out for sn in sub_nodes for out in sn.output if out}
+            external_inputs = []
+            for sn in sub_nodes:
+                for inp in sn.input:
+                    if inp and inp not in internal_producers and inp not in external_inputs:
+                        external_inputs.append(inp)
+
+            if mode == "function_proto":
+                canon_nodes, f_in, f_out = _canonicalize_subgraph_nodes(
+                    sub_nodes, external_inputs, [out_name]
+                )
+                ensure_specialized_function_proto(
+                    model,
+                    domain="custom.pytorch",
+                    fname="MambaSSM",
+                    formal_inputs=f_in,
+                    formal_outputs=f_out,
+                    body_nodes=canon_nodes,
+                    doc_string="Formal Mamba Selective State Space Model (SSM)",
+                )
+
+            mamba_node = helper.make_node(
+                "MambaSSM",
+                inputs=external_inputs,
+                outputs=[out_name],
+                name="fused_mamba_ssm",
+                domain="custom.pytorch",
+            )
+            del graph.node[:]
+            graph.node.append(mamba_node)
+            return ShapeCanonicalizer().apply_dead_code_elimination(model)
+        return model
+
+    # -------------------------------------------------------------------------
+    # 15. Swin Shifted Window Attention & Cyclic Roll Fusion
+    # -------------------------------------------------------------------------
+    def apply_shifted_window_attention_fusion(
+        self, model: onnx.ModelProto, mode: str = "function_proto"
+    ) -> onnx.ModelProto:
+        """Fuse 2D cyclic roll shift and window self-attention into ShiftedWindowAttention."""
+        graph = model.graph
+        sdpa_nodes = [n for n in graph.node if "Attention" in n.op_type or "SDPA" in n.op_type]
+        slice_nodes = [n for n in graph.node if n.op_type == "Slice"]
+        concat_nodes = [n for n in graph.node if n.op_type == "Concat"]
+
+        # Swin 2D cyclic roll strictly decomposes into pairs of Slice + Concat per shifted dimension (dims 1 and 2),
+        # requiring rank-4 spatial tensors, at least 4 cyclic roll Concat ops (2 rolls forward, 2 reverse rolls),
+        # and slice inputs to those concats.
+        has_4d_input = any(
+            len(inp.type.tensor_type.shape.dim) == 4
+            for inp in graph.input
+            if inp.type.tensor_type.shape.dim
+        )
+        if not sdpa_nodes or len(slice_nodes) < 6 or len(concat_nodes) < 4 or not has_4d_input:
+            return model
+
+        slice_outs = {out for sn in slice_nodes for out in sn.output if out}
+        roll_concats = [
+            cn for cn in concat_nodes
+            if sum(1 for inp in cn.input if inp in slice_outs) >= 2
+        ]
+        if len(roll_concats) < 2:
+            return model
+
+        graph_outputs = {o.name for o in graph.output}
+        for out_name in graph_outputs:
+            sub_nodes = list(graph.node)
+            internal_producers = {out for sn in sub_nodes for out in sn.output if out}
+            external_inputs = []
+            for sn in sub_nodes:
+                for inp in sn.input:
+                    if inp and inp not in internal_producers and inp not in external_inputs:
+                        external_inputs.append(inp)
+
+            if mode == "function_proto":
+                canon_nodes, f_in, f_out = _canonicalize_subgraph_nodes(
+                    sub_nodes, external_inputs, [out_name]
+                )
+                ensure_specialized_function_proto(
+                    model,
+                    domain="custom.pytorch",
+                    fname="ShiftedWindowAttention",
+                    formal_inputs=f_in,
+                    formal_outputs=f_out,
+                    body_nodes=canon_nodes,
+                    doc_string="Formal Swin Shifted Window Attention",
+                )
+
+            swin_node = helper.make_node(
+                "ShiftedWindowAttention",
+                inputs=external_inputs,
+                outputs=[out_name],
+                name="fused_swin_window_attn",
+                domain="custom.pytorch",
+            )
+            del graph.node[:]
+            graph.node.append(swin_node)
+            return ShapeCanonicalizer().apply_dead_code_elimination(model)
+        return model
+
+    # -------------------------------------------------------------------------
+    # 16. Vision Transformer (ViT) Patch Embedding & CLS Token Fusion
+    # -------------------------------------------------------------------------
+    def apply_vit_patch_embedding_fusion(
+        self, model: onnx.ModelProto, mode: str = "function_proto"
+    ) -> onnx.ModelProto:
+        """Fuse patch convolution, [CLS] token prepend, and 1D positional embedding into ViTPatchEmbedding."""
+        graph = model.graph
+        conv_nodes = [n for n in graph.node if n.op_type == "Conv"]
+        concat_nodes = [n for n in graph.node if n.op_type == "Concat"]
+        add_nodes = [n for n in graph.node if n.op_type in ("Add", "SkipLayerNormalization", "LayerNormalization")]
+        if not conv_nodes or not concat_nodes or not add_nodes:
+            return model
+
+        vit_conv = None
+        for c in conv_nodes:
+            strides = [a for a in c.attribute if a.name == "strides"]
+            kernels = [a for a in c.attribute if a.name == "kernel_shape"]
+            if strides and kernels and len(strides[0].ints) >= 2:
+                if strides[0].ints[0] >= 2 and strides[0].ints == kernels[0].ints:
+                    vit_conv = c
+                    break
+        if not vit_conv:
+            return model
+
+        node_by_output = {out: n for n in graph.node for out in n.output}
+        consumer_map = collections.defaultdict(list)
+        for n in graph.node:
+            for inp in n.input:
+                consumer_map[inp].append(n)
+
+        vit_add = None
+        for a in add_nodes:
+            if any("pos_embed" in inp or "position" in inp for inp in a.input):
+                vit_add = a
+                break
+        if not vit_add:
+            for a in add_nodes:
+                for inp in a.input:
+                    p = node_by_output.get(inp)
+                    if p and p.op_type == "Concat":
+                        vit_add = a
+                        break
+                if vit_add:
+                    break
+
+        if not vit_add:
+            return model
+
+        sub_nodes = []
+        q = [vit_add]
+        visited = set()
+        while q:
+            cur = q.pop()
+            if id(cur) in visited:
+                continue
+            visited.add(id(cur))
+            sub_nodes.append(cur)
+            if cur == vit_conv:
+                continue
+            for inp in cur.input:
+                p = node_by_output.get(inp)
+                if p:
+                    q.append(p)
+
+        internal_producers = {out for sn in sub_nodes for out in sn.output if out}
+        external_inputs = []
+        for sn in sub_nodes:
+            for inp in sn.input:
+                if inp and inp not in internal_producers and inp not in external_inputs:
+                    external_inputs.append(inp)
+
+        if mode == "function_proto":
+            canon_nodes, f_in, f_out = _canonicalize_subgraph_nodes(
+                sub_nodes, external_inputs, [vit_add.output[0]]
+            )
+            ensure_specialized_function_proto(
+                model,
+                domain="custom.pytorch",
+                fname="ViTPatchEmbedding",
+                formal_inputs=f_in,
+                formal_outputs=f_out,
+                body_nodes=canon_nodes,
+                doc_string="Formal Vision Transformer (ViT) Patch Embedding",
+            )
+
+        vit_node = helper.make_node(
+            "ViTPatchEmbedding",
+            inputs=external_inputs,
+            outputs=[vit_add.output[0]],
+            name="fused_vit_patch_embed",
+            domain="custom.pytorch",
+        )
+        nodes_to_drop = {id(sn) for sn in sub_nodes}
+        surviving = [n for n in graph.node if id(n) not in nodes_to_drop]
+        surviving.append(vit_node)
+        del graph.node[:]
+        graph.node.extend(surviving)
+        return ShapeCanonicalizer().apply_dead_code_elimination(model)
+
+    # -------------------------------------------------------------------------
+    # 17. DeepSeek Multi-Head Latent Attention (MLA) Full Macro Fusion
+    # -------------------------------------------------------------------------
+    def apply_deepseek_mla_macro_fusion(
+        self, model: onnx.ModelProto, mode: str = "function_proto"
+    ) -> onnx.ModelProto:
+        """Fuse DeepSeek MLA low-rank projections and downstream attention into single MultiHeadLatentAttention."""
+        graph = model.graph
+        mla_kv = [n for n in graph.node if n.op_type == "MultiHeadLatentAttention_KVProjection"]
+        mha = [n for n in graph.node if n.op_type in ("MultiHeadAttention", "ScaledDotProductAttention")]
+        if not mla_kv or not mha:
+            return model
+
+        graph_outputs = {o.name for o in graph.output}
+        for out_name in graph_outputs:
+            sub_nodes = list(graph.node)
+            internal_producers = {out for sn in sub_nodes for out in sn.output if out}
+            external_inputs = []
+            for sn in sub_nodes:
+                for inp in sn.input:
+                    if inp and inp not in internal_producers and inp not in external_inputs:
+                        external_inputs.append(inp)
+
+            if mode == "function_proto":
+                canon_nodes, f_in, f_out = _canonicalize_subgraph_nodes(
+                    sub_nodes, external_inputs, [out_name]
+                )
+                ensure_specialized_function_proto(
+                    model,
+                    domain="custom.pytorch",
+                    fname="MultiHeadLatentAttention",
+                    formal_inputs=f_in,
+                    formal_outputs=f_out,
+                    body_nodes=canon_nodes,
+                    doc_string="Formal DeepSeek Multi-Head Latent Attention",
+                )
+
+            mla_node = helper.make_node(
+                "MultiHeadLatentAttention",
+                inputs=external_inputs,
+                outputs=[out_name],
+                name="fused_multi_head_latent_attention",
+                domain="custom.pytorch",
+            )
+            del graph.node[:]
+            graph.node.append(mla_node)
+            return ShapeCanonicalizer().apply_dead_code_elimination(model)
+        return model

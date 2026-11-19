@@ -290,3 +290,35 @@ class JSONRuleEngine:
     def apply_dead_code_elimination(self, model: onnx.ModelProto) -> onnx.ModelProto:
         """Prune dead code."""
         return self.pipeline.shape_pass.apply_dead_code_elimination(model)
+
+    def apply_multi_field_embedding_fusion(
+        self, model: onnx.ModelProto
+    ) -> onnx.ModelProto:
+        """Fuse cascading multi-feature Gather tables and Add tree into MultiFieldEmbedding."""
+        return self.pipeline.macro_pass.apply_multi_field_embedding_fusion(
+            model, mode=self.mode
+        )
+
+    def apply_attention_key_padding_mask_fusion(
+        self, model: onnx.ModelProto
+    ) -> onnx.ModelProto:
+        """Fuse key padding mask Cast and Where into AttentionKeyPaddingMask."""
+        return self.pipeline.macro_pass.apply_attention_key_padding_mask_fusion(
+            model, mode=self.mode
+        )
+
+    def apply_sequence_classifier_head_fusion(
+        self, model: onnx.ModelProto
+    ) -> onnx.ModelProto:
+        """Fuse Norm -> Linear -> Squeeze/Pool into SequenceClassifierHead."""
+        return self.pipeline.macro_pass.apply_sequence_classifier_head_fusion(
+            model, mode=self.mode
+        )
+
+    def apply_transformer_encoder_layer_fusion(
+        self, model: onnx.ModelProto
+    ) -> onnx.ModelProto:
+        """Fuse PyTorch nn.TransformerEncoderLayer subgraphs into TransformerBlock."""
+        return self.pipeline.macro_pass.apply_transformer_encoder_layer_fusion(
+            model, mode=self.mode
+        )

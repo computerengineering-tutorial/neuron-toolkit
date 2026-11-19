@@ -168,6 +168,58 @@ class AttentionSynthesizer(Pass):
                         )
                         new_nodes.append(rope_node)
                         rope_count += 1
+                    else:
+                        # Check HuggingFace rotate_half RoPE:
+                        # One Mul has rx = Concat([Neg(x2), x1]) and sin
+                        # The other Mul has x and cos
+                        rot_n, mul_rx, mul_x, sin_t, cos_t = None, None, None, None, None
+                        for m_cand, m_other in ((in0, in1), (in1, in0)):
+                            for inp in m_cand.input:
+                                cand_rot = node_by_output.get(inp)
+                                if cand_rot and cand_rot.op_type == "Concat" and len(cand_rot.input) == 2:
+                                    p_neg = node_by_output.get(cand_rot.input[0])
+                                    if p_neg and p_neg.op_type == "Neg":
+                                        rot_n = cand_rot
+                                        mul_rx = m_cand
+                                        mul_x = m_other
+                                        sin_t = m_cand.input[1] if m_cand.input[0] == inp else m_cand.input[0]
+                                        break
+                            if rot_n:
+                                break
+
+                        if rot_n and mul_x and mul_rx:
+                            neg_n = node_by_output.get(rot_n.input[0])
+                            x2_cand = node_by_output.get(neg_n.input[0]) if neg_n else None
+                            x1_cand = node_by_output.get(rot_n.input[1])
+                            x_orig = None
+                            if x2_cand and x1_cand:
+                                if x2_cand.input and x1_cand.input and x2_cand.input[0] == x1_cand.input[0]:
+                                    x_orig = x2_cand.input[0]
+                            if not x_orig and x2_cand and x2_cand.op_type == "Split":
+                                x_orig = x2_cand.input[0]
+
+                            cos_t = mul_x.input[1] if (x_orig and mul_x.input[0] == x_orig) else (
+                                mul_x.input[0] if (x_orig and mul_x.input[1] == x_orig) else mul_x.input[1]
+                            )
+                            x_in = x_orig or (mul_x.input[0] if mul_x.input[1] == cos_t else mul_x.input[1])
+                            nodes_to_remove.update({id(n), id(mul_rx), id(mul_x), id(rot_n)})
+                            if neg_n:
+                                nodes_to_remove.add(id(neg_n))
+                            if x1_cand:
+                                nodes_to_remove.add(id(x1_cand))
+                            if x2_cand:
+                                nodes_to_remove.add(id(x2_cand))
+
+                            rope_node = helper.make_node(
+                                op_type="RotaryEmbedding",
+                                inputs=[x_in, cos_t, sin_t],
+                                outputs=[n.output[0]],
+                                name=f"{n.name}_fused_rope",
+                                domain="custom.pytorch",
+                                interleaved=0,
+                            )
+                            new_nodes.append(rope_node)
+                            rope_count += 1
 
         if not new_nodes:
             return model
@@ -567,31 +619,43 @@ class AttentionSynthesizer(Pass):
             scores_inp, v_inp = sm.input[0], sm.input[1]
             mm = node_by_output.get(scores_inp)
             scale_node_after_mm = None
-            if mm and mm.op_type in ("Div", "Mul") and len(mm.input) >= 2:
-                parent_mm = node_by_output.get(mm.input[0])
-                if parent_mm and parent_mm.op_type == "MatMul":
-                    scale_operand = mm.input[1]
-                    is_scalar = False
-                    if scale_operand in inits:
-                        init_tensor = next(
-                            i for i in graph.initializer if i.name == scale_operand
-                        )
-                        if len(init_tensor.dims) == 0 or (
-                            len(init_tensor.dims) == 1 and init_tensor.dims[0] == 1
-                        ):
-                            is_scalar = True
-                    else:
-                        cand_node = node_by_output.get(scale_operand)
-                        if cand_node and cand_node.op_type in (
-                            "Constant",
-                            "Pow",
-                            "Sqrt",
-                            "Div",
-                        ):
-                            is_scalar = True
-                    if is_scalar:
+            extra_attn_inputs: list[str] = []
+
+            # Peel off Where (mask), Add (ALiBi / relative bias), Mul/Div (scaling)
+            unwrapped = True
+            while mm and unwrapped:
+                unwrapped = False
+                if mm.op_type == "Where" and len(mm.input) >= 2:
+                    mask_cond = mm.input[0]
+                    cand_scores = node_by_output.get(mm.input[1])
+                    if cand_scores and cand_scores.op_type in ("MatMul", "Div", "Mul", "Add"):
+                        extra_attn_inputs.append(mask_cond)
+                        nodes_to_drop.add(id(mm))
+                        mm = cand_scores
+                        unwrapped = True
+                        continue
+                if mm.op_type == "Add" and len(mm.input) == 2:
+                    cand0 = node_by_output.get(mm.input[0])
+                    cand1 = node_by_output.get(mm.input[1])
+                    if cand0 and cand0.op_type in ("MatMul", "Div", "Mul"):
+                        extra_attn_inputs.append(mm.input[1])
+                        nodes_to_drop.add(id(mm))
+                        mm = cand0
+                        unwrapped = True
+                        continue
+                    if cand1 and cand1.op_type in ("MatMul", "Div", "Mul"):
+                        extra_attn_inputs.append(mm.input[0])
+                        nodes_to_drop.add(id(mm))
+                        mm = cand1
+                        unwrapped = True
+                        continue
+                if mm.op_type in ("Div", "Mul") and len(mm.input) >= 2:
+                    parent_mm = node_by_output.get(mm.input[0])
+                    if parent_mm and parent_mm.op_type == "MatMul":
                         scale_node_after_mm = mm
                         mm = parent_mm
+                        unwrapped = True
+                        continue
 
             if not mm or mm.op_type != "MatMul":
                 continue
@@ -711,7 +775,7 @@ class AttentionSynthesizer(Pass):
 
             sdpa = helper.make_node(
                 "ScaledDotProductAttention",
-                inputs=[q_inp, k_inp, v_inp],
+                inputs=[q_inp, k_inp, v_inp] + extra_attn_inputs,
                 outputs=list(sm.output),
                 name=f"{sm.name}_sdpa",
                 domain="custom.pytorch",
@@ -1034,8 +1098,30 @@ class AttentionSynthesizer(Pass):
                 else "Sigmoid"
             )
 
-            # to_gates
-            to_gates = node_by_output.get(gated_unit.input[1])
+            # to_gates: trace upstream through intermediate reshape / transpose / unsqueeze / rearrange
+            gate_producer = node_by_output.get(gated_unit.input[1])
+            intermediate_gates_nodes: list[onnx.NodeProto] = []
+            curr = gate_producer
+            while (
+                curr
+                and curr.op_type not in ("Linear", "MatMul")
+                and curr.op_type
+                in (
+                    "Reshape",
+                    "Transpose",
+                    "AxialRearrange",
+                    "Unsqueeze",
+                    "Squeeze",
+                )
+            ):
+                intermediate_gates_nodes.append(curr)
+                curr = (
+                    node_by_output.get(curr.input[0])
+                    if curr.input
+                    else None
+                )
+
+            to_gates = curr
             if not to_gates or to_gates.op_type not in ("Linear", "MatMul"):
                 continue
             if to_gates.input[0] != norm.output[0]:
@@ -1129,6 +1215,8 @@ class AttentionSynthesizer(Pass):
                     to_out.name,
                 }
             )
+            for ign in intermediate_gates_nodes:
+                nodes_to_drop.add(ign.name)
 
             if mode == "function_proto":
                 self._attach_specialized_gated_attention_function(
@@ -1182,15 +1270,38 @@ class AttentionSynthesizer(Pass):
             domain="custom.pytorch",
             epsilon=1e-12,
         )
+        all_formal = [
+            "X",
+            "norm_gamma",
+            "qkv_w",
+            "qkv_b",
+            "gates_w",
+            "gates_b",
+            "theta",
+            "out_w",
+            "out_b",
+        ]
+        formal_inputs = all_formal[:num_inputs]
+
+        qkv_inputs = (
+            ["X_norm", "qkv_w", "qkv_b"]
+            if "qkv_b" in formal_inputs
+            else ["X_norm", "qkv_w"]
+        )
         to_qkv = helper.make_node(
             "Linear",
-            inputs=["X_norm", "qkv_w"],
+            inputs=qkv_inputs,
             outputs=["QKV"],
             domain="custom.pytorch",
         )
+        gates_inputs = (
+            ["X_norm", "gates_w", "gates_b"]
+            if "gates_b" in formal_inputs
+            else ["X_norm", "gates_w"]
+        )
         to_gates = helper.make_node(
             "Linear",
-            inputs=["X_norm", "gates_w", "gates_b"],
+            inputs=gates_inputs,
             outputs=["Gates"],
             domain="custom.pytorch",
         )
@@ -1228,24 +1339,11 @@ class AttentionSynthesizer(Pass):
             domain="custom.pytorch",
         )
         out_inputs = (
-            ["Merged", "out_w", "out_b"] if num_inputs >= 9 else ["Merged", "out_w"]
+            ["Merged", "out_w", "out_b"] if "out_b" in formal_inputs else ["Merged", "out_w"]
         )
         to_out = helper.make_node(
             "Linear", inputs=out_inputs, outputs=["Y"], domain="custom.pytorch"
         )
-
-        all_formal = [
-            "X",
-            "norm_gamma",
-            "qkv_w",
-            "qkv_b",
-            "gates_w",
-            "gates_b",
-            "theta",
-            "out_w",
-            "out_b",
-        ]
-        formal_inputs = all_formal[:num_inputs]
 
         ensure_specialized_function_proto(
             model=model,

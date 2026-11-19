@@ -283,7 +283,7 @@ class ShapeCanonicalizer(Pass):
                     return list(a.ints)
             return None
 
-        for _ in range(5):
+        for _ in range(25):
             node_by_output = {out: n for n in graph.node for out in n.output}
             consumer_map: dict[str, list[onnx.NodeProto]] = {}
             for n in graph.node:
@@ -393,7 +393,7 @@ class ShapeCanonicalizer(Pass):
         graph = model.graph
         graph_outputs = {o.name for o in graph.output}
 
-        for _ in range(5):
+        for _ in range(25):
             node_by_output = {out: n for n in graph.node for out in n.output}
             consumer_map: dict[str, list[onnx.NodeProto]] = {}
             for n in graph.node:
@@ -731,7 +731,7 @@ class ShapeCanonicalizer(Pass):
             "Cast",
             "Reshape",
         }
-        for _ in range(5):
+        for _ in range(25):
             sig_map: dict[
                 tuple[str, tuple[str, ...], tuple[tuple[str, Any], ...]], str
             ] = {}
@@ -812,7 +812,7 @@ class ShapeCanonicalizer(Pass):
                         used.update(collect_used_inputs(sub_g.node))
             return used
 
-        for _ in range(5):
+        for _ in range(25):
             used_outputs = set(graph_outputs)
             used_outputs.update(collect_used_inputs(graph.node))
 

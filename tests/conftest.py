@@ -3,6 +3,15 @@ import onnx
 import pytest
 from onnx import TensorProto, helper
 
+try:
+    import inspect
+
+    from torch.onnx._internal.torchscript_exporter import utils as _ts_utils
+    if hasattr(_ts_utils.setup_onnx_logging, "__wrapped__") and not inspect.isgeneratorfunction(_ts_utils.setup_onnx_logging.__wrapped__):
+        _ts_utils.setup_onnx_logging = _ts_utils.setup_onnx_logging.__wrapped__
+except (ImportError, AttributeError):
+    pass
+
 
 def build_tflite_model(
     codes,

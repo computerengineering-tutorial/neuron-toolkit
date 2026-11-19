@@ -32,12 +32,12 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-import onnx
-from generators.decorators import register_architecture
-from generators.registry import ModelRegistry
 import torch
 import torch.nn.functional as F
 from torch import nn
+
+from generators.decorators import register_architecture
+from generators.registry import ModelRegistry
 
 warnings.filterwarnings("ignore")
 
@@ -779,7 +779,6 @@ def get_hf_whisper_attention():
     return HF_Whisper_Wrapper(config)
 
 
-from generators.base import export_model as unified_export_model
 
 
 # =============================================================================

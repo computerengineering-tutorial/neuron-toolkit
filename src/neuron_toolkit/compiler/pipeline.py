@@ -230,8 +230,8 @@ class OptimizationPipeline:
                     model, mode=context.mode
                 )
 
-            if context.options.get("enable_macro_blocks", False) or (
-                context.rule_ids and "macro_blocks" in context.rule_ids
+            if context.should_run("macro_blocks") and context.options.get(
+                "enable_macro_blocks", True
             ):
                 model = self.macro_pass.run(model, mode=context.mode)
 

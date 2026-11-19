@@ -1,0 +1,51 @@
+{
+  "rule_id": "sequence_classifier_head_fusion",
+  "name": "Sequence Classifier Head Composite Fusion",
+  "description": "Fuses LayerNorm / RMSNorm -> Linear (MatMul+Add) -> Squeeze/Pool into SequenceClassifierHead with FunctionProto Netron expandability.",
+  "pattern": {
+    "nodes": [
+      {
+        "id": "norm",
+        "op_type": "LayerNormalization",
+        "inputs": ["$x", "$scale", "$bias"],
+        "outputs": ["$norm_out"]
+      },
+      {
+        "id": "linear",
+        "op_type": "Linear",
+        "inputs": ["$norm_out", "$w", "$b"],
+        "outputs": ["$lin_out"]
+      },
+      {
+        "id": "squeeze",
+        "op_type": "Squeeze",
+        "inputs": ["$lin_out", "$axis"],
+        "outputs": ["$logits"]
+      }
+    ]
+  },
+  "action": {
+    "type": "fuse_to_function",
+    "op_type": "SequenceClassifierHead",
+    "domain": "custom.pytorch",
+    "inputs": ["$x"],
+    "outputs": ["$logits"],
+    "targets": {
+      "modern_onnx": {
+        "op_type": "SequenceClassifierHead",
+        "domain": "custom.pytorch",
+        "inputs": ["$x"]
+      },
+      "function_proto": {
+        "op_type": "SequenceClassifierHead",
+        "domain": "custom.pytorch",
+        "inputs": ["$x"]
+      },
+      "pytorch_custom": {
+        "op_type": "SequenceClassifierHead",
+        "domain": "custom.pytorch",
+        "inputs": ["$x"]
+      }
+    }
+  }
+}

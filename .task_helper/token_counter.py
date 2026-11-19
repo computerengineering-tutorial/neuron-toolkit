@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-"""
-Token Counter Helper Script
+"""Token Counter Helper Script
 Reads all readable files from a specified folder, concatenates their contents,
 and calculates token counts using tiktoken.
 """
 
+import argparse
 import os
 import sys
-import argparse
 from pathlib import Path
+
 import tiktoken
 
 
@@ -75,7 +75,7 @@ def scan_and_count(
                 continue
 
             try:
-                with open(file_path, "r", encoding="utf-8", errors="replace") as f:
+                with open(file_path, encoding="utf-8", errors="replace") as f:
                     content = f.read()
 
                 tokens = len(enc.encode(content, disallowed_special=()))
