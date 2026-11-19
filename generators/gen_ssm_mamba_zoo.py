@@ -1,30 +1,26 @@
-"""Generator for State-Space Models (SSM) & Linear RNN architectures (Mamba S6, S4, RWKV).
-
-Exports models to ONNX across opset versions 14, 17, 18, and 20.
-"""
+#!/usr/bin/env python3
+"""Generator for State-Space Models (SSM) & Linear RNN architectures (Mamba S6, S4, RWKV)."""
 
 from __future__ import annotations
 
-import sys
-from pathlib import Path
 from typing import Any
-
-_REPO_ROOT = Path(__file__).resolve().parent.parent
-if str(_REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(_REPO_ROOT))
-
-import onnx
 import torch
 import torch.nn.functional as F
 from torch import nn
 
-OUT_DIR = Path(".helper/models/ssm_mamba")
-OUT_DIR.mkdir(parents=True, exist_ok=True)
+from generators.decorators import register_architecture
+from generators.registry import ModelRegistry
 
 
-# =============================================================================
-# 1. Mamba Selective State Space (S6) Block
-# =============================================================================
+@register_architecture(
+    name="mamba_selective_scan",
+    category="ssm_mamba",
+    subfolder="ssm_mamba",
+    shapes=[(2, 16, 64)],
+    input_names=["x"],
+    output_names=["out"],
+    init_args=(64, 16),
+)
 class Mamba_SelectiveScanBlock(nn.Module):
     """Selective State Space (S6) block with input-dependent Delta, B, C projections."""
 
@@ -34,10 +30,7 @@ class Mamba_SelectiveScanBlock(nn.Module):
         self.d_state = d_state
         self.d_inner = d_model * expand
 
-        # In-projection to 2 * d_inner (for x and z gating)
         self.in_proj = nn.Linear(d_model, 2 * self.d_inner, bias=False)
-
-        # 1D Depthwise Conv
         self.conv1d = nn.Conv1d(
             in_channels=self.d_inner,
             out_channels=self.d_inner,
@@ -46,12 +39,8 @@ class Mamba_SelectiveScanBlock(nn.Module):
             groups=self.d_inner,
             bias=True,
         )
-
-        # Delta, B, C projections
         self.x_proj = nn.Linear(self.d_inner, 1 + 2 * d_state, bias=False)
         self.dt_proj = nn.Linear(1, self.d_inner, bias=True)
-
-        # A parameter (log-space initialization)
         self.A_log = nn.Parameter(
             torch.log(
                 torch.arange(1, d_state + 1, dtype=torch.float32).repeat(
@@ -59,49 +48,38 @@ class Mamba_SelectiveScanBlock(nn.Module):
                 )
             )
         )
-
-        # D skip parameter
         self.D = nn.Parameter(torch.ones(self.d_inner))
-
-        # Out-projection
         self.out_proj = nn.Linear(self.d_inner, d_model, bias=False)
 
     def forward(self, u: torch.Tensor) -> torch.Tensor:
-        # u: (B, S, D)
         B, S, _ = u.shape
-
-        # 1. In-projection and split into x and gate z
-        xz = self.in_proj(u)  # (B, S, 2 * d_inner)
+        xz = self.in_proj(u)
         x, z = xz.chunk(2, dim=-1)
 
-        # 2. 1D Conv and SiLU
         x_conv = self.conv1d(x.transpose(1, 2))[:, :, :S].transpose(1, 2)
         x_act = F.silu(x_conv)
 
-        # 3. Discretization parameters
-        x_dbl = self.x_proj(x_act)  # (B, S, 1 + 2 * d_state)
-        dt = F.softplus(self.dt_proj(x_dbl[:, :, :1]))  # (B, S, d_inner)
-        B_mat = x_dbl[:, :, 1 : 1 + self.d_state]  # (B, S, d_state)
-        C_mat = x_dbl[:, :, 1 + self.d_state :]  # (B, S, d_state)
+        x_dbl = self.x_proj(x_act)
+        dt = F.softplus(self.dt_proj(x_dbl[:, :, :1]))
+        B_mat = x_dbl[:, :, 1 : 1 + self.d_state]
+        C_mat = x_dbl[:, :, 1 + self.d_state :]
 
-        # Discretize A: exp(-exp(A_log) * dt)
-        A = -torch.exp(self.A_log)  # (d_inner, d_state)
-
-        # Simplified associative scan / recurrence
-        # y = x_act * D + dt * (B_mat * C_mat).sum(dim=-1, keepdim=True)
         bc = (B_mat * C_mat).sum(dim=-1, keepdim=True)
         y = x_act * self.D + dt * bc
 
-        # 4. Multiply with gating branch z
         y_gated = y * F.silu(z)
-
-        # 5. Out projection
         return self.out_proj(y_gated)
 
 
-# =============================================================================
-# 2. S4 (Structured State Space) Block
-# =============================================================================
+@register_architecture(
+    name="s4_state_space",
+    category="ssm_mamba",
+    subfolder="ssm_mamba",
+    shapes=[(2, 16, 64)],
+    input_names=["x"],
+    output_names=["out"],
+    init_args=(64, 16),
+)
 class S4_StructuredStateSpace(nn.Module):
     """HiPPO continuous-time diagonal recurrent block."""
 
@@ -116,18 +94,22 @@ class S4_StructuredStateSpace(nn.Module):
         self.norm = nn.LayerNorm(d_model)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # x: (B, S, D)
         residual = x
         x_norm = self.norm(x)
         h = self.w(x_norm)
-        # Recurrent state projection
         y = h * self.d + torch.sigmoid(h) * self.c.mean()
         return residual + y
 
 
-# =============================================================================
-# 3. RWKV Time-Mixing Block
-# =============================================================================
+@register_architecture(
+    name="rwkv_time_mix",
+    category="ssm_mamba",
+    subfolder="ssm_mamba",
+    shapes=[(2, 16, 64)],
+    input_names=["x"],
+    output_names=["out"],
+    init_args=(64,),
+)
 class RWKV_TimeMix(nn.Module):
     """Receptance Weighted Key Value (RWKV) token mixing block."""
 
@@ -143,20 +125,24 @@ class RWKV_TimeMix(nn.Module):
         self.output = nn.Linear(d_model, d_model, bias=False)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # x: (B, S, D)
         k = self.key(x)
         v = self.value(x)
         r = torch.sigmoid(self.receptance(x))
 
-        # WKV calculation
         wkv = torch.cumsum(k * v, dim=1) / (torch.cumsum(torch.abs(k), dim=1) + 1e-4)
         rwkv = r * wkv
         return self.output(rwkv)
 
 
-# =============================================================================
-# 4. RWKV Channel-Mixing Block
-# =============================================================================
+@register_architecture(
+    name="rwkv_channel_mix",
+    category="ssm_mamba",
+    subfolder="ssm_mamba",
+    shapes=[(2, 16, 64)],
+    input_names=["x"],
+    output_names=["out"],
+    init_args=(64, 128),
+)
 class RWKV_ChannelMix(nn.Module):
     """RWKV Channel mixing feed-forward block."""
 
@@ -172,48 +158,12 @@ class RWKV_ChannelMix(nn.Module):
         return r * self.value(k)
 
 
-from generators.base import export_model as unified_export_model
-
-# =============================================================================
-# Exporter
-# =============================================================================
 def export_ssm_zoo() -> list[dict[str, Any]]:
-    models: dict[str, tuple[nn.Module, tuple[torch.Tensor, ...], list[str]]] = {
-        "mamba_selective_scan": (
-            Mamba_SelectiveScanBlock(64, 16),
-            (torch.randn(2, 16, 64),),
-            ["x"],
-        ),
-        "s4_state_space": (
-            S4_StructuredStateSpace(64, 16),
-            (torch.randn(2, 16, 64),),
-            ["x"],
-        ),
-        "rwkv_time_mix": (RWKV_TimeMix(64), (torch.randn(2, 16, 64),), ["x"]),
-        "rwkv_channel_mix": (
-            RWKV_ChannelMix(64, 128),
-            (torch.randn(2, 16, 64),),
-            ["x"],
-        ),
-    }
-
-    opsets = [14, 17, 18, 20]
-    catalog = []
-
-    for name, (mod, dummy_inputs, input_names) in models.items():
-        exported = unified_export_model(
-            model=mod,
-            dummy_inputs=dummy_inputs,
-            input_names=input_names,
-            output_names=["out"],
-            base_name=name,
-            out_dir=OUT_DIR,
-            opset_versions=opsets,
-        )
-        for p in exported:
-            catalog.append({"name": name, "path": p})
-
-    return catalog
+    return [
+        {"name": name, "path": p}
+        for name, paths in ModelRegistry.export_all(category="ssm_mamba").items()
+        for p in paths
+    ]
 
 
 if __name__ == "__main__":

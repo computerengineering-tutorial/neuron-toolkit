@@ -17,8 +17,17 @@ from pathlib import Path
 import onnx
 import pytest
 
+import sys
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
 from neuron_toolkit.compiler.pipeline import NeuronCompiler
 from neuron_toolkit.runtime.cross_verifier import CrossVerifier
+from generators.registry import ModelRegistry
+
+ModelRegistry.discover(_REPO_ROOT / "generators")
+_ADDON_SPECS = ModelRegistry.get_by_category("addons")
 
 MODELS_DIR = Path(".helper/models")
 
@@ -230,6 +239,20 @@ def test_obfuscated_stress_models(opset: int) -> None:
         _run_verify_test(pure_p)
     if pt_p.exists():
         _run_verify_test(pt_p)
+
+
+# =============================================================================
+# 10. Dynamic Addon & Discovered Models Verification
+# =============================================================================
+
+
+@pytest.mark.parametrize("spec", _ADDON_SPECS, ids=lambda s: s.name)
+def test_addon_zoo_models(spec) -> None:
+    """Dynamic test exercising all registered addon models."""
+    p = spec.get_model_path(opset=18)
+    if not p.exists():
+        pytest.skip(f"Addon model {spec.name} not yet exported")
+    _run_verify_test(p, atol=spec.atol)
 
 
 def test_architecture_block_predictor_on_baseline() -> None:

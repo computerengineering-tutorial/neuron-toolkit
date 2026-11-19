@@ -1,26 +1,25 @@
 #!/usr/bin/env python3
-"""Synthetic PyTorch Graph Generator: Normalization Variants.
-
-Generates ONNX models for:
-- RMSNorm (ReduceL2 & MeanSquare formulations)
-- LayerNorm (Mean/Var expansion)
-- GroupNorm (InstanceNorm 1D adapter formulation)
-"""
+"""Synthetic PyTorch Graph Generator: Normalization Variants."""
 
 from __future__ import annotations
-
-import json
-import sys
-from pathlib import Path
-
-_REPO_ROOT = Path(__file__).resolve().parent.parent
-if str(_REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(_REPO_ROOT))
 
 import torch
 from torch import nn
 
+from generators.decorators import register_architecture
+from generators.registry import ModelRegistry
 
+
+@register_architecture(
+    name="norm_rmsnorm_l2",
+    category="norm_variants",
+    shapes=[(2, 8, 32)],
+    input_names=["input"],
+    output_names=["output"],
+    expected_target_node="RMSNorm",
+    min_expected_reduction=0.5,
+    init_args=(32,),
+)
 class RMSNormL2Module(nn.Module):
     """Explicit ReduceL2-based RMSNorm: x * (sqrt(D) / clamp(norm(x), min=eps)) * gamma."""
 
@@ -30,7 +29,6 @@ class RMSNormL2Module(nn.Module):
         self.gamma = nn.Parameter(torch.ones(d_model))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # L2 norm along last dim
         norm = torch.norm(x, p=2, dim=-1, keepdim=True)
         scale = (x.shape[-1] ** 0.5) / torch.clamp(norm, min=self.eps)
         return x * scale * self.gamma
@@ -49,6 +47,16 @@ class RMSNormMeanSqModule(nn.Module):
         return x * torch.rsqrt(variance + self.eps) * self.gamma
 
 
+@register_architecture(
+    name="norm_layernorm",
+    category="norm_variants",
+    shapes=[(2, 8, 32)],
+    input_names=["input"],
+    output_names=["output"],
+    expected_target_node="LayerNormalization",
+    min_expected_reduction=0.5,
+    init_args=(32,),
+)
 class LayerNormExpandedModule(nn.Module):
     """Explicit LayerNorm mean/variance decomposition."""
 
@@ -64,6 +72,16 @@ class LayerNormExpandedModule(nn.Module):
         return ((x - mean) / torch.sqrt(var + self.eps)) * self.gamma + self.beta
 
 
+@register_architecture(
+    name="norm_groupnorm",
+    category="norm_variants",
+    shapes=[(2, 16, 8, 8)],
+    input_names=["input"],
+    output_names=["output"],
+    expected_target_node="GroupNorm",
+    min_expected_reduction=0.0,
+    init_args=(2, 16),
+)
 class GroupNormModule(nn.Module):
     """Standard GroupNorm."""
 
@@ -75,6 +93,16 @@ class GroupNormModule(nn.Module):
         return self.gn(x)
 
 
+@register_architecture(
+    name="norm_variants",
+    category="norm_variants",
+    shapes=[(2, 8, 32)],
+    input_names=["input"],
+    output_names=["output"],
+    expected_target_node="LayerNormalization",
+    emit_json_descriptor=False,
+    init_args=(32,),
+)
 class CombinedNormVariants(nn.Module):
     """Chains multiple normalizations in sequence."""
 
@@ -88,65 +116,8 @@ class CombinedNormVariants(nn.Module):
         return self.ln(h)
 
 
-from generators.base import export_model as unified_export_model
-
-
 def generate_all() -> None:
-    models_dir = Path(".helper/models")
-    dummy_3d = torch.randn(2, 8, 32)
-    dummy_4d = torch.randn(2, 16, 8, 8)
-
-    # 1. Combined Norm model
-    unified_export_model(
-        CombinedNormVariants(32),
-        (dummy_3d,),
-        ["input"],
-        ["output"],
-        "norm_variants",
-        models_dir,
-        opset_versions=[14, 17, 18, 20],
-        expected_target_node="LayerNormalization",
-        emit_json_descriptor=False,
-    )
-
-    # 2. Individual RMSNorm L2
-    unified_export_model(
-        RMSNormL2Module(32),
-        (dummy_3d,),
-        ["input"],
-        ["output"],
-        "norm_rmsnorm_l2",
-        models_dir,
-        opset_versions=[14, 17, 18, 20],
-        expected_target_node="RMSNorm",
-        min_expected_reduction=0.5,
-    )
-
-    # 3. Individual LayerNorm
-    unified_export_model(
-        LayerNormExpandedModule(32),
-        (dummy_3d,),
-        ["input"],
-        ["output"],
-        "norm_layernorm",
-        models_dir,
-        opset_versions=[14, 17, 18, 20],
-        expected_target_node="LayerNormalization",
-        min_expected_reduction=0.5,
-    )
-
-    # 4. GroupNorm
-    unified_export_model(
-        GroupNormModule(2, 16),
-        (dummy_4d,),
-        ["input"],
-        ["output"],
-        "norm_groupnorm",
-        models_dir,
-        opset_versions=[14, 17, 18, 20],
-        expected_target_node="GroupNorm",
-        min_expected_reduction=0.0,
-    )
+    ModelRegistry.export_all(category="norm_variants")
 
 
 if __name__ == "__main__":

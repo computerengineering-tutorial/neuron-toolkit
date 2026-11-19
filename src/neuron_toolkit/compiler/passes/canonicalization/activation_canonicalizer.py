@@ -841,12 +841,29 @@ class ActivationCanonicalizer(Pass):
         new_nodes: list[onnx.NodeProto] = []
         count = 0
 
-        for div_node in graph.node:
-            if div_node.op_type != "Div" or len(div_node.input) < 2:
+        for cand_node in graph.node:
+            recip_node = None
+            if cand_node.op_type == "Div" and len(cand_node.input) >= 2:
+                num_in = cand_node.input[0]
+                denom_in = cand_node.input[1]
+                div_node = cand_node
+            elif cand_node.op_type == "Mul" and len(cand_node.input) >= 2:
+                in0 = node_by_output.get(cand_node.input[0])
+                in1 = node_by_output.get(cand_node.input[1])
+                if in0 and in0.op_type == "Reciprocal":
+                    recip_node = in0
+                    denom_in = in0.input[0]
+                    num_in = cand_node.input[1]
+                    div_node = cand_node
+                elif in1 and in1.op_type == "Reciprocal":
+                    recip_node = in1
+                    denom_in = in1.input[0]
+                    num_in = cand_node.input[0]
+                    div_node = cand_node
+                else:
+                    continue
+            else:
                 continue
-
-            num_in = div_node.input[0]
-            denom_in = div_node.input[1]
 
             exp_node = node_by_output.get(num_in)
             sum_node = node_by_output.get(denom_in)
@@ -917,6 +934,8 @@ class ActivationCanonicalizer(Pass):
             count += 1
 
             nodes_to_remove.add(div_node.name or div_node.output[0])
+            if recip_node:
+                nodes_to_remove.add(recip_node.name or recip_node.output[0])
             if (
                 len(consumer_map.get(sum_node.output[0], [])) <= 1
                 and sum_node.output[0] not in graph_outputs

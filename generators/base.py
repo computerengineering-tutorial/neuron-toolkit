@@ -14,16 +14,21 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import random
+import sys
 import warnings
 from pathlib import Path
 from typing import Any, Sequence
+
+_SRC_DIR = Path(__file__).resolve().parent.parent / "src"
+if _SRC_DIR.exists() and str(_SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(_SRC_DIR))
 
 import onnx
 import torch
 from torch import nn
 
-TESTS_JSON_DIR = Path("tests/rules_json_tests")
-TESTS_JSON_DIR.mkdir(parents=True, exist_ok=True)
+from generators.obfuscation import ObfuscationRegistry
 
 
 def compute_graph_topology_hash(model: onnx.ModelProto) -> str:
@@ -71,8 +76,10 @@ def export_model(
     min_expected_reduction: float = 0.0,
     rtol: float = 1e-4,
     atol: float = 1e-4,
+    obfuscate_probability: float = 0.5,
+    auto_verify: bool = True,
 ) -> list[str]:
-    """Export a PyTorch module across multiple ONNX opsets with deduplication and JSON test specs."""
+    """Export a PyTorch module across multiple ONNX opsets with deduplication, optional 50% obfuscation, and automatic on-the-fly verification."""
     out_dir.mkdir(parents=True, exist_ok=True)
     model.eval()
 
@@ -85,14 +92,25 @@ def export_model(
     # Map from topology_hash -> canonical Path
     seen_topologies: dict[str, Path] = {}
 
+    # Determine if this model export session will be obfuscated (50% probability by default)
+    is_obfuscated_session = ObfuscationRegistry.should_obfuscate(obfuscate_probability)
+
     for opset in opset_versions:
         out_path = out_dir / f"{base_name}_opset{opset}.onnx"
         tmp_path = out_dir / f".tmp_{base_name}_opset{opset}.onnx"
 
+        # Apply PyTorch mathematical obfuscation if selected
+        current_model = model
+        pt_applied: list[str] = []
+        if is_obfuscated_session:
+            current_model, pt_applied = ObfuscationRegistry.apply_pytorch(
+                model, seed=opset * 100 + len(base_name)
+            )
+
         # 1. Export with TorchScript ONNX exporter (dynamo=False for stability across 14-20)
         try:
             torch.onnx.export(
-                model,
+                current_model,
                 dummy_inputs_tuple,
                 str(tmp_path),
                 input_names=input_names,
@@ -113,6 +131,23 @@ def export_model(
                 stacklevel=2,
             )
             continue
+
+        # Apply ONNX graph mutation if selected
+        onnx_applied: list[str] = []
+        if is_obfuscated_session:
+            try:
+                mutated_proto, onnx_applied = ObfuscationRegistry.apply_onnx(
+                    m_proto, seed=opset * 200 + len(base_name)
+                )
+                onnx.checker.check_model(mutated_proto)
+                m_proto = mutated_proto
+                onnx.save(m_proto, str(tmp_path))
+            except Exception as e:
+                warnings.warn(
+                    f"ONNX obfuscation error for '{base_name}' (opset={opset}): {e}, retaining pre-mutation model",
+                    UserWarning,
+                    stacklevel=2,
+                )
 
         # 2. Compute topology hash for deduplication
         topo_hash = compute_graph_topology_hash(m_proto)
@@ -147,8 +182,12 @@ def export_model(
             seen_topologies[topo_hash] = out_path
 
             size_kb = out_path.stat().st_size / 1024.0
+            obf_tag = ""
+            if is_obfuscated_session:
+                strats = pt_applied + onnx_applied
+                obf_tag = f" [OBFUSCATED 50%: {', '.join(strats) if strats else 'active'}]"
             print(
-                f"  [OK] Exported {out_path.name:<45} (opset={opset}, nodes={len(m_proto.graph.node):<3}, {size_kb:.1f} KB)"
+                f"  [OK] Exported {out_path.name:<45} (opset={opset}, nodes={len(m_proto.graph.node):<3}, {size_kb:.1f} KB){obf_tag}"
             )
             exported_paths.append(str(out_path))
 
@@ -163,37 +202,33 @@ def export_model(
                 import shutil
                 shutil.copyfile(str(canonical), str(base_alias))
 
-    # 4. Emit / assign JSON test descriptor for this block
-    if emit_json_descriptor and exported_paths:
-        primary_model_path = exported_paths[0]
-        # Choose opset 18 if available, else first
-        for p in exported_paths:
-            if "opset18" in p:
-                primary_model_path = p
-                break
-                primary_model_path = p
-                break
+    # 4. Automatic On-The-Fly Verification ("jab run kare tab hi automatic test ho jaaye aur jaise koi test naa ho vo rok de program ko")
+    if auto_verify and exported_paths:
+        canonical_path = Path(exported_paths[0])
+        try:
+            from neuron_toolkit.compiler.pipeline import NeuronCompiler
+            from neuron_toolkit.runtime.cross_verifier import CrossVerifier
 
-        test_spec_file = TESTS_JSON_DIR / f"{base_name}_test.json"
-        input_shapes = {
-            name: list(t.shape)
-            for name, t in zip(input_names, dummy_inputs_tuple)
-        }
+            m_loaded = onnx.load(str(canonical_path))
+            opt_m = NeuronCompiler.compile(m_loaded, mode="function_proto")
+            verifier = CrossVerifier(m_loaded, opt_m, rtol=rtol, atol=atol)
+            report = verifier.verify()
+            if not report.all_passed:
+                raise AssertionError(
+                    f"Automatic on-the-fly verification FAILED for {canonical_path.name}:\n{report.summary()}"
+                )
 
-        spec = {
-            "test_id": f"{base_name}_test",
-            "model_path": str(primary_model_path),
-            "input_shapes": input_shapes,
-            "expected_target_node": expected_target_node,
-            "min_expected_reduction": min_expected_reduction,
-            "rtol": rtol,
-            "atol": atol,
-        }
-
-        # Do not overwrite if already customized with specific reduction thresholds
-        if not test_spec_file.exists():
-            with open(test_spec_file, "w", encoding="utf-8") as f:
-                json.dump(spec, f, indent=2)
-            print(f"  [SPEC] Emitted JSON test descriptor: {test_spec_file.name}")
+            if expected_target_node:
+                opt_ops = {n.op_type for n in opt_m.graph.node}
+                if not any(expected_target_node in op for op in opt_ops):
+                    raise AssertionError(
+                        f"Expected target op '{expected_target_node}' not synthesized in {canonical_path.name}. Found ops: {opt_ops}"
+                    )
+            print(f"  [AUTO-VERIFY OK] On-the-fly verification & parity passed for {base_name}")
+        except Exception as e:
+            # Halt program immediately
+            raise RuntimeError(
+                f"[FATAL ON-THE-FLY TEST FAILURE] Verification halted for model '{base_name}': {e}"
+            ) from e
 
     return exported_paths

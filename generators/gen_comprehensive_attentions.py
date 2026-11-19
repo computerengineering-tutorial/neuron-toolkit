@@ -33,6 +33,8 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 import onnx
+from generators.decorators import register_architecture
+from generators.registry import ModelRegistry
 import torch
 import torch.nn.functional as F
 from torch import nn
@@ -46,6 +48,17 @@ OUT_DIR.mkdir(parents=True, exist_ok=True)
 # =============================================================================
 # 1. Standard Multi-Head Attention (Separate Q, K, V Projections - BERT / ViT)
 # =============================================================================
+@register_architecture(
+    name="mha_separate_qkv",
+    category="attention_variants",
+    subfolder="attention_variants",
+    shapes=[(1, 16, 64)],
+    input_names=["x"],
+    output_names=["out"],
+    opset_versions=(14, 18, 20),
+    dynamic_axes={"x": {0: "batch_size", 1: "sequence_length"}, "out": {0: "batch_size", 1: "sequence_length"}},
+    init_args=(64, 4),
+)
 class StandardMHA_SeparateQKV(nn.Module):
     def __init__(self, d_model: int = 64, num_heads: int = 4) -> None:
         super().__init__()
@@ -74,6 +87,17 @@ class StandardMHA_SeparateQKV(nn.Module):
 # =============================================================================
 # 2. Standard Multi-Head Attention (Fused QKV Projection)
 # =============================================================================
+@register_architecture(
+    name="mha_fused_qkv",
+    category="attention_variants",
+    subfolder="attention_variants",
+    shapes=[(1, 16, 64)],
+    input_names=["x"],
+    output_names=["out"],
+    opset_versions=(14, 18, 20),
+    dynamic_axes={"x": {0: "batch_size", 1: "sequence_length"}, "out": {0: "batch_size", 1: "sequence_length"}},
+    init_args=(64, 4),
+)
 class StandardMHA_FusedQKV(nn.Module):
     def __init__(self, d_model: int = 64, num_heads: int = 4) -> None:
         super().__init__()
@@ -103,6 +127,17 @@ class StandardMHA_FusedQKV(nn.Module):
 # =============================================================================
 # 3. Causal Masked Multi-Head Attention (GPT-2 Style)
 # =============================================================================
+@register_architecture(
+    name="mha_causal",
+    category="attention_variants",
+    subfolder="attention_variants",
+    shapes=[(1, 16, 64)],
+    input_names=["x"],
+    output_names=["out"],
+    opset_versions=(14, 18, 20),
+    dynamic_axes={"x": {0: "batch_size", 1: "sequence_length"}, "out": {0: "batch_size", 1: "sequence_length"}},
+    init_args=(64, 4),
+)
 class CausalMHA(nn.Module):
     def __init__(self, d_model: int = 64, num_heads: int = 4) -> None:
         super().__init__()
@@ -137,6 +172,17 @@ class CausalMHA(nn.Module):
 # =============================================================================
 # 4. Rotary Multi-Head Attention (LLaMA Style with Pre-RMSNorm)
 # =============================================================================
+@register_architecture(
+    name="mha_rope",
+    category="attention_variants",
+    subfolder="attention_variants",
+    shapes=[(1, 16, 64)],
+    input_names=["x"],
+    output_names=["out"],
+    opset_versions=(14, 18, 20),
+    dynamic_axes={"x": {0: "batch_size", 1: "sequence_length"}, "out": {0: "batch_size", 1: "sequence_length"}},
+    init_args=(64, 4),
+)
 class RotaryMHA(nn.Module):
     def __init__(self, d_model: int = 64, num_heads: int = 4) -> None:
         super().__init__()
@@ -187,6 +233,17 @@ class RotaryMHA(nn.Module):
 # =============================================================================
 # 5. Grouped-Query Attention (GQA - LLaMA 3, Mistral 7B)
 # =============================================================================
+@register_architecture(
+    name="mha_gqa",
+    category="attention_variants",
+    subfolder="attention_variants",
+    shapes=[(1, 16, 64)],
+    input_names=["x"],
+    output_names=["out"],
+    opset_versions=(14, 18, 20),
+    dynamic_axes={"x": {0: "batch_size", 1: "sequence_length"}, "out": {0: "batch_size", 1: "sequence_length"}},
+    init_kwargs={"d_model": 64, "num_q_heads": 8, "num_kv_heads": 2},
+)
 class GroupedQueryAttention_GQA(nn.Module):
     def __init__(
         self, d_model: int = 64, num_q_heads: int = 8, num_kv_heads: int = 2
@@ -223,6 +280,17 @@ class GroupedQueryAttention_GQA(nn.Module):
 # =============================================================================
 # 6. Multi-Query Attention (MQA - Falcon, PaLM)
 # =============================================================================
+@register_architecture(
+    name="mha_mqa",
+    category="attention_variants",
+    subfolder="attention_variants",
+    shapes=[(1, 16, 64)],
+    input_names=["x"],
+    output_names=["out"],
+    opset_versions=(14, 18, 20),
+    dynamic_axes={"x": {0: "batch_size", 1: "sequence_length"}, "out": {0: "batch_size", 1: "sequence_length"}},
+    init_kwargs={"d_model": 64, "num_q_heads": 8},
+)
 class MultiQueryAttention_MQA(nn.Module):
     def __init__(self, d_model: int = 64, num_q_heads: int = 8) -> None:
         super().__init__()
@@ -256,6 +324,17 @@ class MultiQueryAttention_MQA(nn.Module):
 # =============================================================================
 # 7. Cross-Attention (Whisper, BART, Transformer Decoder)
 # =============================================================================
+@register_architecture(
+    name="cross_attention",
+    category="attention_variants",
+    subfolder="attention_variants",
+    shapes=[(1, 16, 64), (1, 24, 64)],
+    input_names=["hidden_states", "encoder_hidden_states"],
+    output_names=["out"],
+    opset_versions=(14, 18, 20),
+    dynamic_axes={"hidden_states": {0: "batch_size", 1: "sequence_length"}, "encoder_hidden_states": {0: "batch_size", 1: "sequence_length"}, "out": {0: "batch_size", 1: "sequence_length"}},
+    init_args=(64, 4),
+)
 class CrossAttention(nn.Module):
     def __init__(self, d_model: int = 64, num_heads: int = 4) -> None:
         super().__init__()
@@ -300,6 +379,17 @@ class CrossAttention(nn.Module):
 # =============================================================================
 # 8. Gated Attention with Sigmoid (Conformer Style)
 # =============================================================================
+@register_architecture(
+    name="gated_attn_sigmoid",
+    category="attention_variants",
+    subfolder="attention_variants",
+    shapes=[(1, 16, 64)],
+    input_names=["x"],
+    output_names=["out"],
+    opset_versions=(14, 18, 20),
+    dynamic_axes={"x": {0: "batch_size", 1: "sequence_length"}, "out": {0: "batch_size", 1: "sequence_length"}},
+    init_args=(64, 4),
+)
 class GatedAttention_Sigmoid(nn.Module):
     def __init__(self, d_model: int = 64, num_heads: int = 4) -> None:
         super().__init__()
@@ -338,6 +428,17 @@ class GatedAttention_Sigmoid(nn.Module):
 # =============================================================================
 # 9. Gated Attention with SiLU (SwiGLU-style Attention Gating)
 # =============================================================================
+@register_architecture(
+    name="gated_attn_silu",
+    category="attention_variants",
+    subfolder="attention_variants",
+    shapes=[(1, 16, 64)],
+    input_names=["x"],
+    output_names=["out"],
+    opset_versions=(14, 18, 20),
+    dynamic_axes={"x": {0: "batch_size", 1: "sequence_length"}, "out": {0: "batch_size", 1: "sequence_length"}},
+    init_args=(64, 4),
+)
 class GatedAttention_SiLU(nn.Module):
     def __init__(self, d_model: int = 64, num_heads: int = 4) -> None:
         super().__init__()
@@ -375,6 +476,17 @@ class GatedAttention_SiLU(nn.Module):
 # =============================================================================
 # 10. Gated Attention with GELU
 # =============================================================================
+@register_architecture(
+    name="gated_attn_gelu",
+    category="attention_variants",
+    subfolder="attention_variants",
+    shapes=[(1, 16, 64)],
+    input_names=["x"],
+    output_names=["out"],
+    opset_versions=(14, 18, 20),
+    dynamic_axes={"x": {0: "batch_size", 1: "sequence_length"}, "out": {0: "batch_size", 1: "sequence_length"}},
+    init_args=(64, 4),
+)
 class GatedAttention_GELU(nn.Module):
     def __init__(self, d_model: int = 64, num_heads: int = 4) -> None:
         super().__init__()
@@ -412,6 +524,17 @@ class GatedAttention_GELU(nn.Module):
 # =============================================================================
 # 11. T5 Relative Position Bias Attention
 # =============================================================================
+@register_architecture(
+    name="mha_t5_relpos",
+    category="attention_variants",
+    subfolder="attention_variants",
+    shapes=[(1, 16, 64)],
+    input_names=["x"],
+    output_names=["out"],
+    opset_versions=(14, 18, 20),
+    dynamic_axes={"x": {0: "batch_size", 1: "sequence_length"}, "out": {0: "batch_size", 1: "sequence_length"}},
+    init_args=(64, 4),
+)
 class T5_RelativePositionAttention(nn.Module):
     def __init__(
         self, d_model: int = 64, num_heads: int = 4, num_buckets: int = 32
@@ -451,6 +574,17 @@ class T5_RelativePositionAttention(nn.Module):
 # =============================================================================
 # 12. ALiBi Attention (Attention with Linear Biases - BLOOM / MPT)
 # =============================================================================
+@register_architecture(
+    name="mha_alibi",
+    category="attention_variants",
+    subfolder="attention_variants",
+    shapes=[(1, 16, 64)],
+    input_names=["x"],
+    output_names=["out"],
+    opset_versions=(14, 18, 20),
+    dynamic_axes={"x": {0: "batch_size", 1: "sequence_length"}, "out": {0: "batch_size", 1: "sequence_length"}},
+    init_args=(64, 4),
+)
 class ALiBi_Attention(nn.Module):
     def __init__(self, d_model: int = 64, num_heads: int = 4) -> None:
         super().__init__()
@@ -493,6 +627,18 @@ class ALiBi_Attention(nn.Module):
 # =============================================================================
 # 12b. Gemma-2 Multi-Head Attention with Logits Soft-Capping
 # =============================================================================
+@register_architecture(
+    name="mha_gemma2_softcap",
+    category="attention_variants",
+    subfolder="attention_variants",
+    shapes=[(1, 16, 64)],
+    input_names=["x"],
+    output_names=["out"],
+    opset_versions=(14, 18, 20),
+    dynamic_axes={"x": {0: "batch_size", 1: "sequence_length"}, "out": {0: "batch_size", 1: "sequence_length"}},
+    init_kwargs={"d_model": 64, "num_heads": 4, "softcap": 50.0},
+    expected_target_node="LogitsSoftCap",
+)
 class Gemma2_SoftCappedAttention(nn.Module):
     """Gemma-2 style Multi-Head Attention with Logits Soft-Capping."""
 
@@ -530,6 +676,16 @@ class Gemma2_SoftCappedAttention(nn.Module):
 # =============================================================================
 # Hugging Face Real Pretrained Attention Modules
 # =============================================================================
+@register_architecture(
+    name="hf_gpt2_attention",
+    category="attention_variants",
+    subfolder="attention_variants",
+    shapes=[(1, 16, 64)],
+    input_names=["x"],
+    output_names=["out"],
+    opset_versions=(14, 18, 20),
+    dynamic_axes={"x": {0: "batch_size", 1: "sequence_length"}, "out": {0: "batch_size", 1: "sequence_length"}},
+)
 def get_hf_gpt2_attention():
     from transformers.models.gpt2.configuration_gpt2 import GPT2Config
     from transformers.models.gpt2.modeling_gpt2 import GPT2Attention
@@ -549,6 +705,16 @@ def get_hf_gpt2_attention():
     return HF_GPT2_Wrapper(layer)
 
 
+@register_architecture(
+    name="hf_llama_attention",
+    category="attention_variants",
+    subfolder="attention_variants",
+    inputs=lambda: (torch.randn(1, 16, 64), torch.arange(16).unsqueeze(0)),
+    input_names=["x", "position_ids"],
+    output_names=["out"],
+    opset_versions=(14, 18, 20),
+    dynamic_axes={"x": {0: "batch_size", 1: "sequence_length"}, "position_ids": {0: "batch_size", 1: "sequence_length"}, "out": {0: "batch_size", 1: "sequence_length"}},
+)
 def get_hf_llama_attention():
     from transformers.models.llama.configuration_llama import LlamaConfig
     from transformers.models.llama.modeling_llama import (
@@ -578,6 +744,16 @@ def get_hf_llama_attention():
     return HF_Llama_Wrapper(config)
 
 
+@register_architecture(
+    name="hf_whisper_attention",
+    category="attention_variants",
+    subfolder="attention_variants",
+    inputs=lambda: (torch.randn(1, 16, 64), torch.randn(1, 24, 64)),
+    input_names=["x", "key_value_states"],
+    output_names=["out"],
+    opset_versions=(14, 18, 20),
+    dynamic_axes={"x": {0: "batch_size", 1: "sequence_length"}, "key_value_states": {0: "batch_size", 1: "sequence_length"}, "out": {0: "batch_size", 1: "sequence_length"}},
+)
 def get_hf_whisper_attention():
     from transformers.models.whisper.configuration_whisper import WhisperConfig
     from transformers.models.whisper.modeling_whisper import WhisperAttention
@@ -607,232 +783,11 @@ from generators.base import export_model as unified_export_model
 
 
 # =============================================================================
-# Generation & Multi-Opset ONNX Export Driver
 # =============================================================================
-def export_model(
-    model: nn.Module,
-    dummy_inputs: tuple[torch.Tensor, ...],
-    input_names: list[str],
-    output_names: list[str],
-    base_name: str,
-    opset_versions: list[int] = (14, 18, 20),
-    dynamic_axes: dict[str, dict[int, str]] | None = None,
-) -> None:
-    if dynamic_axes is None and input_names and output_names:
-        dynamic_axes = {
-            input_names[0]: {0: "batch_size", 1: "sequence_length"},
-            output_names[0]: {0: "batch_size", 1: "sequence_length"},
-        }
-    unified_export_model(
-        model=model,
-        dummy_inputs=dummy_inputs,
-        input_names=input_names,
-        output_names=output_names,
-        base_name=base_name,
-        out_dir=OUT_DIR,
-        opset_versions=opset_versions,
-        dynamic_axes=dynamic_axes,
-    )
-
-
+# Master Execution & CLI
+# =============================================================================
 def main() -> None:
-    print("==================================================================")
-    print("  GENERATING COMPREHENSIVE ATTENTION FAMILY ONNX SUITE")
-    print("==================================================================")
-
-    dummy_x = torch.randn(1, 16, 64)
-    dummy_enc = torch.randn(1, 24, 64)
-    dummy_pos = torch.arange(16).unsqueeze(0)
-
-    # 1. StandardMHA_SeparateQKV
-    print("\n1. StandardMHA_SeparateQKV (BERT / ViT)")
-    export_model(
-        StandardMHA_SeparateQKV(d_model=64, num_heads=4),
-        (dummy_x,),
-        ["x"],
-        ["out"],
-        "mha_separate_qkv",
-        opset_versions=[14, 18, 20],
-    )
-
-    # 2. StandardMHA_FusedQKV
-    print("\n2. StandardMHA_FusedQKV")
-    export_model(
-        StandardMHA_FusedQKV(d_model=64, num_heads=4),
-        (dummy_x,),
-        ["x"],
-        ["out"],
-        "mha_fused_qkv",
-        opset_versions=[14, 18, 20],
-    )
-
-    # 3. CausalMHA
-    print("\n3. CausalMHA (GPT-2)")
-    export_model(
-        CausalMHA(d_model=64, num_heads=4),
-        (dummy_x,),
-        ["x"],
-        ["out"],
-        "mha_causal",
-        opset_versions=[14, 18, 20],
-    )
-
-    # 4. RotaryMHA
-    print("\n4. RotaryMHA (LLaMA / Mistral)")
-    export_model(
-        RotaryMHA(d_model=64, num_heads=4),
-        (dummy_x,),
-        ["x"],
-        ["out"],
-        "mha_rope",
-        opset_versions=[14, 18, 20],
-    )
-
-    # 5. GroupedQueryAttention_GQA
-    print("\n5. GroupedQueryAttention_GQA (LLaMA 3)")
-    export_model(
-        GroupedQueryAttention_GQA(d_model=64, num_q_heads=8, num_kv_heads=2),
-        (dummy_x,),
-        ["x"],
-        ["out"],
-        "mha_gqa",
-        opset_versions=[14, 18, 20],
-    )
-
-    # 6. MultiQueryAttention_MQA
-    print("\n6. MultiQueryAttention_MQA (Falcon / PaLM)")
-    export_model(
-        MultiQueryAttention_MQA(d_model=64, num_q_heads=8),
-        (dummy_x,),
-        ["x"],
-        ["out"],
-        "mha_mqa",
-        opset_versions=[14, 18, 20],
-    )
-
-    # 7. CrossAttention
-    print("\n7. CrossAttention (Whisper / BART)")
-    export_model(
-        CrossAttention(d_model=64, num_heads=4),
-        (dummy_x, dummy_enc),
-        ["hidden_states", "encoder_hidden_states"],
-        ["out"],
-        "cross_attention",
-        opset_versions=[14, 18, 20],
-    )
-
-    # 8. GatedAttention_Sigmoid
-    print("\n8. GatedAttention_Sigmoid (Conformer)")
-    export_model(
-        GatedAttention_Sigmoid(d_model=64, num_heads=4),
-        (dummy_x,),
-        ["x"],
-        ["out"],
-        "gated_attn_sigmoid",
-        opset_versions=[14, 18, 20],
-    )
-
-    # 9. GatedAttention_SiLU
-    print("\n9. GatedAttention_SiLU")
-    export_model(
-        GatedAttention_SiLU(d_model=64, num_heads=4),
-        (dummy_x,),
-        ["x"],
-        ["out"],
-        "gated_attn_silu",
-        opset_versions=[14, 18, 20],
-    )
-
-    # 10. GatedAttention_GELU
-    print("\n10. GatedAttention_GELU")
-    export_model(
-        GatedAttention_GELU(d_model=64, num_heads=4),
-        (dummy_x,),
-        ["x"],
-        ["out"],
-        "gated_attn_gelu",
-        opset_versions=[14, 18, 20],
-    )
-
-    # 11. T5_RelativePositionAttention
-    print("\n11. T5_RelativePositionAttention")
-    export_model(
-        T5_RelativePositionAttention(d_model=64, num_heads=4),
-        (dummy_x,),
-        ["x"],
-        ["out"],
-        "mha_t5_relpos",
-        opset_versions=[14, 18, 20],
-    )
-
-    # 12. ALiBi_Attention
-    print("\n12. ALiBi_Attention (BLOOM / MPT)")
-    export_model(
-        ALiBi_Attention(d_model=64, num_heads=4),
-        (dummy_x,),
-        ["x"],
-        ["out"],
-        "mha_alibi",
-        opset_versions=[14, 18, 20],
-    )
-
-    # 12b. Gemma2_SoftCappedAttention
-    print("\n12b. Gemma2_SoftCappedAttention (Gemma-2 / Grok-1)")
-    export_model(
-        Gemma2_SoftCappedAttention(d_model=64, num_heads=4, softcap=50.0),
-        (dummy_x,),
-        ["x"],
-        ["out"],
-        "mha_gemma2_softcap",
-        opset_versions=[14, 18, 20],
-    )
-
-    # 13. Real HuggingFace Models
-    print("\n13. HuggingFace GPT-2 Self-Attention")
-    try:
-        hf_gpt2 = get_hf_gpt2_attention()
-        export_model(
-            hf_gpt2,
-            (dummy_x,),
-            ["x"],
-            ["out"],
-            "hf_gpt2_attention",
-            opset_versions=[14, 18, 20],
-        )
-    except Exception as e:
-        print("  Skipping HF GPT-2:", e)
-
-    print("\n14. HuggingFace LLaMA Self-Attention")
-    try:
-        hf_llama = get_hf_llama_attention()
-        export_model(
-            hf_llama,
-            (dummy_x, dummy_pos),
-            ["x", "position_ids"],
-            ["out"],
-            "hf_llama_attention",
-            opset_versions=[14, 18, 20],
-        )
-    except Exception as e:
-        print("  Skipping HF LLaMA:", e)
-
-    print("\n15. HuggingFace Whisper Cross-Attention")
-    try:
-        hf_whisper = get_hf_whisper_attention()
-        export_model(
-            hf_whisper,
-            (dummy_x, dummy_enc),
-            ["x", "key_value_states"],
-            ["out"],
-            "hf_whisper_attention",
-            opset_versions=[14, 18, 20],
-        )
-    except Exception as e:
-        print("  Skipping HF Whisper:", e)
-
-    print("\n==================================================================")
-    print(f"All attention variant ONNX models generated in: {OUT_DIR.resolve()}")
-    print("==================================================================")
+    ModelRegistry.export_all(category="attention_variants")
 
 
 if __name__ == "__main__":

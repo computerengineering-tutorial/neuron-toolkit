@@ -1,43 +1,20 @@
 #!/usr/bin/env python3
-"""Comprehensive Advanced Transformer Architecture Family Generator.
-
-Generates self-contained PyTorch models and multi-opset ONNX exports for:
-1. PreLN_TransformerBlock (Pre-LayerNorm standard Transformer block)
-2. PostLN_TransformerBlock (Original Vaswani Post-LayerNorm Transformer block)
-3. ViT_Block (Vision Transformer Patch Embedding 2D Conv + Transformer Block)
-4. MultiHeadLatentAttention_MLA (DeepSeek V2/V3 style low-rank KV compression & latent projection)
-5. SparseMoE_Block (Top-2 Softmax Gated Mixture of Experts with 4 experts)
-6. LinearAttention_Performer (Kernel-based O(N) linear attention with ELU+1 feature map)
-7. SwiGLU_RMSNorm_TransformerBlock (Modern LLaMA-style block with RMSNorm + SwiGLU)
-
-Exports across ONNX Opsets 14, 17, 18, 20.
-"""
+"""Comprehensive Advanced Transformer Architecture Family Generator."""
 
 from __future__ import annotations
 
 import math
-import sys
-import warnings
-from pathlib import Path
-
-_REPO_ROOT = Path(__file__).resolve().parent.parent
-if str(_REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(_REPO_ROOT))
-
-import onnx
 import torch
 import torch.nn.functional as F
 from torch import nn
 
-warnings.filterwarnings("ignore")
+from generators.decorators import register_architecture
+from generators.registry import ModelRegistry
 
-OUT_DIR = Path(".helper/models/transformer_advanced")
-OUT_DIR.mkdir(parents=True, exist_ok=True)
+SEQ_DYN_AXES = {"x": {0: "batch_size", 1: "seq_len"}, "out": {0: "batch_size", 1: "seq_len"}}
+IMG_DYN_AXES = {"img": {0: "batch_size"}, "out": {0: "batch_size"}}
 
 
-# =============================================================================
-# Helper Attention Module
-# =============================================================================
 class SelfAttention(nn.Module):
     def __init__(self, d_model: int = 64, num_heads: int = 4) -> None:
         super().__init__()
@@ -58,9 +35,16 @@ class SelfAttention(nn.Module):
         return self.out(attn)
 
 
-# =============================================================================
-# 1. Pre-LN Transformer Block
-# =============================================================================
+@register_architecture(
+    name="transformer_pre_ln",
+    category="transformer_advanced",
+    subfolder="transformer_advanced",
+    shapes=[(1, 16, 64)],
+    input_names=["x"],
+    output_names=["out"],
+    dynamic_axes=SEQ_DYN_AXES,
+    init_args=(64, 4, 128),
+)
 class PreLN_TransformerBlock(nn.Module):
     def __init__(self, d_model: int = 64, num_heads: int = 4, d_ffn: int = 256) -> None:
         super().__init__()
@@ -79,9 +63,16 @@ class PreLN_TransformerBlock(nn.Module):
         return x
 
 
-# =============================================================================
-# 2. Post-LN Transformer Block
-# =============================================================================
+@register_architecture(
+    name="transformer_post_ln",
+    category="transformer_advanced",
+    subfolder="transformer_advanced",
+    shapes=[(1, 16, 64)],
+    input_names=["x"],
+    output_names=["out"],
+    dynamic_axes=SEQ_DYN_AXES,
+    init_args=(64, 4, 128),
+)
 class PostLN_TransformerBlock(nn.Module):
     def __init__(self, d_model: int = 64, num_heads: int = 4, d_ffn: int = 256) -> None:
         super().__init__()
@@ -100,9 +91,16 @@ class PostLN_TransformerBlock(nn.Module):
         return x
 
 
-# =============================================================================
-# 3. Vision Transformer (ViT) Block with Patch Embedding
-# =============================================================================
+@register_architecture(
+    name="vit_patch_block",
+    category="transformer_advanced",
+    subfolder="transformer_advanced",
+    shapes=[(1, 3, 16, 16)],
+    input_names=["img"],
+    output_names=["out"],
+    dynamic_axes=IMG_DYN_AXES,
+    init_args=(3, 4, 64, 4),
+)
 class ViT_Block(nn.Module):
     def __init__(
         self,
@@ -126,7 +124,6 @@ class ViT_Block(nn.Module):
         )
 
     def forward(self, img: torch.Tensor) -> torch.Tensor:
-        # img: (B, C, H, W) -> patch_embed -> (B, D, H/P, W/P) -> flatten to (B, N, D)
         B = img.shape[0]
         x = self.patch_embed(img).flatten(2).transpose(1, 2)
         cls_tokens = self.cls_token.expand(B, -1, -1)
@@ -136,9 +133,17 @@ class ViT_Block(nn.Module):
         return x
 
 
-# =============================================================================
-# 4. Multi-Head Latent Attention (MLA - DeepSeek Style)
-# =============================================================================
+@register_architecture(
+    name="transformer_mla",
+    category="transformer_advanced",
+    subfolder="transformer_advanced",
+    shapes=[(1, 16, 64)],
+    input_names=["x"],
+    output_names=["out"],
+    dynamic_axes=SEQ_DYN_AXES,
+    expected_target_node="MultiHeadLatentAttention_KVProjection",
+    init_args=(64, 4, 16),
+)
 class MultiHeadLatentAttention_MLA(nn.Module):
     """DeepSeek style low-rank KV latent compression and up-projection."""
 
@@ -150,24 +155,16 @@ class MultiHeadLatentAttention_MLA(nn.Module):
         self.num_heads = num_heads
         self.head_dim = d_model // num_heads
 
-        # Q projection
         self.q_proj = nn.Linear(d_model, d_model)
-
-        # Low-rank KV compression
         self.kv_down_proj = nn.Linear(d_model, d_latent, bias=False)
         self.kv_up_proj_k = nn.Linear(d_latent, d_model, bias=False)
         self.kv_up_proj_v = nn.Linear(d_latent, d_model, bias=False)
-
         self.out_proj = nn.Linear(d_model, d_model)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         B, S, D = x.shape
         q = self.q_proj(x).view(B, S, self.num_heads, self.head_dim).transpose(1, 2)
-
-        # Compressed KV latent representation
-        c_kv = self.kv_down_proj(x)  # (B, S, d_latent)
-
-        # Decompressed K and V
+        c_kv = self.kv_down_proj(x)
         k = (
             self.kv_up_proj_k(c_kv)
             .view(B, S, self.num_heads, self.head_dim)
@@ -185,9 +182,16 @@ class MultiHeadLatentAttention_MLA(nn.Module):
         return self.out_proj(out)
 
 
-# =============================================================================
-# 5. Sparse Mixture-of-Experts (MoE) Block
-# =============================================================================
+@register_architecture(
+    name="transformer_moe",
+    category="transformer_advanced",
+    subfolder="transformer_advanced",
+    shapes=[(1, 16, 64)],
+    input_names=["x"],
+    output_names=["out"],
+    dynamic_axes=SEQ_DYN_AXES,
+    init_args=(64, 128, 4, 2),
+)
 class SparseMoE_Block(nn.Module):
     """Mixture of Experts with top-2 softmax gating over 4 feed-forward experts."""
 
@@ -199,7 +203,6 @@ class SparseMoE_Block(nn.Module):
         self.top_k = top_k
         self.norm = nn.LayerNorm(d_model)
         self.gate = nn.Linear(d_model, num_experts, bias=False)
-
         self.experts = nn.ModuleList(
             [
                 nn.Sequential(
@@ -214,11 +217,9 @@ class SparseMoE_Block(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         residual = x
         norm_x = self.norm(x)
-        # Gating logits & Softmax weights
         logits = self.gate(norm_x)
         weights = torch.softmax(logits, dim=-1)
 
-        # Sum weighted expert contributions
         out = torch.zeros_like(x)
         for i, expert in enumerate(self.experts):
             w = weights[:, :, i : i + 1]
@@ -226,9 +227,16 @@ class SparseMoE_Block(nn.Module):
         return residual + out
 
 
-# =============================================================================
-# 6. Linear Attention (Performer Style Kernel-based Attention)
-# =============================================================================
+@register_architecture(
+    name="transformer_performer",
+    category="transformer_advanced",
+    subfolder="transformer_advanced",
+    shapes=[(1, 16, 64)],
+    input_names=["x"],
+    output_names=["out"],
+    dynamic_axes=SEQ_DYN_AXES,
+    init_args=(64, 4),
+)
 class LinearAttention_Performer(nn.Module):
     """Linear attention: phi(Q) @ (phi(K)^T @ V) achieving O(N) complexity."""
 
@@ -247,16 +255,12 @@ class LinearAttention_Performer(nn.Module):
         k = self.k_proj(x).view(B, S, self.num_heads, self.head_dim).transpose(1, 2)
         v = self.v_proj(x).view(B, S, self.num_heads, self.head_dim).transpose(1, 2)
 
-        # Non-negative kernel feature map: elu(x) + 1
         q_phi = F.elu(q) + 1.0
         k_phi = F.elu(k) + 1.0
 
-        # Linear attention contraction: (k_phi^T @ v) has shape (B, H, D, D)
-        kv = torch.matmul(k_phi.transpose(-1, -2), v)  # (B, H, D_h, D_h)
-        # Output: q_phi @ kv
-        num = torch.matmul(q_phi, kv)  # (B, H, S, D_h)
+        kv = torch.matmul(k_phi.transpose(-1, -2), v)
+        num = torch.matmul(q_phi, kv)
 
-        # Normalization denominator
         den = torch.matmul(
             q_phi, k_phi.sum(dim=-2, keepdim=True).transpose(-1, -2)
         ).clamp(min=1e-6)
@@ -264,9 +268,6 @@ class LinearAttention_Performer(nn.Module):
         return self.out_proj(out)
 
 
-# =============================================================================
-# 7. Modern LLaMA-style SwiGLU + RMSNorm Block
-# =============================================================================
 class SimpleRMSNorm(nn.Module):
     def __init__(self, dim: int, eps: float = 1e-6) -> None:
         super().__init__()
@@ -278,6 +279,16 @@ class SimpleRMSNorm(nn.Module):
         return (x / rms) * self.weight
 
 
+@register_architecture(
+    name="transformer_swiglu_rms",
+    category="transformer_advanced",
+    subfolder="transformer_advanced",
+    shapes=[(1, 16, 64)],
+    input_names=["x"],
+    output_names=["out"],
+    dynamic_axes=SEQ_DYN_AXES,
+    init_args=(64, 4, 128),
+)
 class SwiGLU_RMSNorm_TransformerBlock(nn.Module):
     def __init__(self, d_model: int = 64, num_heads: int = 4, d_ffn: int = 128) -> None:
         super().__init__()
@@ -295,108 +306,8 @@ class SwiGLU_RMSNorm_TransformerBlock(nn.Module):
         return x + ffn
 
 
-from generators.base import export_model as unified_export_model
-
-
-# =============================================================================
-# Multi-Opset ONNX Export Helper
-# =============================================================================
-def export_model(
-    model: nn.Module,
-    dummy_inputs: tuple[torch.Tensor, ...],
-    input_names: list[str],
-    output_names: list[str],
-    base_name: str,
-    opset_versions: list[int] = (14, 17, 18, 20),
-    dynamic_axes: dict[str, dict[int, str]] | None = None,
-) -> list[str]:
-    return unified_export_model(
-        model=model,
-        dummy_inputs=dummy_inputs,
-        input_names=input_names,
-        output_names=output_names,
-        base_name=base_name,
-        out_dir=OUT_DIR,
-        opset_versions=opset_versions,
-        dynamic_axes=dynamic_axes,
-    )
-
-
 def main() -> None:
-    print("==================================================================")
-    print("  GENERATING ADVANCED TRANSFORMER ONNX SUITE")
-    print("==================================================================")
-
-    dummy_x = torch.randn(1, 16, 64)
-    dummy_img = torch.randn(1, 3, 16, 16)
-    seq_dyn_axes = {"x": {0: "batch_size", 1: "seq_len"}, "out": {0: "batch_size", 1: "seq_len"}}
-    img_dyn_axes = {"img": {0: "batch_size"}, "out": {0: "batch_size"}}
-
-    print("\n1. PreLN_TransformerBlock")
-    export_model(
-        PreLN_TransformerBlock(64, 4, 128),
-        (dummy_x,),
-        ["x"],
-        ["out"],
-        "transformer_pre_ln",
-        dynamic_axes=seq_dyn_axes,
-    )
-
-    print("\n2. PostLN_TransformerBlock")
-    export_model(
-        PostLN_TransformerBlock(64, 4, 128),
-        (dummy_x,),
-        ["x"],
-        ["out"],
-        "transformer_post_ln",
-        dynamic_axes=seq_dyn_axes,
-    )
-
-    print("\n3. ViT_Block")
-    export_model(
-        ViT_Block(3, 4, 64, 4), (dummy_img,), ["img"], ["out"], "vit_patch_block",
-        dynamic_axes=img_dyn_axes,
-    )
-
-    print("\n4. MultiHeadLatentAttention_MLA")
-    export_model(
-        MultiHeadLatentAttention_MLA(64, 4, 16),
-        (dummy_x,),
-        ["x"],
-        ["out"],
-        "transformer_mla",
-        dynamic_axes=seq_dyn_axes,
-    )
-
-    print("\n5. SparseMoE_Block")
-    export_model(
-        SparseMoE_Block(64, 128, 4, 2), (dummy_x,), ["x"], ["out"], "transformer_moe",
-        dynamic_axes=seq_dyn_axes,
-    )
-
-    print("\n6. LinearAttention_Performer")
-    export_model(
-        LinearAttention_Performer(64, 4),
-        (dummy_x,),
-        ["x"],
-        ["out"],
-        "transformer_performer",
-        dynamic_axes=seq_dyn_axes,
-    )
-
-    print("\n7. SwiGLU_RMSNorm_TransformerBlock")
-    export_model(
-        SwiGLU_RMSNorm_TransformerBlock(64, 4, 128),
-        (dummy_x,),
-        ["x"],
-        ["out"],
-        "transformer_swiglu_rms",
-        dynamic_axes=seq_dyn_axes,
-    )
-
-    print("\n==================================================================")
-    print(f"Advanced Transformer ONNX suite complete in: {OUT_DIR.resolve()}")
-    print("==================================================================")
+    ModelRegistry.export_all(category="transformer_advanced")
 
 
 if __name__ == "__main__":

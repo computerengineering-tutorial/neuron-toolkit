@@ -1,45 +1,24 @@
 #!/usr/bin/env python3
-"""Comprehensive Convolutional & Computer Vision (CNN) Architecture Family Generator.
-
-Generates self-contained PyTorch models and multi-opset ONNX exports for:
-1. StandardConv2D_BN_ReLU (Classic Conv-BN-ReLU pipeline)
-2. ResNetBasicBlock (ResNet-18/34 style 3x3 + 3x3 with identity shortcut)
-3. ResNetBottleneckBlock (ResNet-50/101 style 1x1 -> 3x3 -> 1x1 expansion)
-4. MobileNetV2_InvertedResidual (1x1 expand -> 3x3 depthwise separable -> 1x1 linear projection)
-5. MobileNetV3_Block (Inverted residual + Squeeze-and-Excitation + Hardswish)
-6. ConvNeXt_Block (7x7 depthwise -> LayerNorm (channels-last) -> 1x1 -> GELU -> 1x1 projection)
-7. DenseNet_Block (Dense concatenation block [x, conv(x)])
-8. ResNeXt_GroupedConvBlock (Grouped 3x3 convolution with cardinality groups)
-9. TCN_DilatedConvBlock (1D Temporal Convolution with dilation + causal padding)
-10. WaveNet_GatedDilatedConv (1D Dilated Conv with split Tanh * Sigmoid gating)
-11. Conv3D_SpatioTemporalBlock (3D Spatio-Temporal video conv with BatchNorm3d)
-
-Exports across ONNX Opsets 14, 17, 18, 20.
-"""
+"""Comprehensive Convolutional & Computer Vision Architecture Family Generator."""
 
 from __future__ import annotations
 
-import sys
-import warnings
-from pathlib import Path
-
-_REPO_ROOT = Path(__file__).resolve().parent.parent
-if str(_REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(_REPO_ROOT))
-
-import onnx
 import torch
 from torch import nn
 
-warnings.filterwarnings("ignore")
-
-OUT_DIR = Path(".helper/models/cnn_vision")
-OUT_DIR.mkdir(parents=True, exist_ok=True)
+from generators.decorators import register_architecture
+from generators.registry import ModelRegistry
 
 
-# =============================================================================
-# 1. Standard Conv2D + BN + ReLU
-# =============================================================================
+@register_architecture(
+    name="conv2d_bn_relu",
+    category="cnn_vision",
+    subfolder="cnn_vision",
+    shapes=[(1, 16, 16, 16)],
+    input_names=["x"],
+    output_names=["out"],
+    init_args=(16, 32),
+)
 class StandardConv2D_BN_ReLU(nn.Module):
     def __init__(self, in_c: int = 16, out_c: int = 32) -> None:
         super().__init__()
@@ -51,9 +30,15 @@ class StandardConv2D_BN_ReLU(nn.Module):
         return self.relu(self.bn(self.conv(x)))
 
 
-# =============================================================================
-# 2. ResNet BasicBlock
-# =============================================================================
+@register_architecture(
+    name="resnet_basic",
+    category="cnn_vision",
+    subfolder="cnn_vision",
+    shapes=[(1, 32, 16, 16)],
+    input_names=["x"],
+    output_names=["out"],
+    init_args=(32,),
+)
 class ResNetBasicBlock(nn.Module):
     def __init__(self, channels: int = 32) -> None:
         super().__init__()
@@ -71,9 +56,15 @@ class ResNetBasicBlock(nn.Module):
         return self.relu(out)
 
 
-# =============================================================================
-# 3. ResNet Bottleneck Block
-# =============================================================================
+@register_architecture(
+    name="resnet_bottleneck",
+    category="cnn_vision",
+    subfolder="cnn_vision",
+    shapes=[(1, 64, 16, 16)],
+    input_names=["x"],
+    output_names=["out"],
+    init_args=(64, 16, 64),
+)
 class ResNetBottleneckBlock(nn.Module):
     def __init__(self, in_c: int = 64, mid_c: int = 16, out_c: int = 64) -> None:
         super().__init__()
@@ -94,9 +85,15 @@ class ResNetBottleneckBlock(nn.Module):
         return self.relu(out)
 
 
-# =============================================================================
-# 4. MobileNetV2 Inverted Residual (Depthwise Separable)
-# =============================================================================
+@register_architecture(
+    name="mobilenetv2_invres",
+    category="cnn_vision",
+    subfolder="cnn_vision",
+    shapes=[(1, 32, 16, 16)],
+    input_names=["x"],
+    output_names=["out"],
+    init_args=(32, 64, 32),
+)
 class MobileNetV2_InvertedResidual(nn.Module):
     def __init__(self, in_c: int = 32, expand_c: int = 64, out_c: int = 32) -> None:
         super().__init__()
@@ -118,9 +115,15 @@ class MobileNetV2_InvertedResidual(nn.Module):
         return out + residual
 
 
-# =============================================================================
-# 5. MobileNetV3 Block with Squeeze-and-Excitation & Hardswish
-# =============================================================================
+@register_architecture(
+    name="mobilenetv3_block",
+    category="cnn_vision",
+    subfolder="cnn_vision",
+    shapes=[(1, 32, 16, 16)],
+    input_names=["x"],
+    output_names=["out"],
+    init_args=(32, 64, 32),
+)
 class MobileNetV3_Block(nn.Module):
     def __init__(
         self, in_c: int = 32, expand_c: int = 64, out_c: int = 32, se_reduce: int = 8
@@ -133,7 +136,6 @@ class MobileNetV3_Block(nn.Module):
         )
         self.bn_dw = nn.BatchNorm2d(expand_c)
 
-        # Squeeze-and-Excitation
         self.se_pool = nn.AdaptiveAvgPool2d(1)
         self.se_fc1 = nn.Conv2d(expand_c, se_reduce, kernel_size=1)
         self.se_relu = nn.ReLU(inplace=True)
@@ -149,7 +151,6 @@ class MobileNetV3_Block(nn.Module):
         out = self.hardswish(self.bn_exp(self.expand(x)))
         out = self.hardswish(self.bn_dw(self.depthwise(out)))
 
-        # SE branch
         se = self.se_pool(out)
         se = self.se_relu(self.se_fc1(se))
         se = self.se_hsigmoid(self.se_fc2(se))
@@ -159,9 +160,15 @@ class MobileNetV3_Block(nn.Module):
         return out + residual
 
 
-# =============================================================================
-# 6. ConvNeXt Block
-# =============================================================================
+@register_architecture(
+    name="convnext_block",
+    category="cnn_vision",
+    subfolder="cnn_vision",
+    shapes=[(1, 32, 16, 16)],
+    input_names=["x"],
+    output_names=["out"],
+    init_args=(32,),
+)
 class ConvNeXt_Block(nn.Module):
     def __init__(self, dim: int = 32, mlp_ratio: int = 4) -> None:
         super().__init__()
@@ -174,7 +181,6 @@ class ConvNeXt_Block(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         residual = x
         out = self.dwconv(x)
-        # Channels last for LayerNorm & MLP
         out = out.permute(0, 2, 3, 1)
         out = self.norm(out)
         out = self.pwconv1(out)
@@ -184,9 +190,15 @@ class ConvNeXt_Block(nn.Module):
         return residual + out
 
 
-# =============================================================================
-# 7. DenseNet Dense Block
-# =============================================================================
+@register_architecture(
+    name="densenet_block",
+    category="cnn_vision",
+    subfolder="cnn_vision",
+    shapes=[(1, 16, 16, 16)],
+    input_names=["x"],
+    output_names=["out"],
+    init_args=(16, 16),
+)
 class DenseNet_Block(nn.Module):
     def __init__(self, in_c: int = 16, growth_rate: int = 16) -> None:
         super().__init__()
@@ -199,9 +211,15 @@ class DenseNet_Block(nn.Module):
         return torch.cat([x, out], dim=1)
 
 
-# =============================================================================
-# 8. ResNeXt Grouped Conv Block
-# =============================================================================
+@register_architecture(
+    name="resnext_block",
+    category="cnn_vision",
+    subfolder="cnn_vision",
+    shapes=[(1, 64, 16, 16)],
+    input_names=["x"],
+    output_names=["out"],
+    init_args=(64, 8, 8),
+)
 class ResNeXt_GroupedConvBlock(nn.Module):
     def __init__(self, in_c: int = 64, cardinality: int = 8, group_w: int = 8) -> None:
         super().__init__()
@@ -229,9 +247,16 @@ class ResNeXt_GroupedConvBlock(nn.Module):
         return self.relu(out + residual)
 
 
-# =============================================================================
-# 9. TCN Dilated Conv Block (1D Temporal ConvNet)
-# =============================================================================
+@register_architecture(
+    name="tcn_dilated",
+    category="cnn_vision",
+    subfolder="cnn_vision",
+    shapes=[(1, 32, 32)],
+    input_names=["x"],
+    output_names=["out"],
+    init_args=(32, 32),
+    init_kwargs={"dilation": 2},
+)
 class TCN_DilatedConvBlock(nn.Module):
     def __init__(self, in_c: int = 32, out_c: int = 32, dilation: int = 2) -> None:
         super().__init__()
@@ -244,16 +269,22 @@ class TCN_DilatedConvBlock(nn.Module):
         self.relu = nn.ReLU(inplace=True)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # Causal slicing: remove future padding
         S = x.shape[-1]
         out = self.conv(x)[:, :, :S]
         out = self.norm(out)
         return self.relu(out + x)
 
 
-# =============================================================================
-# 10. WaveNet Gated Dilated Conv
-# =============================================================================
+@register_architecture(
+    name="wavenet_gated",
+    category="cnn_vision",
+    subfolder="cnn_vision",
+    shapes=[(1, 32, 32)],
+    input_names=["x"],
+    output_names=["res", "skip"],
+    init_args=(32,),
+    init_kwargs={"dilation": 2},
+)
 class WaveNet_GatedDilatedConv(nn.Module):
     def __init__(self, in_c: int = 32, dilation: int = 2) -> None:
         super().__init__()
@@ -274,9 +305,15 @@ class WaveNet_GatedDilatedConv(nn.Module):
         return res_out, skip_out
 
 
-# =============================================================================
-# 11. Conv3D Spatio-Temporal Block (Video / Volumetric)
-# =============================================================================
+@register_architecture(
+    name="conv3d_spatiotemporal",
+    category="cnn_vision",
+    subfolder="cnn_vision",
+    shapes=[(1, 8, 4, 16, 16)],
+    input_names=["x"],
+    output_names=["out"],
+    init_args=(8, 16),
+)
 class Conv3D_SpatioTemporalBlock(nn.Module):
     def __init__(self, in_c: int = 8, out_c: int = 16) -> None:
         super().__init__()
@@ -288,135 +325,8 @@ class Conv3D_SpatioTemporalBlock(nn.Module):
         return self.relu(self.bn3d(self.conv3d(x)))
 
 
-from generators.base import export_model as unified_export_model
-
-
-# =============================================================================
-# Multi-Opset ONNX Export Helper
-# =============================================================================
-def export_model(
-    model: nn.Module,
-    dummy_inputs: tuple[torch.Tensor, ...],
-    input_names: list[str],
-    output_names: list[str],
-    base_name: str,
-    opset_versions: list[int] = (14, 17, 18, 20),
-) -> list[str]:
-    return unified_export_model(
-        model=model,
-        dummy_inputs=dummy_inputs,
-        input_names=input_names,
-        output_names=output_names,
-        base_name=base_name,
-        out_dir=OUT_DIR,
-        opset_versions=opset_versions,
-    )
-
-
 def main() -> None:
-    print("==================================================================")
-    print("  GENERATING CONVOLUTIONAL & COMPUTER VISION ONNX SUITE")
-    print("==================================================================")
-
-    dummy_2d_16 = torch.randn(1, 16, 16, 16)
-    dummy_2d_32 = torch.randn(1, 32, 16, 16)
-    dummy_2d_64 = torch.randn(1, 64, 16, 16)
-    dummy_1d = torch.randn(1, 32, 32)
-    dummy_3d = torch.randn(1, 8, 4, 16, 16)
-
-    # 1. StandardConv2D_BN_ReLU
-    print("\n1. StandardConv2D_BN_ReLU")
-    export_model(
-        StandardConv2D_BN_ReLU(16, 32), (dummy_2d_16,), ["x"], ["out"], "conv2d_bn_relu"
-    )
-
-    # 2. ResNetBasicBlock
-    print("\n2. ResNetBasicBlock")
-    export_model(ResNetBasicBlock(32), (dummy_2d_32,), ["x"], ["out"], "resnet_basic")
-
-    # 3. ResNetBottleneckBlock
-    print("\n3. ResNetBottleneckBlock")
-    export_model(
-        ResNetBottleneckBlock(64, 16, 64),
-        (dummy_2d_64,),
-        ["x"],
-        ["out"],
-        "resnet_bottleneck",
-    )
-
-    # 4. MobileNetV2_InvertedResidual
-    print("\n4. MobileNetV2_InvertedResidual")
-    export_model(
-        MobileNetV2_InvertedResidual(32, 64, 32),
-        (dummy_2d_32,),
-        ["x"],
-        ["out"],
-        "mobilenetv2_invres",
-    )
-
-    # 5. MobileNetV3_Block
-    print("\n5. MobileNetV3_Block")
-    export_model(
-        MobileNetV3_Block(32, 64, 32),
-        (dummy_2d_32,),
-        ["x"],
-        ["out"],
-        "mobilenetv3_block",
-    )
-
-    # 6. ConvNeXt_Block
-    print("\n6. ConvNeXt_Block")
-    export_model(ConvNeXt_Block(32), (dummy_2d_32,), ["x"], ["out"], "convnext_block")
-
-    # 7. DenseNet_Block
-    print("\n7. DenseNet_Block")
-    export_model(
-        DenseNet_Block(16, 16), (dummy_2d_16,), ["x"], ["out"], "densenet_block"
-    )
-
-    # 8. ResNeXt_GroupedConvBlock
-    print("\n8. ResNeXt_GroupedConvBlock")
-    export_model(
-        ResNeXt_GroupedConvBlock(64, 8, 8),
-        (dummy_2d_64,),
-        ["x"],
-        ["out"],
-        "resnext_block",
-    )
-
-    # 9. TCN_DilatedConvBlock
-    print("\n9. TCN_DilatedConvBlock")
-    export_model(
-        TCN_DilatedConvBlock(32, 32, dilation=2),
-        (dummy_1d,),
-        ["x"],
-        ["out"],
-        "tcn_dilated",
-    )
-
-    # 10. WaveNet_GatedDilatedConv
-    print("\n10. WaveNet_GatedDilatedConv")
-    export_model(
-        WaveNet_GatedDilatedConv(32, dilation=2),
-        (dummy_1d,),
-        ["x"],
-        ["res", "skip"],
-        "wavenet_gated",
-    )
-
-    # 11. Conv3D_SpatioTemporalBlock
-    print("\n11. Conv3D_SpatioTemporalBlock")
-    export_model(
-        Conv3D_SpatioTemporalBlock(8, 16),
-        (dummy_3d,),
-        ["x"],
-        ["out"],
-        "conv3d_spatiotemporal",
-    )
-
-    print("\n==================================================================")
-    print(f"CNN & Computer Vision ONNX suite complete in: {OUT_DIR.resolve()}")
-    print("==================================================================")
+    ModelRegistry.export_all(category="cnn_vision")
 
 
 if __name__ == "__main__":

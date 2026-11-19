@@ -1,43 +1,25 @@
 #!/usr/bin/env python3
-"""Comprehensive Vanilla MLP, Feedforward & Gated MLP Architecture Family Generator.
-
-Generates self-contained PyTorch models and multi-opset ONNX exports for:
-1. DeepMLP_Norm_Act (Multi-layer deep perceptron with LayerNorm + GELU)
-2. ResMLP_Block (Residual MLP with cross-channel linear + residual skip)
-3. MLPMixer_Block (Token-mixing MLP + Channel-mixing MLP with Transpose)
-4. gMLP_Block (Gated MLP with Spatial Gating Unit / SGU)
-5. HighwayNetwork_Block (Information highway with Transform & Carry gates)
-6. SwiGLU_MLP_Block (SwiGLU gated linear unit: (W1 x * silu(W3 x)) W2)
-7. GeGLU_MLP_Block (GeGLU gated linear unit: (W1 x * gelu(W3 x)) W2)
-8. ReGLU_MLP_Block (ReGLU gated linear unit: (W1 x * relu(W3 x)) W2)
-
-Exports across ONNX Opsets 14, 17, 18, 20.
-"""
+"""Comprehensive Vanilla MLP, FeedForward & Gated Architecture Family Generator."""
 
 from __future__ import annotations
 
-import sys
-import warnings
-from pathlib import Path
-
-_REPO_ROOT = Path(__file__).resolve().parent.parent
-if str(_REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(_REPO_ROOT))
-
-import onnx
 import torch
 import torch.nn.functional as F
 from torch import nn
 
-warnings.filterwarnings("ignore")
-
-OUT_DIR = Path(".helper/models/mlp_vanilla")
-OUT_DIR.mkdir(parents=True, exist_ok=True)
+from generators.decorators import register_architecture
+from generators.registry import ModelRegistry
 
 
-# =============================================================================
-# 1. Deep MLP with LayerNorm & GELU
-# =============================================================================
+@register_architecture(
+    name="deep_mlp_norm_act",
+    category="mlp_vanilla",
+    subfolder="mlp_vanilla",
+    shapes=[(1, 16, 64)],
+    input_names=["x"],
+    output_names=["out"],
+    init_args=(64, 256, 64),
+)
 class DeepMLP_Norm_Act(nn.Module):
     def __init__(
         self, in_features: int = 64, hidden_features: int = 256, out_features: int = 64
@@ -57,9 +39,15 @@ class DeepMLP_Norm_Act(nn.Module):
         return self.fc3(out)
 
 
-# =============================================================================
-# 2. ResMLP Block
-# =============================================================================
+@register_architecture(
+    name="resmlp_block",
+    category="mlp_vanilla",
+    subfolder="mlp_vanilla",
+    shapes=[(1, 16, 64)],
+    input_names=["x"],
+    output_names=["out"],
+    init_kwargs={"num_tokens": 16, "dim": 64},
+)
 class ResMLP_Block(nn.Module):
     def __init__(self, num_tokens: int = 16, dim: int = 64, mlp_ratio: int = 4) -> None:
         super().__init__()
@@ -71,20 +59,24 @@ class ResMLP_Block(nn.Module):
         self.cross_channel2 = nn.Linear(dim * mlp_ratio, dim)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # Cross-token mixing
         norm_x = self.norm1(x)
         token_out = self.cross_token(norm_x.transpose(1, 2)).transpose(1, 2)
         x = x + token_out
 
-        # Cross-channel mixing
         norm_x2 = self.norm2(x)
         channel_out = self.cross_channel2(self.act(self.cross_channel1(norm_x2)))
         return x + channel_out
 
 
-# =============================================================================
-# 3. MLP-Mixer Block
-# =============================================================================
+@register_architecture(
+    name="mlpmixer_block",
+    category="mlp_vanilla",
+    subfolder="mlp_vanilla",
+    shapes=[(1, 16, 64)],
+    input_names=["x"],
+    output_names=["out"],
+    init_kwargs={"num_patches": 16, "num_channels": 64},
+)
 class MLPMixer_Block(nn.Module):
     def __init__(
         self,
@@ -108,19 +100,14 @@ class MLPMixer_Block(nn.Module):
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # Token mixing: (B, S, C) -> transpose to (B, C, S) -> Linear -> transpose back
         norm_x = self.norm1(x).transpose(1, 2)
         token_mixed = self.token_mlp(norm_x).transpose(1, 2)
         x = x + token_mixed
 
-        # Channel mixing: (B, S, C) -> Linear
         channel_mixed = self.channel_mlp(self.norm2(x))
         return x + channel_mixed
 
 
-# =============================================================================
-# 4. gMLP (Gated MLP with Spatial Gating Unit)
-# =============================================================================
 class SpatialGatingUnit(nn.Module):
     def __init__(self, dim: int = 64, seq_len: int = 16) -> None:
         super().__init__()
@@ -134,6 +121,15 @@ class SpatialGatingUnit(nn.Module):
         return u * v
 
 
+@register_architecture(
+    name="gmlp_block",
+    category="mlp_vanilla",
+    subfolder="mlp_vanilla",
+    shapes=[(1, 16, 64)],
+    input_names=["x"],
+    output_names=["out"],
+    init_kwargs={"dim": 64, "d_ffn": 128, "seq_len": 16},
+)
 class gMLP_Block(nn.Module):
     def __init__(self, dim: int = 64, d_ffn: int = 128, seq_len: int = 16) -> None:
         super().__init__()
@@ -152,9 +148,15 @@ class gMLP_Block(nn.Module):
         return residual + out
 
 
-# =============================================================================
-# 5. Highway Network Block
-# =============================================================================
+@register_architecture(
+    name="highway_block",
+    category="mlp_vanilla",
+    subfolder="mlp_vanilla",
+    shapes=[(1, 16, 64)],
+    input_names=["x"],
+    output_names=["out"],
+    init_args=(64,),
+)
 class HighwayNetwork_Block(nn.Module):
     def __init__(self, dim: int = 64) -> None:
         super().__init__()
@@ -167,9 +169,15 @@ class HighwayNetwork_Block(nn.Module):
         return h * t + x * (1.0 - t)
 
 
-# =============================================================================
-# 6. GLU Activation Variants: SwiGLU, GeGLU, ReGLU
-# =============================================================================
+@register_architecture(
+    name="swiglu_mlp_block",
+    category="mlp_vanilla",
+    subfolder="mlp_vanilla",
+    shapes=[(1, 16, 64)],
+    input_names=["x"],
+    output_names=["out"],
+    init_kwargs={"dim": 64, "hidden_dim": 128},
+)
 class SwiGLU_MLP_Block(nn.Module):
     def __init__(self, dim: int = 64, hidden_dim: int = 128) -> None:
         super().__init__()
@@ -181,6 +189,15 @@ class SwiGLU_MLP_Block(nn.Module):
         return self.w2(self.w1(x) * F.silu(self.w3(x)))
 
 
+@register_architecture(
+    name="geglu_mlp_block",
+    category="mlp_vanilla",
+    subfolder="mlp_vanilla",
+    shapes=[(1, 16, 64)],
+    input_names=["x"],
+    output_names=["out"],
+    init_kwargs={"dim": 64, "hidden_dim": 128},
+)
 class GeGLU_MLP_Block(nn.Module):
     def __init__(self, dim: int = 64, hidden_dim: int = 128) -> None:
         super().__init__()
@@ -192,6 +209,15 @@ class GeGLU_MLP_Block(nn.Module):
         return self.w2(self.w1(x) * F.gelu(self.w3(x)))
 
 
+@register_architecture(
+    name="reglu_mlp_block",
+    category="mlp_vanilla",
+    subfolder="mlp_vanilla",
+    shapes=[(1, 16, 64)],
+    input_names=["x"],
+    output_names=["out"],
+    init_kwargs={"dim": 64, "hidden_dim": 128},
+)
 class ReGLU_MLP_Block(nn.Module):
     def __init__(self, dim: int = 64, hidden_dim: int = 128) -> None:
         super().__init__()
@@ -203,58 +229,8 @@ class ReGLU_MLP_Block(nn.Module):
         return self.w2(self.w1(x) * F.relu(self.w3(x)))
 
 
-from generators.base import export_model as unified_export_model
-
-
-# =============================================================================
-# Multi-Opset ONNX Export Helper
-# =============================================================================
-def export_model(
-    model: nn.Module,
-    dummy_inputs: tuple[torch.Tensor, ...],
-    input_names: list[str],
-    output_names: list[str],
-    base_name: str,
-    opset_versions: list[int] = (14, 17, 18, 20),
-) -> list[str]:
-    return unified_export_model(
-        model=model,
-        dummy_inputs=dummy_inputs,
-        input_names=input_names,
-        output_names=output_names,
-        base_name=base_name,
-        out_dir=OUT_DIR,
-        opset_versions=opset_versions,
-    )
-
-
 def main() -> None:
-    print("==================================================================")
-    print("  GENERATING VANILLA MLP & FEEDFORWARD ONNX SUITE")
-    print("==================================================================")
-
-    dummy_x = torch.randn(1, 16, 64)
-
-    registry = [
-        ("deep_mlp_norm_act", DeepMLP_Norm_Act(64, 256, 64)),
-        ("resmlp_block", ResMLP_Block(num_tokens=16, dim=64)),
-        ("mlpmixer_block", MLPMixer_Block(num_patches=16, num_channels=64)),
-        ("gmlp_block", gMLP_Block(dim=64, d_ffn=128, seq_len=16)),
-        ("highway_block", HighwayNetwork_Block(dim=64)),
-        ("swiglu_mlp_block", SwiGLU_MLP_Block(dim=64, hidden_dim=128)),
-        ("geglu_mlp_block", GeGLU_MLP_Block(dim=64, hidden_dim=128)),
-        ("reglu_mlp_block", ReGLU_MLP_Block(dim=64, hidden_dim=128)),
-    ]
-
-    for name, module in registry:
-        print(f"\nModel: {name}")
-        export_model(
-            module, (dummy_x,), ["x"], ["out"], name, opset_versions=[14, 17, 18, 20]
-        )
-
-    print("\n==================================================================")
-    print(f"Vanilla MLP & Feedforward ONNX suite complete in: {OUT_DIR.resolve()}")
-    print("==================================================================")
+    ModelRegistry.export_all(category="mlp_vanilla")
 
 
 if __name__ == "__main__":

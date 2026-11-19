@@ -1,26 +1,16 @@
-"""Generator for Diffusion Transformer (DiT) & Generative U-Net architecture blocks.
-
-Exports models to ONNX across opset versions 14, 17, 18, and 20.
-"""
+#!/usr/bin/env python3
+"""Generator for Diffusion Transformer (DiT) & Generative U-Net architecture blocks."""
 
 from __future__ import annotations
 
 import math
-import sys
-from pathlib import Path
 from typing import Any
-
-_REPO_ROOT = Path(__file__).resolve().parent.parent
-if str(_REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(_REPO_ROOT))
-
-import onnx
 import torch
 import torch.nn.functional as F
 from torch import nn
 
-OUT_DIR = Path(".helper/models/diffusion_dit")
-OUT_DIR.mkdir(parents=True, exist_ok=True)
+from generators.decorators import register_architecture
+from generators.registry import ModelRegistry
 
 
 def modulate(x: torch.Tensor, shift: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
@@ -28,9 +18,15 @@ def modulate(x: torch.Tensor, shift: torch.Tensor, scale: torch.Tensor) -> torch
     return x * (1 + scale.unsqueeze(1)) + shift.unsqueeze(1)
 
 
-# =============================================================================
-# 1. Diffusion Transformer (DiT) Block with AdaLN-Zero
-# =============================================================================
+@register_architecture(
+    name="dit_adaln_zero",
+    category="diffusion_dit",
+    subfolder="diffusion_dit",
+    inputs=lambda: (torch.randn(2, 16, 64), torch.randn(2, 64)),
+    input_names=["x", "conditioning"],
+    output_names=["out"],
+    init_args=(64, 4, 64),
+)
 class DiT_AdaLNZero_Block(nn.Module):
     """Diffusion Transformer Block with Adaptive LayerNorm Zero Conditioning."""
 
@@ -50,22 +46,17 @@ class DiT_AdaLNZero_Block(nn.Module):
             nn.Linear(4 * d_model, d_model),
         )
 
-        # AdaLN modulation MLP: outputs 6 values (shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp)
         self.adaLN_modulation = nn.Sequential(
             nn.SiLU(),
             nn.Linear(d_cond, 6 * d_model, bias=True),
         )
 
     def forward(self, x: torch.Tensor, c: torch.Tensor) -> torch.Tensor:
-        # x: (B, S, D), c: (B, d_cond) conditioning vector (timestep + label)
         B, S, D = x.shape
-
-        # Compute adaptive modulation parameters
         shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = (
             self.adaLN_modulation(c).chunk(6, dim=1)
         )
 
-        # 1. Self-Attention with AdaLN modulation
         normed = modulate(self.norm1(x), shift_msa, scale_msa)
         qkv = (
             self.attn_qkv(normed)
@@ -79,10 +70,8 @@ class DiT_AdaLNZero_Block(nn.Module):
         attn = torch.matmul(probs, v).transpose(1, 2).contiguous().view(B, S, D)
         attn = self.attn_out(attn)
 
-        # Residual update with zero-initialized adaptive gate
         x = x + gate_msa.unsqueeze(1) * attn
 
-        # 2. MLP with AdaLN modulation
         normed2 = modulate(self.norm2(x), shift_mlp, scale_mlp)
         mlp_out = self.mlp(normed2)
         x = x + gate_mlp.unsqueeze(1) * mlp_out
@@ -90,9 +79,15 @@ class DiT_AdaLNZero_Block(nn.Module):
         return x
 
 
-# =============================================================================
-# 2. U-Net ResBlock with Timestep Conditioning Injection
-# =============================================================================
+@register_architecture(
+    name="unet_res_timestep",
+    category="diffusion_dit",
+    subfolder="diffusion_dit",
+    inputs=lambda: (torch.randn(2, 32, 16, 16), torch.randn(2, 64)),
+    input_names=["x", "t_emb"],
+    output_names=["out"],
+    init_args=(32, 32, 64),
+)
 class UNet_ResBlock_WithTimestep(nn.Module):
     """Classic Diffusion U-Net Residual block with timestep embedding projection."""
 
@@ -102,10 +97,7 @@ class UNet_ResBlock_WithTimestep(nn.Module):
         super().__init__()
         self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1)
         self.norm1 = nn.GroupNorm(num_groups=4, num_channels=out_channels)
-
-        # Timestep linear projection to channels
         self.time_emb_proj = nn.Linear(d_time, out_channels)
-
         self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1)
         self.norm2 = nn.GroupNorm(num_groups=4, num_channels=out_channels)
 
@@ -116,21 +108,23 @@ class UNet_ResBlock_WithTimestep(nn.Module):
         )
 
     def forward(self, x: torch.Tensor, t_emb: torch.Tensor) -> torch.Tensor:
-        # x: (B, C, H, W), t_emb: (B, d_time)
         residual = self.skip(x)
-
         h = F.silu(self.norm1(self.conv1(x)))
-        # Inject timestep embedding as channel broadcast
         time_proj = self.time_emb_proj(F.silu(t_emb))
         h = h + time_proj.unsqueeze(-1).unsqueeze(-1)
-
         h = F.silu(self.norm2(self.conv2(h)))
         return residual + h
 
 
-# =============================================================================
-# 3. Cross-Attention Downsample Block
-# =============================================================================
+@register_architecture(
+    name="cross_attention_block",
+    category="diffusion_dit",
+    subfolder="diffusion_dit",
+    inputs=lambda: (torch.randn(2, 32, 16, 16), torch.randn(2, 8, 64)),
+    input_names=["x", "context"],
+    output_names=["out"],
+    init_args=(32, 64, 4),
+)
 class CrossAttention_DownBlock(nn.Module):
     """U-Net Spatial downsample with Text/Prompt Cross-Attention."""
 
@@ -148,7 +142,6 @@ class CrossAttention_DownBlock(nn.Module):
         self.to_out = nn.Linear(channels, channels)
 
     def forward(self, x: torch.Tensor, context: torch.Tensor) -> torch.Tensor:
-        # x: (B, C, H, W), context: (B, S_ctx, d_context)
         B, C, H, W = x.shape
         x_flat = x.permute(0, 2, 3, 1).reshape(B, H * W, C)
 
@@ -177,47 +170,12 @@ class CrossAttention_DownBlock(nn.Module):
         return x + out_2d
 
 
-from generators.base import export_model as unified_export_model
-
-# =============================================================================
-# Exporter
-# =============================================================================
 def export_diffusion_zoo() -> list[dict[str, Any]]:
-    models: dict[str, tuple[nn.Module, tuple[torch.Tensor, ...], list[str]]] = {
-        "dit_adaln_zero": (
-            DiT_AdaLNZero_Block(64, 4, 64),
-            (torch.randn(2, 16, 64), torch.randn(2, 64)),
-            ["x", "conditioning"],
-        ),
-        "unet_res_timestep": (
-            UNet_ResBlock_WithTimestep(32, 32, 64),
-            (torch.randn(2, 32, 16, 16), torch.randn(2, 64)),
-            ["x", "t_emb"],
-        ),
-        "cross_attention_block": (
-            CrossAttention_DownBlock(32, 64, 4),
-            (torch.randn(2, 32, 16, 16), torch.randn(2, 8, 64)),
-            ["x", "context"],
-        ),
-    }
-
-    opsets = [14, 17, 18, 20]
-    catalog = []
-
-    for name, (mod, dummy_inputs, input_names) in models.items():
-        exported = unified_export_model(
-            model=mod,
-            dummy_inputs=dummy_inputs,
-            input_names=input_names,
-            output_names=["out"],
-            base_name=name,
-            out_dir=OUT_DIR,
-            opset_versions=opsets,
-        )
-        for p in exported:
-            catalog.append({"name": name, "path": p})
-
-    return catalog
+    return [
+        {"name": name, "path": p}
+        for name, paths in ModelRegistry.export_all(category="diffusion_dit").items()
+        for p in paths
+    ]
 
 
 if __name__ == "__main__":

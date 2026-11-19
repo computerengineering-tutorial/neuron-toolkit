@@ -1,44 +1,24 @@
 #!/usr/bin/env python3
-"""Comprehensive Recurrent Neural Network (RNN) Architecture Family Generator.
-
-Generates self-contained PyTorch models and multi-opset ONNX exports for:
-1. VanillaRNN_Single (1-layer Tanh RNN)
-2. VanillaRNN_Multi (2-layer ReLU RNN)
-3. StandardLSTM_Uni (1-layer Unidirectional LSTM)
-4. StandardLSTM_Bi (1-layer Bidirectional LSTM)
-5. StandardGRU_Uni (1-layer Unidirectional GRU)
-6. StandardGRU_Bi (1-layer Bidirectional GRU)
-7. CustomCellLSTM (Explicit cell unrolling: Input, Forget, Cell, Output gates)
-8. CustomCellGRU (Explicit cell unrolling: Reset, Update, Candidate gates)
-9. QuasiRNN_QRNN (Conv1D + parallel pooling elementwise recurrence)
-10. SRU_Cell (Simple Recurrent Unit with highway connection)
-
-Exports across ONNX Opsets 14, 17, 18, 20.
-"""
+"""Comprehensive Recurrent Neural Network (RNN / LSTM / GRU / QRNN / SRU) Family Generator."""
 
 from __future__ import annotations
 
-import sys
-import warnings
-from pathlib import Path
-
-_REPO_ROOT = Path(__file__).resolve().parent.parent
-if str(_REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(_REPO_ROOT))
-
-import onnx
 import torch
 from torch import nn
 
-warnings.filterwarnings("ignore")
-
-OUT_DIR = Path(".helper/models/recurrent")
-OUT_DIR.mkdir(parents=True, exist_ok=True)
+from generators.decorators import register_architecture
+from generators.registry import ModelRegistry
 
 
-# =============================================================================
-# 1. Vanilla RNN Variants
-# =============================================================================
+@register_architecture(
+    name="vanilla_rnn_single",
+    category="recurrent",
+    subfolder="recurrent",
+    shapes=[(1, 8, 32)],
+    input_names=["x"],
+    output_names=["out"],
+    init_args=(32, 32),
+)
 class VanillaRNN_Single(nn.Module):
     def __init__(self, input_size: int = 32, hidden_size: int = 32) -> None:
         super().__init__()
@@ -54,6 +34,16 @@ class VanillaRNN_Single(nn.Module):
         return out
 
 
+@register_architecture(
+    name="vanilla_rnn_multi",
+    category="recurrent",
+    subfolder="recurrent",
+    shapes=[(1, 8, 32)],
+    input_names=["x"],
+    output_names=["out"],
+    init_args=(32, 32),
+    init_kwargs={"num_layers": 2},
+)
 class VanillaRNN_Multi(nn.Module):
     def __init__(
         self, input_size: int = 32, hidden_size: int = 32, num_layers: int = 2
@@ -72,9 +62,15 @@ class VanillaRNN_Multi(nn.Module):
         return out
 
 
-# =============================================================================
-# 2. Standard LSTM Variants
-# =============================================================================
+@register_architecture(
+    name="lstm_uni",
+    category="recurrent",
+    subfolder="recurrent",
+    shapes=[(1, 8, 32)],
+    input_names=["x"],
+    output_names=["out"],
+    init_args=(32, 32),
+)
 class StandardLSTM_Uni(nn.Module):
     def __init__(self, input_size: int = 32, hidden_size: int = 32) -> None:
         super().__init__()
@@ -90,6 +86,15 @@ class StandardLSTM_Uni(nn.Module):
         return out
 
 
+@register_architecture(
+    name="lstm_bi",
+    category="recurrent",
+    subfolder="recurrent",
+    shapes=[(1, 8, 32)],
+    input_names=["x"],
+    output_names=["out"],
+    init_args=(32, 32),
+)
 class StandardLSTM_Bi(nn.Module):
     def __init__(self, input_size: int = 32, hidden_size: int = 32) -> None:
         super().__init__()
@@ -105,9 +110,15 @@ class StandardLSTM_Bi(nn.Module):
         return out
 
 
-# =============================================================================
-# 3. Standard GRU Variants
-# =============================================================================
+@register_architecture(
+    name="gru_uni",
+    category="recurrent",
+    subfolder="recurrent",
+    shapes=[(1, 8, 32)],
+    input_names=["x"],
+    output_names=["out"],
+    init_args=(32, 32),
+)
 class StandardGRU_Uni(nn.Module):
     def __init__(self, input_size: int = 32, hidden_size: int = 32) -> None:
         super().__init__()
@@ -123,6 +134,15 @@ class StandardGRU_Uni(nn.Module):
         return out
 
 
+@register_architecture(
+    name="gru_bi",
+    category="recurrent",
+    subfolder="recurrent",
+    shapes=[(1, 8, 32)],
+    input_names=["x"],
+    output_names=["out"],
+    init_args=(32, 32),
+)
 class StandardGRU_Bi(nn.Module):
     def __init__(self, input_size: int = 32, hidden_size: int = 32) -> None:
         super().__init__()
@@ -138,9 +158,15 @@ class StandardGRU_Bi(nn.Module):
         return out
 
 
-# =============================================================================
-# 4. Custom Unrolled LSTM Cell (Decomposed Graph Pattern)
-# =============================================================================
+@register_architecture(
+    name="custom_cell_lstm",
+    category="recurrent",
+    subfolder="recurrent",
+    shapes=[(1, 8, 32)],
+    input_names=["x"],
+    output_names=["out"],
+    init_args=(32, 32),
+)
 class CustomCellLSTM(nn.Module):
     """Explicit unrolled LSTM step-by-step exposing gate math to ONNX."""
 
@@ -169,9 +195,15 @@ class CustomCellLSTM(nn.Module):
         return torch.cat(outputs, dim=1)
 
 
-# =============================================================================
-# 5. Custom Unrolled GRU Cell (Decomposed Graph Pattern)
-# =============================================================================
+@register_architecture(
+    name="custom_cell_gru",
+    category="recurrent",
+    subfolder="recurrent",
+    shapes=[(1, 8, 32)],
+    input_names=["x"],
+    output_names=["out"],
+    init_args=(32, 32),
+)
 class CustomCellGRU(nn.Module):
     """Explicit unrolled GRU step-by-step exposing reset/update gates to ONNX."""
 
@@ -197,9 +229,15 @@ class CustomCellGRU(nn.Module):
         return torch.cat(outputs, dim=1)
 
 
-# =============================================================================
-# 6. Quasi-RNN (QRNN - Conv1D + Recurrent Pooling)
-# =============================================================================
+@register_architecture(
+    name="qrnn",
+    category="recurrent",
+    subfolder="recurrent",
+    shapes=[(1, 8, 32)],
+    input_names=["x"],
+    output_names=["out"],
+    init_args=(32, 32),
+)
 class QuasiRNN_QRNN(nn.Module):
     """Quasi-RNN: Convolutional feature extraction followed by f-pooling."""
 
@@ -216,16 +254,14 @@ class QuasiRNN_QRNN(nn.Module):
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # x: (B, S, D) -> (B, D, S)
         B, S, _ = x.shape
         x_t = x.transpose(1, 2)
-        conv_out = self.conv(x_t)[:, :, :S]  # Causal slicing
+        conv_out = self.conv(x_t)[:, :, :S]
         z, f, o = torch.chunk(conv_out, 3, dim=1)
         z = torch.tanh(z).transpose(1, 2)
         f = torch.sigmoid(f).transpose(1, 2)
         o = torch.sigmoid(o).transpose(1, 2)
 
-        # F-pooling recurrence
         h = torch.zeros(B, self.hidden_size, device=x.device, dtype=x.dtype)
         outputs = []
         for t in range(S):
@@ -235,9 +271,15 @@ class QuasiRNN_QRNN(nn.Module):
         return torch.cat(outputs, dim=1)
 
 
-# =============================================================================
-# 7. Simple Recurrent Unit (SRU)
-# =============================================================================
+@register_architecture(
+    name="sru_cell",
+    category="recurrent",
+    subfolder="recurrent",
+    shapes=[(1, 8, 32)],
+    input_names=["x"],
+    output_names=["out"],
+    init_args=(32, 32),
+)
 class SRU_Cell(nn.Module):
     """Simple Recurrent Unit with highway skip connections."""
 
@@ -261,65 +303,8 @@ class SRU_Cell(nn.Module):
         return torch.cat(outputs, dim=1)
 
 
-from generators.base import export_model as unified_export_model
-
-
-# =============================================================================
-# Multi-Opset ONNX Export Helper
-# =============================================================================
-def export_model(
-    model: nn.Module,
-    dummy_inputs: tuple[torch.Tensor, ...],
-    input_names: list[str],
-    output_names: list[str],
-    base_name: str,
-    opset_versions: list[int] = (14, 17, 18, 20),
-) -> list[str]:
-    return unified_export_model(
-        model=model,
-        dummy_inputs=dummy_inputs,
-        input_names=input_names,
-        output_names=output_names,
-        base_name=base_name,
-        out_dir=OUT_DIR,
-        opset_versions=opset_versions,
-    )
-
-
 def main() -> None:
-    print("==================================================================")
-    print("  GENERATING RECURRENT ARCHITECTURE FAMILY ONNX SUITE")
-    print("==================================================================")
-
-    dummy_x = torch.randn(1, 8, 32)
-
-    registry = [
-        ("vanilla_rnn_single", VanillaRNN_Single(32, 32)),
-        ("vanilla_rnn_multi", VanillaRNN_Multi(32, 32, num_layers=2)),
-        ("lstm_uni", StandardLSTM_Uni(32, 32)),
-        ("lstm_bi", StandardLSTM_Bi(32, 32)),
-        ("gru_uni", StandardGRU_Uni(32, 32)),
-        ("gru_bi", StandardGRU_Bi(32, 32)),
-        ("custom_cell_lstm", CustomCellLSTM(32, 32)),
-        ("custom_cell_gru", CustomCellGRU(32, 32)),
-        ("qrnn", QuasiRNN_QRNN(32, 32)),
-        ("sru_cell", SRU_Cell(32, 32)),
-    ]
-
-    for name, module in registry:
-        print(f"\nModel: {name}")
-        export_model(
-            module,
-            (dummy_x,),
-            ["x"],
-            ["out"],
-            name,
-            opset_versions=[14, 17, 18, 20],
-        )
-
-    print("\n==================================================================")
-    print(f"Recurrent ONNX suite complete in: {OUT_DIR.resolve()}")
-    print("==================================================================")
+    ModelRegistry.export_all(category="recurrent")
 
 
 if __name__ == "__main__":
