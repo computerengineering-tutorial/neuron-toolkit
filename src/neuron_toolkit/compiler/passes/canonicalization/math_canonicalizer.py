@@ -178,6 +178,46 @@ class MathCanonicalizer(Pass):
         if not new_nodes:
             return model
 
+        has_biased = any(len(n.input) >= 3 and n.input[2] for n in new_nodes)
+        if mode == "function_proto" and has_biased:
+            for n in new_nodes:
+                if len(n.input) == 2:
+                    w_name = n.input[1]
+                    out_features = None
+                    w_dtype = np.float32
+                    if w_name in init_arrays:
+                        w_arr = init_arrays[w_name]
+                        out_features = w_arr.shape[-1]
+                        w_dtype = w_arr.dtype
+                    else:
+                        for vi in list(graph.value_info) + list(graph.input) + list(graph.output):
+                            if vi.name == w_name and vi.type.tensor_type.shape.dim:
+                                last_d = vi.type.tensor_type.shape.dim[-1]
+                                if last_d.dim_value > 0:
+                                    out_features = last_d.dim_value
+                                elem_t = vi.type.tensor_type.elem_type
+                                w_dtype = (
+                                    helper.tensor_dtype_to_np_dtype(elem_t)
+                                    if hasattr(helper, "tensor_dtype_to_np_dtype")
+                                    else np.float32
+                                )
+                                break
+                            if vi.name == n.output[0] and vi.type.tensor_type.shape.dim:
+                                last_d = vi.type.tensor_type.shape.dim[-1]
+                                if last_d.dim_value > 0:
+                                    out_features = last_d.dim_value
+                                break
+
+                    if out_features is not None:
+                        zero_b_name = f"{w_name}_zero_bias"
+                        if zero_b_name not in init_arrays:
+                            zero_arr = np.zeros(out_features, dtype=w_dtype)
+                            init_arrays[zero_b_name] = zero_arr
+                            graph.initializer.append(
+                                numpy_helper.from_array(zero_arr, name=zero_b_name)
+                            )
+                        n.input.append(zero_b_name)
+
         kept = [n for n in graph.node if id(n) not in nodes_to_drop]
         kept.extend(new_nodes)
         del graph.node[:]

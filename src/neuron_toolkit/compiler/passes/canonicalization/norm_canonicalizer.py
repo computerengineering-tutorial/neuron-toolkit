@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 
+import numpy as np
 import onnx
 from onnx import helper, numpy_helper
 
@@ -525,6 +526,17 @@ class NormCanonicalizer(Pass):
     ) -> onnx.ModelProto:
         """Fuses ReduceMean -> Sub -> Pow(2) -> ReduceMean -> Sqrt -> Div -> Mul -> Add into LayerNormalization."""
         graph = model.graph
+        target_opset = 17
+        for op in model.opset_import:
+            if op.domain in ("", "ai.onnx"):
+                target_opset = op.version
+                break
+        use_standard_ln = (mode == "modern_onnx" or target_opset >= 17)
+        ln_domain = "" if use_standard_ln else "custom.pytorch"
+
+        init_map: dict[str, np.ndarray] = {
+            i.name: numpy_helper.to_array(i) for i in graph.initializer
+        }
         consumer_map: dict[str, list[onnx.NodeProto]] = {}
         for n in graph.node:
             for inp in n.input:
@@ -547,23 +559,29 @@ class NormCanonicalizer(Pass):
             ]
             if not sub_candidates:
                 continue
-            sub_node = sub_candidates[0]
-            x_minus_mean = sub_node.output[0]
 
-            pow_candidates = [
-                c
-                for c in consumer_map.get(x_minus_mean, [])
-                if c.op_type == "Pow"
-                or (
-                    c.op_type == "Mul"
-                    and len(c.input) == 2
-                    and c.input[0] == x_minus_mean
-                    and c.input[1] == x_minus_mean
-                )
-            ]
-            if not pow_candidates:
+            # Identify sub_for_var (feeding Pow or Mul(diff, diff))
+            sub_for_var = None
+            pow_node = None
+            for sc in sub_candidates:
+                pow_cands = [
+                    c
+                    for c in consumer_map.get(sc.output[0], [])
+                    if c.op_type == "Pow"
+                    or (
+                        c.op_type == "Mul"
+                        and len(c.input) == 2
+                        and c.input[0] == sc.output[0]
+                        and c.input[1] == sc.output[0]
+                    )
+                ]
+                if pow_cands:
+                    sub_for_var = sc
+                    pow_node = pow_cands[0]
+                    break
+
+            if not sub_for_var or not pow_node:
                 continue
-            pow_node = pow_candidates[0]
 
             rm_var_candidates = [
                 c
@@ -592,18 +610,66 @@ class NormCanonicalizer(Pass):
                 continue
             sqrt_node = sqrt_candidates[0]
 
-            div_candidates = [
+            intermediate_nodes: list[onnx.NodeProto] = []
+            norm_out_node: onnx.NodeProto | None = None
+            sub_for_num: onnx.NodeProto | None = None
+
+            # Path A: Standard Sqrt -> Div
+            div_cands = [
                 c
                 for c in consumer_map.get(sqrt_node.output[0], [])
-                if c.op_type == "Div" and c.input[0] == x_minus_mean
+                if c.op_type == "Div"
+                and any(c.input[0] == sc.output[0] for sc in sub_candidates)
             ]
-            if not div_candidates:
+            if div_cands:
+                div_node = div_cands[0]
+                sub_for_num = next(
+                    sc for sc in sub_candidates if sc.output[0] == div_node.input[0]
+                )
+                norm_out_node = div_node
+                intermediate_nodes.append(div_node)
+            else:
+                # Path B: Decomposed Sqrt -> Reciprocal -> Mul
+                recip_cands = [
+                    c
+                    for c in consumer_map.get(sqrt_node.output[0], [])
+                    if c.op_type == "Reciprocal"
+                ]
+                if recip_cands:
+                    recip_node = recip_cands[0]
+                    mul_cands = [
+                        c
+                        for c in consumer_map.get(recip_node.output[0], [])
+                        if c.op_type == "Mul"
+                        and any(sc.output[0] in c.input for sc in sub_candidates)
+                    ]
+                    if mul_cands:
+                        mul_norm_node = mul_cands[0]
+                        sub_for_num = next(
+                            sc
+                            for sc in sub_candidates
+                            if sc.output[0] in mul_norm_node.input
+                        )
+                        norm_out_node = mul_norm_node
+                        intermediate_nodes.extend([recip_node, mul_norm_node])
+
+            if not norm_out_node or not sub_for_num:
                 continue
-            div_node = div_candidates[0]
+
+            curr_out = norm_out_node.output[0]
+            res_cands = [
+                c
+                for c in consumer_map.get(curr_out, [])
+                if c.op_type == "Reshape"
+            ]
+            reshape_node: onnx.NodeProto | None = None
+            if res_cands and len(consumer_map.get(curr_out, [])) == 1:
+                reshape_node = res_cands[0]
+                curr_out = reshape_node.output[0]
 
             mul_candidates = [
                 c
-                for c in consumer_map.get(div_node.output[0], [])
+                for c in consumer_map.get(curr_out, [])
                 if c.op_type == "Mul"
             ]
             if not mul_candidates:
@@ -611,7 +677,7 @@ class NormCanonicalizer(Pass):
             mul_node = mul_candidates[0]
             scale = (
                 mul_node.input[1]
-                if mul_node.input[0] == div_node.output[0]
+                if mul_node.input[0] == curr_out
                 else mul_node.input[0]
             )
 
@@ -620,40 +686,105 @@ class NormCanonicalizer(Pass):
                 for c in consumer_map.get(mul_node.output[0], [])
                 if c.op_type == "Add"
             ]
-            if not add_bias_candidates:
-                continue
-            add_bias_node = add_bias_candidates[0]
-            bias = (
-                add_bias_node.input[1]
-                if add_bias_node.input[0] == mul_node.output[0]
-                else add_bias_node.input[0]
-            )
-            final_out = add_bias_node.output[0]
+            add_bias_node = add_bias_candidates[0] if add_bias_candidates else None
+            if add_bias_node:
+                bias = (
+                    add_bias_node.input[1]
+                    if add_bias_node.input[0] == mul_node.output[0]
+                    else add_bias_node.input[0]
+                )
+                final_out = add_bias_node.output[0]
+            else:
+                bias = None
+                final_out = mul_node.output[0]
 
-            nodes_to_remove.update(
-                {
-                    rm_mean.name or rm_mean.output[0],
-                    sub_node.name or sub_node.output[0],
-                    pow_node.name or pow_node.output[0],
-                    rm_var_node.name or rm_var_node.output[0],
-                    add_node.name or add_node.output[0],
-                    sqrt_node.name or sqrt_node.output[0],
-                    div_node.name or div_node.output[0],
-                    mul_node.name or mul_node.output[0],
-                    add_bias_node.name or add_bias_node.output[0],
-                }
+            eps_name = (
+                add_node.input[1]
+                if add_node.input[0] == rm_var_node.output[0]
+                else add_node.input[0]
+            )
+            eps_val = (
+                float(init_map[eps_name]) if eps_name in init_map else 1e-5
             )
 
-            ln_node = helper.make_node(
-                "LayerNormalization",
-                inputs=[x, scale, bias],
-                outputs=[final_out],
-                name=f"layernorm_{count}",
-                domain="" if mode == "modern_onnx" else "custom.pytorch",
-                axis=-1,
-                epsilon=1e-5,
-            )
-            new_nodes.append(ln_node)
+            to_drop = [
+                rm_mean,
+                sub_for_var,
+                sub_for_num,
+                pow_node,
+                rm_var_node,
+                add_node,
+                sqrt_node,
+                mul_node,
+            ] + intermediate_nodes
+            if add_bias_node is not None:
+                to_drop.append(add_bias_node)
+
+            graph_outputs = {o.name for o in graph.output}
+            to_drop_ids = {id(n) for n in to_drop}
+            exit_node = add_bias_node if add_bias_node is not None else mul_node
+            for n in to_drop:
+                if n is exit_node:
+                    nodes_to_remove.add(n.name or n.output[0])
+                    continue
+                has_external = False
+                for out in n.output:
+                    if out in graph_outputs:
+                        has_external = True
+                        break
+                    consumers = consumer_map.get(out, [])
+                    if any(id(c) not in to_drop_ids for c in consumers):
+                        has_external = True
+                        break
+                if not has_external:
+                    nodes_to_remove.add(n.name or n.output[0])
+
+            if not use_standard_ln and bias is None:
+                scale_arr = init_map.get(scale)
+                if scale_arr is not None:
+                    zero_b_name = f"{scale}_zero_bias"
+                    if zero_b_name not in init_map:
+                        zero_arr = np.zeros(scale_arr.shape, dtype=scale_arr.dtype)
+                        init_map[zero_b_name] = zero_arr
+                        graph.initializer.append(
+                            numpy_helper.from_array(zero_arr, name=zero_b_name)
+                        )
+                    bias = zero_b_name
+
+            ln_inputs = [x, scale, bias] if bias is not None else [x, scale]
+
+            if reshape_node is not None:
+                ln_out = f"layernorm_out_{count}"
+                ln_node = helper.make_node(
+                    "LayerNormalization",
+                    inputs=ln_inputs,
+                    outputs=[ln_out],
+                    name=f"layernorm_{count}",
+                    domain=ln_domain,
+                    axis=-1,
+                    epsilon=eps_val,
+                )
+                new_nodes.append(ln_node)
+                nodes_to_remove.add(reshape_node.name or reshape_node.output[0])
+                new_res = helper.make_node(
+                    "Reshape",
+                    inputs=[ln_out, reshape_node.input[1]],
+                    outputs=[final_out],
+                    name=f"layernorm_reshape_{count}",
+                )
+                new_nodes.append(new_res)
+            else:
+                ln_node = helper.make_node(
+                    "LayerNormalization",
+                    inputs=ln_inputs,
+                    outputs=[final_out],
+                    name=f"layernorm_{count}",
+                    domain=ln_domain,
+                    axis=-1,
+                    epsilon=eps_val,
+                )
+                new_nodes.append(ln_node)
+
             count += 1
 
         if not new_nodes:
@@ -667,8 +798,12 @@ class NormCanonicalizer(Pass):
         kept.extend(new_nodes)
         del graph.node[:]
         graph.node.extend(kept)
+        from neuron_toolkit.runtime.runner import toposort_graph
+        sorted_nodes = toposort_graph(model)
+        del graph.node[:]
+        graph.node.extend(sorted_nodes)
 
-        if mode == "modern_onnx":
+        if use_standard_ln:
             for op in model.opset_import:
                 if op.domain in ("", "ai.onnx") and op.version < 17:
                     op.version = 17
@@ -771,6 +906,10 @@ class NormCanonicalizer(Pass):
         kept.extend(new_nodes)
         del graph.node[:]
         graph.node.extend(kept)
+        from neuron_toolkit.runtime.runner import toposort_graph
+        sorted_nodes = toposort_graph(model)
+        del graph.node[:]
+        graph.node.extend(sorted_nodes)
 
         req_domain = "com.microsoft" if mode == "modern_onnx" else "custom.pytorch"
         if not any(op.domain == req_domain for op in model.opset_import):

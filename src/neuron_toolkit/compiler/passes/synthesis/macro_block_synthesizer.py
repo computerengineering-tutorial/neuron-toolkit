@@ -54,17 +54,28 @@ def _ensure_custom_domain(model: onnx.ModelProto, domain: str = "custom.pytorch"
 
 def _replace_nodes_topologically(
     graph: onnx.GraphProto,
-    nodes_to_drop: set[str],
+    nodes_to_drop: set[str | int],
     new_nodes: list[onnx.NodeProto],
 ) -> None:
     """Replace dropped nodes in-place at the topological exit positions."""
-    new_node_map = {n.output[0]: n for n in new_nodes}
+    clean_names = {x for x in nodes_to_drop if isinstance(x, str) and x}
+    drop_ids = {x for x in nodes_to_drop if isinstance(x, int)}
+    new_node_map = {out: n for n in new_nodes for out in n.output if out}
     new_graph_nodes = []
     for n in graph.node:
-        if n.name in nodes_to_drop:
+        is_dropped = False
+        if n.name and n.name in clean_names:
+            is_dropped = True
+        elif id(n) in drop_ids:
+            is_dropped = True
+
+        if is_dropped:
             for out in n.output:
                 if out in new_node_map:
-                    new_graph_nodes.append(new_node_map.pop(out))
+                    new_node = new_node_map.pop(out)
+                    new_graph_nodes.append(new_node)
+                    for other_out in new_node.output:
+                        new_node_map.pop(other_out, None)
                     break
         else:
             new_graph_nodes.append(n)
@@ -180,6 +191,7 @@ class MacroBlockSynthesizer(CompilerPass):
         model = self.apply_deepseek_mla_macro_fusion(model, mode=mode)
         model = self.apply_multi_field_embedding_fusion(model, mode=mode)
         model = self.apply_attention_key_padding_mask_fusion(model, mode=mode)
+        model = self.apply_dynamic_quant_linear_fusion(model, mode=mode)
         model = self.apply_transformer_encoder_layer_fusion(model, mode=mode)
         model = self.apply_sequence_classifier_head_fusion(model, mode=mode)
         model = self.apply_multi_task_audio_head_fusion(model, mode=mode)
@@ -1317,43 +1329,228 @@ class MacroBlockSynthesizer(CompilerPass):
     def apply_transformer_encoder_layer_fusion(
         self, model: onnx.ModelProto, mode: str = "function_proto"
     ) -> onnx.ModelProto:
-        """Fuse PyTorch nn.TransformerEncoderLayer subgraphs into TransformerBlock."""
+        """Fuse TransformerEncoderLayer subgraphs into TransformerBlock universally across frameworks."""
         rule = self.load_rule("transformer_encoder_layer_fusion")
         graph = model.graph
         nodes_to_drop: set[str] = set()
         new_nodes: list[onnx.NodeProto] = []
         count = 0
 
-        layer_indices = set()
-        for n in graph.node:
-            m_idx = re.search(r"(?:layers|blocks|encoder\.layers|encoder\.layer|transformer\.h|layer|block)[._](\d+)", n.name)
-            if m_idx:
-                layer_indices.add(int(m_idx.group(1)))
+        # 1. Universally discover repeating layer stack across any framework
+        INTRA_BLOCK_COMPONENTS = {
+            "fc", "ln", "proj", "linear", "norm", "act", "mul", "add",
+            "matmul", "conv", "bn", "init", "const", "input", "output",
+            "weight", "bias", "node", "res", "sub", "div", "shape", "slice",
+            "transpose", "select", "cast", "identity",
+        }
 
+        depth_indices: dict[int, dict[str, set[int]]] = collections.defaultdict(
+            lambda: collections.defaultdict(set)
+        )
+        for n in graph.node:
+            parts = re.split(r"[/.]", n.name)
+            for d, part in enumerate(parts[:-1]):
+                m = re.match(r"^([a-zA-Z0-9_\-]*?)[_.]?(\d+)$", part)
+                if m:
+                    p = parts[d - 1] if part.isdigit() and d > 0 else (m.group(1) or "indexed")
+                    if p.lower() in INTRA_BLOCK_COMPONENTS:
+                        continue
+                    idx = int(m.group(2))
+                    if idx < 100:
+                        depth_indices[d][p].add(idx)
+
+        best_depth = None
+        best_indices: list[int] = []
+        for d in depth_indices:
+            prefixes_at_d = {p for p, idxs in depth_indices[d].items() if len(idxs) >= 2}
+            if not prefixes_at_d:
+                continue
+            candidate_all = set.union(*(depth_indices[d][p] for p in prefixes_at_d))
+            if 0 not in candidate_all and 1 in candidate_all:
+                for n in graph.node:
+                    parts = re.split(r"[/.]", n.name)
+                    if len(parts) > d + 1 and parts[d] in prefixes_at_d:
+                        candidate_all.add(0)
+                        break
+            seq: list[int] = []
+            start = 0 if 0 in candidate_all else 1
+            curr = start
+            while curr in candidate_all:
+                seq.append(curr)
+                curr += 1
+            if len(seq) >= 2 and (not best_indices or len(seq) > len(best_indices)):
+                best_depth = d
+                best_indices = seq
+
+        flat_prefix = None
+        if not best_indices:
+            flat_indices: dict[str, set[int]] = collections.defaultdict(set)
+            for n in graph.node:
+                for m in re.finditer(r"(?:^|[._/])([a-zA-Z0-9_\-]+?)[_.]?(\d+)(?:(?![0-9])[._/]|$)", n.name):
+                    p = m.group(1).lower()
+                    if p in INTRA_BLOCK_COMPONENTS or p.isdigit() or len(p) < 2:
+                        continue
+                    idx = int(m.group(2))
+                    if idx < 100:
+                        flat_indices[p].add(idx)
+
+            for p, idxs in flat_indices.items():
+                if len(idxs) >= 2:
+                    seq = []
+                    start = 0 if 0 in idxs else 1
+                    curr = start
+                    while curr in idxs:
+                        seq.append(curr)
+                        curr += 1
+                    if len(seq) >= 2 and len(seq) > len(best_indices):
+                        best_indices = seq
+                        flat_prefix = p
+
+        if not best_indices:
+            return model
+
+        sorted_indices = best_indices
+        producers = {out: n for n in graph.node for out in n.output if out}
+        consumer_map = collections.defaultdict(list)
+        for n in graph.node:
+            for inp in n.input:
+                consumer_map[inp].append(n)
+        graph_outputs = {o.name for o in graph.output}
+        prefixes_at_depth = (
+            {p for p, idxs in depth_indices[best_depth].items() if len(idxs) >= 2}
+            if best_depth is not None
+            else set()
+        )
+
+        # 2. Universally identify terminal residual merge node for each layer
+        terminals: dict[int, onnx.NodeProto] = {}
+        layer_scoped_nodes: dict[int, list[onnx.NodeProto]] = collections.defaultdict(list)
+
+        for n in graph.node:
+            parts = re.split(r"[/.]", n.name)
+            if best_depth is not None and len(parts) > best_depth:
+                part = parts[best_depth]
+                m = re.match(r"^([a-zA-Z0-9_\-]*?)[_.]?(\d+)$", part)
+                if m and int(m.group(2)) in sorted_indices:
+                    layer_scoped_nodes[int(m.group(2))].append(n)
+                elif 0 in sorted_indices and part in prefixes_at_depth:
+                    layer_scoped_nodes[0].append(n)
+            else:
+                for idx in sorted_indices:
+                    pattern = (
+                        rf"(?:^|[._/]){flat_prefix}[._]?{idx}(?:(?![0-9])[._/]|$)"
+                        if flat_prefix
+                        else rf"(?:^|[._/]){idx}(?:(?![0-9])[._/]|$)"
+                    )
+                    if re.search(pattern, n.name, re.IGNORECASE):
+                        layer_scoped_nodes[idx].append(n)
+                        break
+
+        for idx in sorted_indices:
+            l_nodes = layer_scoped_nodes.get(idx, [])
+            res_cands = [
+                n
+                for n in l_nodes
+                if n.op_type in ("Add", "SkipLayerNormalization")
+            ]
+            if not res_cands:
+                res_cands = [
+                    n
+                    for n in l_nodes
+                    if n.op_type == "LayerNormalization"
+                ]
+            if res_cands:
+                terminals[idx] = res_cands[-1]
+
+        valid_indices = [idx for idx in sorted_indices if idx in terminals]
+        if not valid_indices:
+            return model
+
+        sorted_indices = valid_indices
         _ensure_custom_domain(model, rule.action.domain)
 
-        for layer_idx in sorted(layer_indices):
-            l_nodes = [
-                n for n in graph.node
-                if re.search(rf"(?:layers|blocks|encoder\.layers|encoder\.layer|transformer\.h|layer|block)[._]{layer_idx}(?:/|_)", n.name)
-            ]
-            final_nodes = [
-                n for n in l_nodes
-                if (n.name.endswith(f"layers.{layer_idx}/Add_2")
-                    or n.name.endswith(f"layers.{layer_idx}/Add_1")
-                    or (n.op_type in ("Add", "SkipLayerNormalization", "LayerNormalization") and n == l_nodes[-1]))
-            ]
-            first_nodes = [
-                n for n in l_nodes
-                if any(k in n.name for k in ("norm1", "ln1", "attn_norm", "input_layernorm"))
-                or n.op_type.startswith("LayerNorm")
-                or n.op_type.startswith("RMSNorm")
-            ]
+        # 3. Universally find activation boundary before the first layer
+        first_idx = sorted_indices[0]
+        first_term = terminals[first_idx]
 
-            if not final_nodes or not first_nodes:
+        norms: list[onnx.NodeProto] = []
+        visited_norm: set[str] = set()
+
+        def _find_norms(t: str) -> None:
+            if not t or t not in producers:
+                return
+            p = producers[t]
+            if p.name in visited_norm:
+                return
+            visited_norm.add(p.name)
+            if p.op_type in ("LayerNormalization", "SkipLayerNormalization"):
+                norms.append(p)
+            for inp in p.input:
+                _find_norms(inp)
+
+        _find_norms(first_term.output[0])
+        node_order = {n.name: i for i, n in enumerate(graph.node)}
+        norms.sort(key=lambda n: node_order.get(n.name, 0))
+        curr_b = norms[0].input[0] if norms and norms[0].input else first_term.input[0]
+        while curr_b in producers and producers[curr_b].op_type in ("Reshape", "Transpose", "Identity"):
+            curr_b = producers[curr_b].input[0]
+        in_boundary_0 = curr_b
+
+        # 4. Topologically extract layer subgraphs
+        layer_raw_nodes: dict[int, list[onnx.NodeProto]] = {}
+        for i, idx in enumerate(sorted_indices):
+            term = terminals.get(idx)
+            if not term or not term.output:
+                continue
+            prev_idx = sorted_indices[i - 1] if i > 0 else None
+            in_boundary = (
+                terminals[prev_idx].output[0]
+                if prev_idx is not None and prev_idx in terminals and terminals[prev_idx].output
+                else in_boundary_0
+            )
+            visited: set[str] = set()
+            nodes: list[onnx.NodeProto] = []
+
+            def _dfs(t: str) -> None:
+                if not t or (in_boundary and t == in_boundary) or t not in producers:
+                    return
+                node = producers[t]
+                if node.name in visited or (in_boundary and in_boundary in node.output):
+                    return
+                visited.add(node.name)
+                nodes.append(node)
+                for inp in node.input:
+                    _dfs(inp)
+
+            _dfs(term.output[0])
+            layer_raw_nodes[idx] = nodes
+
+        # Find any node shared across layers (e.g. shared attention mask computation)
+        shared_counts = collections.Counter()
+        for raw_nodes in layer_raw_nodes.values():
+            for n in raw_nodes:
+                shared_counts[n.name] += 1
+        shared_nodes = {k for k, v in shared_counts.items() if v > 1}
+
+        # 5. Build macro block for each layer
+        for idx in sorted_indices:
+            term = terminals.get(idx)
+            if not term or not term.output:
                 continue
 
-            final_node = final_nodes[0]
+            raw_ex = [
+                n
+                for n in layer_raw_nodes.get(idx, [])
+                if n.name not in shared_nodes
+            ]
+            scoped = layer_scoped_nodes.get(idx, [])
+            l_nodes = raw_ex if len(raw_ex) >= len(scoped) and len(raw_ex) >= 3 else scoped
+
+            if len(l_nodes) < 3:
+                continue
+
+            l_nodes.sort(key=lambda n: node_order.get(n.name, 0))
+            final_node = term
             out_y = final_node.output[0]
 
             internal_producers = {out for sn in l_nodes for out in sn.output if out}
@@ -1362,10 +1559,18 @@ class MacroBlockSynthesizer(CompilerPass):
                 for inp in sn.input:
                     if inp and inp not in internal_producers and inp not in ext_inps:
                         ext_inps.append(inp)
+            l_nodes_ids = {id(n) for n in l_nodes}
             ext_outs = [out_y]
+            for sn in l_nodes:
+                for out in sn.output:
+                    if out and out != out_y and out not in ext_outs:
+                        if out in graph_outputs or any(id(c) not in l_nodes_ids for c in consumer_map.get(out, [])):
+                            ext_outs.append(out)
 
             for n in l_nodes:
-                nodes_to_drop.add(n.name)
+                if n.name:
+                    nodes_to_drop.add(n.name)
+                nodes_to_drop.add(id(n))
 
             fp = compute_subgraph_fingerprint(l_nodes, ext_inps, ext_outs)
             op_type = build_monomorphized_op_type(rule.action.op_type, fingerprint=fp)
@@ -1388,7 +1593,7 @@ class MacroBlockSynthesizer(CompilerPass):
                 op_type,
                 inputs=ext_inps,
                 outputs=ext_outs,
-                name=f"transformer_encoder_layer_{layer_idx}",
+                name=f"transformer_encoder_layer_{idx}",
                 domain=rule.action.domain,
                 doc_string=rule.description,
             )
@@ -1399,6 +1604,10 @@ class MacroBlockSynthesizer(CompilerPass):
             return model
 
         _replace_nodes_topologically(graph, nodes_to_drop, new_nodes)
+        from neuron_toolkit.runtime.runner import toposort_graph
+        sorted_nodes = toposort_graph(model)
+        del graph.node[:]
+        graph.node.extend(sorted_nodes)
         log.info("TransformerEncoderLayer Fusion: Fused %d layers", count)
         return ShapeCanonicalizer().apply_dead_code_elimination(model)
 
@@ -2427,3 +2636,149 @@ class MacroBlockSynthesizer(CompilerPass):
             graph.node.append(mla_node)
             return ShapeCanonicalizer().apply_dead_code_elimination(model)
         return model
+
+    # -------------------------------------------------------------------------
+    # 21. DynamicQuantLinear Fusion
+    # -------------------------------------------------------------------------
+    def apply_dynamic_quant_linear_fusion(
+        self, model: onnx.ModelProto, mode: str = "function_proto"
+    ) -> onnx.ModelProto:
+        """Fuse DynamicQuantizeLinear -> DequantizeLinear -> MatMul [-> Add] into DynamicQuantLinear."""
+        graph = model.graph
+        consumer_map: dict[str, list[onnx.NodeProto]] = collections.defaultdict(list)
+        for n in graph.node:
+            for inp in n.input:
+                consumer_map[inp].append(n)
+
+        nodes_to_drop: set[str] = set()
+        new_nodes: list[onnx.NodeProto] = []
+        count = 0
+
+        for dql in graph.node:
+            if dql.op_type != "DynamicQuantizeLinear" or not dql.output:
+                continue
+            q_out = dql.output[0]
+            dq_cands = [
+                c for c in consumer_map.get(q_out, []) if c.op_type == "DequantizeLinear"
+            ]
+            if not dq_cands or not dq_cands[0].output:
+                continue
+            dq_act = dq_cands[0]
+            act_dq_out = dq_act.output[0]
+
+            mm_cands = [
+                c for c in consumer_map.get(act_dq_out, []) if c.op_type == "MatMul"
+            ]
+            if not mm_cands or not mm_cands[0].output:
+                continue
+            mm_node = mm_cands[0]
+            mm_out = mm_node.output[0]
+
+            if len(mm_node.input) < 2 or mm_node.input[0] != act_dq_out:
+                continue
+            w_input = mm_node.input[1]
+
+            add_cands = [
+                c for c in consumer_map.get(mm_out, []) if c.op_type == "Add"
+            ]
+            add_node = (
+                add_cands[0]
+                if add_cands and len(consumer_map.get(mm_out, [])) == 1
+                else None
+            )
+
+            x_input = dql.input[0]
+            final_out = add_node.output[0] if add_node else mm_out
+            b_input = None
+            if add_node:
+                b_input = (
+                    add_node.input[1]
+                    if add_node.input[0] == mm_out
+                    else add_node.input[0]
+                )
+
+            inputs = [x_input, w_input]
+            if b_input:
+                inputs.append(b_input)
+
+            fused_node = helper.make_node(
+                "DynamicQuantLinear",
+                inputs=inputs,
+                outputs=[final_out],
+                name=f"dynamic_quant_linear_{count}",
+                domain="custom.pytorch",
+            )
+            new_nodes.append(fused_node)
+            nodes_to_drop.update({n.name for n in [dql, dq_act, mm_node] if n.name})
+            nodes_to_drop.update({id(dql), id(dq_act), id(mm_node)})
+            if add_node:
+                if add_node.name:
+                    nodes_to_drop.add(add_node.name)
+                nodes_to_drop.add(id(add_node))
+            count += 1
+
+        if not new_nodes:
+            return model
+
+        _ensure_custom_domain(model, "custom.pytorch")
+
+        if mode == "function_proto":
+            has_biased = any(len(n.input) >= 3 and n.input[2] for n in new_nodes)
+            self._attach_dynamic_quant_linear_function_def(model, has_biased=has_biased)
+
+        _replace_nodes_topologically(graph, nodes_to_drop, new_nodes)
+        from neuron_toolkit.runtime.runner import toposort_graph
+        sorted_nodes = toposort_graph(model)
+        del graph.node[:]
+        graph.node.extend(sorted_nodes)
+        log.info("DynamicQuantLinear Fusion: Fused %d instances", len(new_nodes))
+        return model
+
+    def _attach_dynamic_quant_linear_function_def(
+        self, model: onnx.ModelProto, has_biased: bool = False
+    ) -> None:
+        """Attach formal ONNX FunctionProto definition for DynamicQuantLinear."""
+        func_name = "DynamicQuantLinear"
+        domain = "custom.pytorch"
+        if any(f.name == func_name and f.domain == domain for f in model.functions):
+            return
+
+        model_opset = 14
+        for op in model.opset_import:
+            if op.domain in ("", "ai.onnx"):
+                model_opset = max(model_opset, op.version)
+                break
+        opset_standard = helper.make_opsetid("", model_opset)
+
+        dql = helper.make_node(
+            "DynamicQuantizeLinear",
+            inputs=["X"],
+            outputs=["q_x", "scale_x", "zp_x"],
+        )
+        dq = helper.make_node(
+            "DequantizeLinear",
+            inputs=["q_x", "scale_x", "zp_x"],
+            outputs=["dq_x"],
+        )
+        mm = helper.make_node(
+            "MatMul",
+            inputs=["dq_x", "W"],
+            outputs=["mm_out" if has_biased else "Y"],
+        )
+        fn_nodes = [dql, dq, mm]
+        fn_inputs = ["X", "W"]
+        if has_biased:
+            add = helper.make_node("Add", inputs=["mm_out", "bias"], outputs=["Y"])
+            fn_nodes.append(add)
+            fn_inputs.append("bias")
+
+        func = helper.make_function(
+            domain=domain,
+            fname=func_name,
+            inputs=fn_inputs,
+            outputs=["Y"],
+            nodes=fn_nodes,
+            opset_imports=[opset_standard],
+            doc_string="Dynamic Quantized Linear projection function",
+        )
+        model.functions.append(func)

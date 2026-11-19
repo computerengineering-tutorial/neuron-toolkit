@@ -248,6 +248,122 @@ class OpRegistry:
             cond = inputs[0] if inputs[0].dtype == torch.bool else inputs[0].bool()
             return torch.where(cond, inputs[1], inputs[2])
 
+        @self.register("", "Not")
+        def _not(inputs: list[torch.Tensor], attrs: dict[str, Any]) -> torch.Tensor:
+            cond = inputs[0] if inputs[0].dtype == torch.bool else inputs[0].bool()
+            return torch.logical_not(cond)
+
+        @self.register("", "Pad")
+        def _pad(inputs: list[torch.Tensor], attrs: dict[str, Any]) -> torch.Tensor:
+            data = inputs[0]
+            if len(inputs) > 1 and inputs[1] is not None:
+                pads_list = [int(p) for p in inputs[1].view(-1).tolist()]
+            else:
+                pads_list = list(attrs.get("pads", []))
+
+            val = 0.0
+            if len(inputs) > 2 and inputs[2] is not None and inputs[2].numel() > 0:
+                val = float(inputs[2].item())
+            elif "value" in attrs:
+                val = float(attrs["value"])
+
+            axes = None
+            if len(inputs) > 3 and inputs[3] is not None and inputs[3].numel() > 0:
+                axes = [int(a) for a in inputs[3].view(-1).tolist()]
+
+            r = data.dim()
+            mode = attrs.get("mode", "constant")
+            if isinstance(mode, bytes):
+                mode = mode.decode("utf-8")
+
+            if axes is not None:
+                full_begin = [0] * r
+                full_end = [0] * r
+                num_axes = len(axes)
+                for i, ax in enumerate(axes):
+                    ax_norm = ax if ax >= 0 else ax + r
+                    full_begin[ax_norm] = pads_list[i]
+                    full_end[ax_norm] = pads_list[num_axes + i]
+                pads_list = full_begin + full_end
+
+            pt_pad: list[int] = []
+            for d in reversed(range(r)):
+                pt_pad.append(pads_list[d])
+                pt_pad.append(pads_list[r + d])
+
+            if all(p == 0 for p in pt_pad):
+                return data
+
+            pt_mode = "replicate" if mode == "edge" else mode
+            if pt_mode == "constant":
+                pad_val = (
+                    bool(val)
+                    if data.dtype == torch.bool
+                    else (
+                        int(val)
+                        if data.dtype
+                        in (
+                            torch.int32,
+                            torch.int64,
+                            torch.int16,
+                            torch.int8,
+                            torch.uint8,
+                        )
+                        else val
+                    )
+                )
+                return F.pad(data, tuple(pt_pad), mode="constant", value=pad_val)
+            return F.pad(data, tuple(pt_pad), mode=pt_mode)
+
+        @self.register("", "DynamicQuantizeLinear")
+        def _dynamic_quantize_linear(
+            inputs: list[torch.Tensor], attrs: dict[str, Any]
+        ) -> list[torch.Tensor]:
+            x = inputs[0]
+            x_min = torch.minimum(
+                torch.tensor(0.0, device=x.device, dtype=x.dtype), torch.min(x)
+            )
+            x_max = torch.maximum(
+                torch.tensor(0.0, device=x.device, dtype=x.dtype), torch.max(x)
+            )
+            denom = 255.0
+            scale = (x_max - x_min) / denom
+            if scale == 0:
+                scale = torch.tensor(1.0, device=x.device, dtype=torch.float32)
+            else:
+                scale = scale.to(torch.float32)
+            zero_point = torch.clamp(torch.round(-x_min / scale), 0, 255).to(
+                torch.uint8
+            )
+            y = torch.clamp(
+                torch.round(x / scale) + zero_point.to(x.dtype), 0, 255
+            ).to(torch.uint8)
+            return [y, scale, zero_point]
+
+        @self.register("", "DequantizeLinear")
+        def _dequantize_linear(
+            inputs: list[torch.Tensor], attrs: dict[str, Any]
+        ) -> torch.Tensor:
+            x = inputs[0]
+            scale = inputs[1]
+            zp = inputs[2] if len(inputs) > 2 and inputs[2] is not None else None
+            axis = attrs.get("axis", 1)
+
+            if scale.dim() > 0 and scale.numel() > 1 and x.dim() > 1:
+                axis_norm = axis if axis >= 0 else axis + x.dim()
+                new_shape = [1] * x.dim()
+                new_shape[axis_norm] = scale.numel()
+                scale = scale.view(*new_shape)
+                if zp is not None and zp.dim() > 0 and zp.numel() > 1:
+                    zp = zp.view(*new_shape)
+
+            if zp is not None:
+                diff = x.to(torch.float32) - zp.to(torch.float32)
+            else:
+                diff = x.to(torch.float32)
+
+            return (diff * scale).to(scale.dtype)
+
         @self.register("", "Expand")
         def _expand(inputs: list[torch.Tensor], attrs: dict[str, Any]) -> torch.Tensor:
             x = inputs[0]
@@ -1806,6 +1922,43 @@ class OpRegistry:
                 if w.dim() == 2 and x.dim() >= 2 and x.shape[-1] == w.shape[0]:
                     return torch.matmul(x, w)
             return x
+
+        @self.register("custom.pytorch", "DynamicQuantLinear")
+        @self.register("", "DynamicQuantLinear")
+        def _dynamic_quant_linear(
+            inputs: list[torch.Tensor], attrs: dict[str, Any]
+        ) -> torch.Tensor:
+            x = inputs[0]
+            w = inputs[1]
+            b = inputs[2] if len(inputs) > 2 and inputs[2] is not None else None
+
+            # Dynamic uint8 quantization on x
+            x_min = torch.minimum(
+                torch.tensor(0.0, device=x.device, dtype=x.dtype), torch.min(x)
+            )
+            x_max = torch.maximum(
+                torch.tensor(0.0, device=x.device, dtype=x.dtype), torch.max(x)
+            )
+            denom = 255.0
+            scale = (x_max - x_min) / denom
+            if scale == 0:
+                scale = torch.tensor(1.0, device=x.device, dtype=torch.float32)
+            else:
+                scale = scale.to(torch.float32)
+            zp = torch.clamp(torch.round(-x_min / scale), 0, 255).to(torch.uint8)
+            q_x = torch.clamp(
+                torch.round(x / scale) + zp.to(x.dtype), 0, 255
+            ).to(torch.uint8)
+            dq_x = (q_x.to(torch.float32) - zp.to(torch.float32)) * scale
+
+            if w.dtype != dq_x.dtype:
+                w = w.to(dq_x.dtype)
+            out = torch.matmul(dq_x, w)
+            if b is not None:
+                if b.dtype != out.dtype:
+                    b = b.to(out.dtype)
+                out = out + b
+            return out
 
         @self.register("custom.pytorch", "MultiFieldEmbedding")
         @self.register("", "MultiFieldEmbedding")

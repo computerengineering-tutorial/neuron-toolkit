@@ -257,64 +257,144 @@ class StaticFolder(Pass):
                         except Exception:
                             pass
 
-        folded_nodes_set: set[int] = set()
-        for n in foldable_nodes:
-            if not n.input or not all(inp in static_values for inp in n.input if inp):
-                continue
-            try:
-                # Try evaluating via ReferenceEvaluator
-                sub_inputs = [
-                    helper.make_tensor_value_info(
-                        inp,
-                        onnx.mapping.NP_TYPE_TO_TENSOR_TYPE[static_values[inp].dtype],
-                        static_values[inp].shape,
-                    )
-                    for inp in n.input
-                    if inp
-                ]
-                sub_outputs = [
-                    helper.make_tensor_value_info(out, onnx.TensorProto.FLOAT, None)
-                    for out in n.output
-                    if out
-                ]
-                sub_graph = helper.make_graph([n], "sub", sub_inputs, sub_outputs)
-                sub_model = helper.make_model(
-                    sub_graph, opset_imports=model.opset_import
-                )
-                sess = ReferenceEvaluator(sub_model)
-                in_tensors = {inp: static_values[inp] for inp in n.input if inp}
-                res = sess.run(None, in_tensors)
-                for out_name, out_arr in zip(n.output, res):
-                    if out_name:
-                        static_values[out_name] = out_arr
-                        graph.initializer.append(
-                            numpy_helper.from_array(out_arr, name=out_name)
-                        )
-                folded_nodes_set.add(id(n))
-            except Exception:
-                # Fallback to direct numpy arithmetic for basic ops
-                try:
-                    if n.op_type == "Add" and len(n.input) == 2:
-                        val = static_values[n.input[0]] + static_values[n.input[1]]
-                    elif n.op_type == "Sub" and len(n.input) == 2:
-                        val = static_values[n.input[0]] - static_values[n.input[1]]
-                    elif n.op_type == "Mul" and len(n.input) == 2:
-                        val = static_values[n.input[0]] * static_values[n.input[1]]
-                    elif n.op_type == "Div" and len(n.input) == 2:
-                        val = static_values[n.input[0]] / static_values[n.input[1]]
-                    else:
-                        continue
-                    out_name = n.output[0]
-                    static_values[out_name] = val
-                    graph.initializer.append(
-                        numpy_helper.from_array(val, name=out_name)
-                    )
-                    folded_nodes_set.add(id(n))
-                except Exception:
-                    pass
+        folded_node_ids: set[int] = set()
+        for _ in range(20):
+            newly_folded = 0
+            for n in foldable_nodes:
+                if id(n) in folded_node_ids:
+                    continue
+                if not n.input or not all(inp in static_values for inp in n.input if inp):
+                    continue
 
-        if folded_nodes_set:
-            remaining_nodes = [n for n in graph.node if id(n) not in folded_nodes_set]
+                try:
+                    # Try evaluating via ReferenceEvaluator
+                    dtype_fn = getattr(
+                        helper,
+                        "np_dtype_to_tensor_dtype",
+                        lambda dt: getattr(
+                            getattr(onnx, "mapping", None),
+                            "NP_TYPE_TO_TENSOR_TYPE",
+                            {},
+                        ).get(dt, onnx.TensorProto.FLOAT),
+                    )
+                    sub_inputs = [
+                        helper.make_tensor_value_info(
+                            inp,
+                            dtype_fn(static_values[inp].dtype),
+                            static_values[inp].shape,
+                        )
+                        for inp in n.input
+                        if inp
+                    ]
+                    sub_outputs = [
+                        helper.make_tensor_value_info(out, onnx.TensorProto.UNDEFINED, None)
+                        for out in n.output
+                        if out
+                    ]
+                    sub_graph = helper.make_graph([n], "sub", sub_inputs, sub_outputs)
+                    sub_model = helper.make_model(
+                        sub_graph, opset_imports=model.opset_import
+                    )
+                    sess = ReferenceEvaluator(sub_model)
+                    in_tensors = {inp: static_values[inp] for inp in n.input if inp}
+                    res = sess.run(None, in_tensors)
+                    for out_name, out_arr in zip(n.output, res):
+                        if out_name:
+                            static_values[out_name] = out_arr
+                            graph.initializer.append(
+                                numpy_helper.from_array(out_arr, name=out_name)
+                            )
+                    folded_node_ids.add(id(n))
+                    newly_folded += 1
+                except Exception:
+                    # Fallback to direct numpy arithmetic for basic and quantization ops
+                    try:
+                        if n.op_type == "Add" and len(n.input) == 2:
+                            val = static_values[n.input[0]] + static_values[n.input[1]]
+                            out_name = n.output[0]
+                            static_values[out_name] = val
+                            graph.initializer.append(
+                                numpy_helper.from_array(val, name=out_name)
+                            )
+                        elif n.op_type == "Sub" and len(n.input) == 2:
+                            val = static_values[n.input[0]] - static_values[n.input[1]]
+                            out_name = n.output[0]
+                            static_values[out_name] = val
+                            graph.initializer.append(
+                                numpy_helper.from_array(val, name=out_name)
+                            )
+                        elif n.op_type == "Mul" and len(n.input) == 2:
+                            val = static_values[n.input[0]] * static_values[n.input[1]]
+                            out_name = n.output[0]
+                            static_values[out_name] = val
+                            graph.initializer.append(
+                                numpy_helper.from_array(val, name=out_name)
+                            )
+                        elif n.op_type == "Div" and len(n.input) == 2:
+                            val = static_values[n.input[0]] / static_values[n.input[1]]
+                            out_name = n.output[0]
+                            static_values[out_name] = val
+                            graph.initializer.append(
+                                numpy_helper.from_array(val, name=out_name)
+                            )
+                        elif n.op_type == "DynamicQuantizeLinear" and len(n.input) >= 1:
+                            x = static_values[n.input[0]]
+                            x_min = np.minimum(0.0, np.min(x))
+                            x_max = np.maximum(0.0, np.max(x))
+                            scale = (x_max - x_min) / 255.0
+                            if scale == 0:
+                                scale = np.float32(1.0)
+                            else:
+                                scale = scale.astype(np.float32)
+                            zp = np.clip(np.round(-x_min / scale), 0, 255).astype(np.uint8)
+                            y = np.clip(np.round(x / scale) + zp, 0, 255).astype(np.uint8)
+                            if len(n.output) > 0:
+                                static_values[n.output[0]] = y
+                                graph.initializer.append(numpy_helper.from_array(y, name=n.output[0]))
+                            if len(n.output) > 1:
+                                static_values[n.output[1]] = scale
+                                graph.initializer.append(numpy_helper.from_array(scale, name=n.output[1]))
+                            if len(n.output) > 2:
+                                static_values[n.output[2]] = zp
+                                graph.initializer.append(numpy_helper.from_array(zp, name=n.output[2]))
+                        elif n.op_type == "DequantizeLinear" and len(n.input) >= 2:
+                            x = static_values[n.input[0]]
+                            scale = static_values[n.input[1]]
+                            zp = static_values[n.input[2]] if len(n.input) > 2 and n.input[2] in static_values else 0
+                            zp_arr = zp.astype(np.float32) if hasattr(zp, "astype") else float(zp)
+                            axis = 1
+                            for attr in n.attribute:
+                                if attr.name == "axis":
+                                    axis = attr.i
+                            if scale.ndim > 0 and scale.size > 1 and x.ndim > 1:
+                                new_shape = [1] * x.ndim
+                                axis_norm = axis if axis >= 0 else axis + x.ndim
+                                new_shape[axis_norm] = scale.size
+                                scale = scale.reshape(new_shape)
+                                if hasattr(zp_arr, "ndim") and zp_arr.ndim > 0 and zp_arr.size > 1:
+                                    zp_arr = zp_arr.reshape(new_shape)
+                            diff = x.astype(np.float32) - zp_arr
+                            val = (diff * scale).astype(np.float32)
+                            out_name = n.output[0]
+                            static_values[out_name] = val
+                            graph.initializer.append(
+                                numpy_helper.from_array(val, name=out_name)
+                            )
+                        else:
+                            continue
+                        folded_node_ids.add(id(n))
+                        newly_folded += 1
+                    except Exception:
+                        pass
+            if newly_folded == 0:
+                break
+
+        if folded_node_ids:
+            remaining_nodes = [
+                n
+                for n in graph.node
+                if id(n) not in folded_node_ids
+            ]
             del graph.node[:]
             graph.node.extend(remaining_nodes)
 

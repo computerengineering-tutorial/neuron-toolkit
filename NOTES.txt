@@ -1,0 +1,96 @@
+Ran check last transcript entries
+Ran check git status
+Ran verify batch 5 tests
+Checked task Verify batch 5 tests
+
+TFLite quantized model ko ONNX me convert karte waqt jo bugs aur challenges samne aaye, unhone library ke core assumptions (jaise static shapes, standard LayerNorm structure, FP32-only assumptions, single root graph) ko expose kiya.
+
+Agar hum **`neuron-toolkit` ko global industry-grade standard** (TensorRT, ONNX Runtime, TVM, vLLM ke barabar) banana chahte hain, to **ye 6 advanced concepts aur architecture patterns** hain jo library me aur bhi deep bugs expose karenge aur use mature banayenge:
+
+---
+
+### 1. Quantization & Integer Compute Schemes (The Int8/Int4/FP8 Wilderness)
+Abhi tak hamara compiler mainly **QDQ format** (`DynamicQuantizeLinear -> DequantizeLinear`) par focus karta hai. Lekin real-world models me ye major variations hoti hain:
+
+* **QOperator Dialect vs QDQ Dialect:**
+  * **Issue:** ONNX Runtime aur hardware accelerators do formats use karte hain:
+    * *QDQ:* Operators FP32 rehte hain, beech me Quantize/Dequantize nodes hote hain.
+    * *QOperator:* Direct integer compute operators jaise `QLinearMatMul`, `QLinearConv`, `IntegerGemm`. Yahan activations aur weights seedhe int8/uint8 hote hain aur int32 accumulator me multiply hote hain bina kisi float cast ke.
+  * **Impact:** Agar model direct `QLinearMatMul` use kar raha hai to hamare passes unhe plain `MatMul` samajh kar match nahi kar paenge aur graph unsimplified reh jayega.
+* **Per-Channel vs. Per-Tensor & Asymmetric Zero-Points:**
+  * Per-channel quantization me scale aur zero-point vectors hote hain (`axis=0` ya `axis=1`). Static folding aur constant propagation ke waqt dimension broadcasting rules fail ho sakte hain agar axis attribute explicitly trace na ho.
+  * Int8 signed `[-128, 127]` vs UInt8 unsigned `[0, 255]` conversion me zero-point sign mismatch se numerical outputs distort ho jaate hain.
+* **Sub-Byte & Block Quantization (Int4 / AWQ / GPTQ / FP8):**
+  * Modern LLMs me 4-bit weights packed uint8 me aate hain (`BitShift`, `BitwiseAnd` subgraphs). In subgraphs ko identify karke direct `WeightOnlyQuantMatMul` me map karna.
+
+---
+
+### 2. Layout Transformations: The NCHW vs NHWC Battle
+* **The Root Problem:** 
+  * TensorFlow / TFLite native layout **`NHWC` (Channel-Last)** use karta hai.
+  * PyTorch aur standard ONNX **`NCHW` (Channel-First)** use karte hain.
+* **Redundant Transpose Explosions:**
+  * TFLite-to-ONNX converters har Conv, DepthwiseConv, aur Dense layer ke aage-peechhe `Transpose([0, 3, 1, 2])` aur `Transpose([0, 2, 3, 1])` inject kar dete hain.
+  * Ek single model me **200+ redundant Transpose nodes** graph ko choke kar dete hain.
+* **Next Mature Pass Needed:**
+  * *Universal Transpose-Cancelling Canonicalizer:* Jo consecutive inverse transpositions (`Transpose -> Pointwise Op -> Transpose`) ko push-through karke cancel out kar sake (Algebraic Rewriting).
+
+---
+
+### 3. Dynamic Shapes & Symbolic Dimensions (`dim_param`)
+* **Dynamic Batch & Sequence Lengths:**
+  * Real production models me shapes `[1, 32, 512]` fixed nahi hote, balki `["batch", "seq_len", 512]` ya `[-1, -1, 512]` hote hain.
+* **Symbolic Shape Computation Subgraphs:**
+  * Frameworks dynamic shapes compute karne ke liye graph me boilerplates daal dete hain:
+    $$\text{Input} \to \text{Shape} \to \text{Gather} \to \text{Add/Sub} \to \text{Unsqueeze} \to \text{Concat} \to \text{Reshape}$$
+  * Agar static folder sirf numeric tensors ko fold karta hai, to ye subgraphs fold nahi honge aur graph me unnecessary runtime overhead create karenge.
+* **Solution:** Symbolic expression engine jo string dimensions ko handle karke dynamic shape subgraphs ko simplify kare.
+
+---
+
+### 4. Control Flow & Nested Subgraphs (`If`, `Loop`, `Scan`)
+* **The Single-Graph Assumption Bug:**
+  * Abhi hamare saare passes `model.graph.node` (root graph) iterate karte hain.
+  * Lekin autoregressive generation, dynamic early-exit heads, ya recurrent models me ONNX ke `If`, `Loop`, aur `Scan` operators use hote hain jinke andar **nested `GraphProto`** (attribute `then_branch`, `else_branch`, `body`) hote hain.
+  * Nested graphs hamare compiler passes ke liye invisible hote hain!
+* **Solution:** *Recursive Graph Visitor* pattern jo passes ko recursively subgraphs ke andar bhi apply kare.
+
+---
+
+### 5. Advanced Model Architectures & Modern Macro-Blocks
+Transformer LayerNorm + Self-Attention ke alawa modern state-of-the-art models me ye architectural idioms standard ban chuke hain:
+
+* **Rotary Position Embeddings (RoPE):**
+  * LLaMA, Mistral, Qwen me RoPE ka complex subgraph hota hai (`Slice -> Neg -> Concat -> Mul(sin/cos) -> Add`). Isse compile karke single `RotaryEmbedding` macro-block me convert karna.
+* **Grouped-Query Attention (GQA) & Multi-Query Attention (MQA):**
+  * Yahan Query heads zyaada hote hain aur Key/Value heads kam (e.g. 32 Q heads, 8 KV heads). Graph me `Tile` ya `Expand` operations inject hote hain jinko detect karke fuse karna padta hai.
+* **Mixture of Experts (MoE):**
+  * Top-k gating logic (`Softmax -> TopK -> GatherND -> ScatterND`) aur parallel expert FFN blocks.
+* **Vision & Multimodal Blocks:**
+  * Vision Transformers me `PatchEmbed` (Conv2D with stride = kernel size $\to$ Flatten $\to$ Transpose), GroupNorm, aur Class Token concatenation.
+
+---
+
+### 6. Compiler Pass Infrastructure & Correctness
+* **Fixed-Point Iterative Convergence:**
+  * Abhi passes ek fixed sequential order me run hote hain (e.g., `StaticFolder -> MathCanonicalizer -> NormCanonicalizer -> MacroBlockSynthesizer`).
+  * Mature compilers me **Fixed-Point Engine** hota hai: jab tak koi pass graph me change kar raha hai, passes loop me run hote hain jab tak graph change hona band na ho jaye.
+* **External Data Storage (>2GB Protobuf Limit):**
+  * Large 7B+ parameter models me single `.onnx` protobuf file 2GB limit cross kar deti hai. Mature toolkit ko ONNX external data tensors (`location`, `offset`) seamlessly stream aur rewrite karne aane chahiye.
+
+---
+
+### 🎯 Recommended Roadmap / Next Steps
+
+Aapke pas next direction ke liye ye options hain:
+
+1. **Option A (Layout Optimization - High Impact for TFLite/TF):**
+   * *Universal Transpose Eliminator Pass* design aur implement karein jo `NHWC <-> NCHW` back-to-back transpositions ko cancel out kare.
+2. **Option B (QOperator Dialect Support - High Impact for Quantization):**
+   * `QLinearMatMul` aur `QLinearConv` patterns ko runtime engine aur synthesizer me support karein.
+3. **Option C (Symbolic Shape & Subgraph Simplifier):**
+   * Dynamic shape boilerplates (`Shape -> Gather -> Unsqueeze -> Concat`) ko detect aur eliminate karne ka pass banayein.
+4. **Option D (Batch 6 Vulnerability Stress Suite):**
+   * Pehle in concepts par 10 naye adversarial test cases (`tests/test_compiler_vulnerabilities_batch6.py`) banayein jo library ki current limits ko test karein.
+
+Aap kis direction ko sabse pehle explore karna chahenge?
