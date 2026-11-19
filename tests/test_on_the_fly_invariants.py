@@ -4,7 +4,7 @@ Features:
 - Zero static JSON descriptors on disk; all models and rules tested dynamically on-the-fly.
 - Automatic program halt on any invariance or synthesis failure.
 - Option 1 (De-Obfuscation Invariance): Proves that NeuronCompiler de-obfuscates models
-  and ArchitectureBlockPredictor identifies the exact same blocks with identical numerical parity.
+  with identical numerical parity.
 - Option 2 (tf2onnx Invariance): Tests resilience against tf2onnx-style NHWC ping-pongs,
   decomposed RMSNorm (Pow/Sqrt), and Tanh-GELU expansions.
 """
@@ -34,7 +34,6 @@ if str(_REPO_ROOT) not in sys.path:
 
 from generators.obfuscation import ObfuscationRegistry
 from generators.registry import ModelRegistry, ModelSpec
-from neuron_toolkit.compiler.analyzer.block_predictor import ArchitectureBlockPredictor
 from neuron_toolkit.compiler.pipeline import NeuronCompiler
 from neuron_toolkit.runtime.cross_verifier import CrossVerifier
 
@@ -117,23 +116,7 @@ def test_on_the_fly_deobfuscation_invariance(model_name: str) -> None:
     opt_clean = NeuronCompiler.compile(raw_clean, mode="function_proto")
     opt_obf = NeuronCompiler.compile(raw_obf, mode="function_proto")
 
-    # 4. Predict architectural blocks on both compiled graphs
-    predictor = ArchitectureBlockPredictor()
-    man_clean = predictor.analyze(opt_clean)
-    man_obf = predictor.analyze(opt_obf)
-
-    blocks_clean = [b.block_type for b in man_clean.detected_blocks]
-    blocks_obf = [b.block_type for b in man_obf.detected_blocks]
-
-    # Invariance Assertion: Detected blocks must be identical!
-    assert blocks_obf == blocks_clean, (
-        f"De-obfuscation block detection MISMATCH for '{model_name}'!\n"
-        f"Clean compiled blocks:      {blocks_clean}\n"
-        f"Obfuscated compiled blocks: {blocks_obf}\n"
-        f"Applied strategies:         {applied}"
-    )
-
-    # 5. Parity Assertion: Numerical output between clean and obfuscated compiled models
+    # 4. Parity Assertion: Numerical output between clean and obfuscated compiled models
     verifier = CrossVerifier(opt_clean, opt_obf, rtol=1e-4, atol=1e-4)
     report = verifier.verify()
     assert report.all_passed, (

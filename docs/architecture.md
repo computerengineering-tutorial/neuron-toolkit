@@ -45,12 +45,10 @@ flowchart TD
         NC --> S1 --> S2 --> S3
     end
 
-    subgraph Layer6["Layer 6: Architecture Recognition & Subgraph Fingerprinting"]
-        ABP["ArchitectureBlockPredictor\n(Heuristic & Signature-based DL Topology Matcher)"]
+    subgraph Layer6["Layer 6: Architecture Signatures & Subgraph Fingerprinting"]
         AC["ArchitectureCatalog\n(Declarative JSON Macro Block Signatures)"]
         FP["Polymorphic Fingerprinter\n(Deterministic 8-char SHA-256 Monomorphization)"]
-        ABP --- AC
-        ABP --- FP
+        AC --- FP
     end
 
     subgraph Layer7["Layer 7: Declarative JSON Rules Engine"]
@@ -153,9 +151,8 @@ Synthesizes high-level neural building blocks:
 
 ---
 
-### 5. Semantic Architecture Recognition & Fingerprinting
+### 5. Semantic Architecture Signatures & Fingerprinting
 
-- **`ArchitectureBlockPredictor`**: Automatically infers neural architecture family (Transformer, Diffusion DiT, Mamba SSM, ConvNeXt, GNN, ResMLP, RNN) and structural block confidence scores directly from graph topology.
 - **Polymorphic Subgraph Fingerprinting (`compute_subgraph_fingerprint`)**: Computes deterministic SHA-256 content hashes of subgraphs to allow **polymorphic function monomorphization** (`FeedForward_swiglu_a1b2c3d4`). Solves the ONNX FunctionProto collision problem when structurally identical subnets have different inner hyperparameters.
 - **`ArchitectureCatalog` & `SignatureEngine`**: Loads and matches declarative JSON block signatures from catalog files.
 

@@ -18,7 +18,7 @@
 - 📊 **Netron-Compatible JSON Export**: Export graph topologies with statistical weight summaries (min, max, mean, std, zero fraction) without saving raw weight buffers.
 - 🔬 **Differential Verification**: Extract subgraphs between arbitrary points and verify numerical equivalence against PyTorch or ONNXRuntime with automated tolerance checks (MAE, MSE, cosine similarity).
 - 🚀 **3-Stage Compiler Pipeline**: Iterative fixed-point convergence engine with micro-canonicalization (Pad-Conv fusion, Reshape collapse, Cast folding), macro-block synthesis (SDPA, Gemma-2 softcapping, DeepSeek MLA), and Netron FunctionProto dual-mode export (`NeuronCompiler.compile`).
-- 🧠 **Architecture Recognition & Fingerprinting**: Automatic topology analysis predicting Transformer, DiT, Mamba/SSM, GNN, and ConvNeXt architectures with polymorphic subgraph fingerprinting.
+- 🧠 **Architecture Signatures & Fingerprinting**: Declarative JSON block signatures and deterministic polymorphic subgraph fingerprinting.
 - 📜 **Declarative JSON Rules Engine**: Extensible declarative graph transformation engine with 39 pre-built JSON rewrite rules (`JSONRuleEngine`).
 - ⚡ **PyTorch Execution & Cross-Verification**: Standalone vectorized execution of custom ONNX graphs via `PyTorchRunner` (including `GlobalAveragePool`, `RNN`, `LogitsSoftCap`, `MLA`) with automated differential equivalence testing against ONNX Runtime.
 - 🧭 **AST Code Intelligence & CLI**: Automated Python AST codemap generation, regex symbol querying, docstring indexing, and coverage reporting via `neuron ast`.
@@ -83,18 +83,7 @@ compiled_model = NeuronCompiler.compile(model, mode="function_proto", opset_vers
 onnx.save(compiled_model, "llama_optimized.onnx")
 ```
 
-### 4. Automatic Architecture Block Prediction
-
-```python
-from neuron_toolkit.compiler.analyzer.block_predictor import ArchitectureBlockPredictor
-
-# Automatically inspect and predict model topology (Transformers, DiT, Mamba, CNNs, GNNs):
-predictor = ArchitectureBlockPredictor()
-manifest = predictor.analyze("model.onnx")
-manifest.print_report()
-```
-
-### 5. High-Level Declarative Rules & Differential Verification
+### 4. High-Level Declarative Rules & Differential Verification
 
 ```python
 from neuron_toolkit import NeuronGraph

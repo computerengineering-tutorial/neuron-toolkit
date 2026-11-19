@@ -387,40 +387,9 @@ Execution context and metrics tracker for compiler passes.
 
 ---
 
-## 16. `neuron_toolkit.compiler.analyzer` & `neuron_toolkit.compiler.architectures`
+## 16. `neuron_toolkit.compiler.architectures`
 
-Architecture block prediction, subgraph discovery, and polymorphic fingerprinting.
-
-### `ArchitectureBlockPredictor`
-
-Automatic pattern matcher and semantic architecture predictor.
-
-- **`__init__(catalog: ArchitectureCatalog | None = None) -> None`**
-- **`analyze(model: onnx.ModelProto | str | Path) -> ArchitectureManifest`**: Analyzes graph topology and predicts architectural components with confidence metrics.
-
-### `ArchitectureManifest`
-
-Consolidated semantic architecture manifest and interpretability analysis.
-
-- **`model_name: str`**: Identifier / name of the model.
-- **`total_nodes: int`**: Total operator node count in graph.
-- **`primary_family: str`**: Dominant architecture family (e.g. `Transformer`, `DiT`, `ConvNeXt`, `Mamba/SSM`, `ResMLP`, `GNN`, `RNN`).
-- **`detected_blocks: list[DetectedBlock]`**: List of all identified architectural blocks.
-- **`operator_distribution: dict[str, int]`**: Frequencies of operator types in the graph.
-- **`interpretability_summary: str`**: High-level semantic summary of the architecture.
-- **`optimization_recommendations: list[str]`**: List of suggested synthesis passes based on detected motifs.
-- **`print_report() -> None`**: Formats and prints an ASCII architecture report to stdout.
-
-### `DetectedBlock`
-
-Individual architectural block identified by the predictor.
-
-- **`block_type: str`**: Name of block (e.g. `MultiHeadAttention`, `FeedForward_SwiGLU`, `SpatialGatingUnit`).
-- **`category: str`**: Higher-level category (`Attention`, `MLP`, `Norm`, `Convolution`, `Sequential`).
-- **`confidence: float`**: Confidence score of the match ($0.0$ to $1.0$).
-- **`nodes_involved: list[str]`**: List of node names comprising the block.
-- **`properties: dict[str, Any]`**: Extracted parameters (e.g. `has_bias`, `norm_type`, `activation`).
-- **`summary: str`**: Single-line explanatory summary.
+Subgraph discovery, declarative block signatures, and polymorphic fingerprinting.
 
 ### `ArchitectureCatalog`
 

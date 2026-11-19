@@ -1,76 +1,6 @@
-# Architecture Recognition & Subgraph Fingerprinting
+# Architecture Signatures & Subgraph Fingerprinting
 
-The `neuron_toolkit.compiler.analyzer` and `neuron_toolkit.compiler.architectures` packages provide automated semantic subnet recognition, architecture prediction, and content-hashed subgraph fingerprinting for ONNX models.
-
----
-
-## Semantic Architecture Block Predictor
-
-When optimizing large computational graphs, understanding high-level architectural motifs (e.g. knowing whether a model is a LLaMA Transformer, a Mamba SSM, a ConvNeXt vision model, or a Diffusion DiT) allows compilers to apply targeted macro fusions.
-
-The `ArchitectureBlockPredictor` analyzes graph topology, operator motifs, and algebraic connectivity to predict architectural blocks with confidence metrics:
-
-```python
-from neuron_toolkit.compiler.analyzer.block_predictor import ArchitectureBlockPredictor
-
-# Initialize predictor with the default architecture catalog
-predictor = ArchitectureBlockPredictor()
-
-# Analyze an ONNX model file or ModelProto
-manifest = predictor.analyze("model.onnx")
-
-# Print formatted human-readable architecture report
-manifest.print_report()
-```
-
-### Supported Architectural Blocks
-
-The predictor detects blocks across modern deep learning paradigms:
-
-| Family | Detected Block Types | Characteristic Motifs |
-| --- | --- | --- |
-| **Transformer** | `MultiHeadAttention`, `FeedForward_GELU`, `FeedForward_SwiGLU`, `RoPE`, `TransformerBlock`, `Gemma2_SoftCap_Attention`, `DeepSeek_MLA` | SDPA patterns, RMSNorm / LayerNorm, QKV projections, Logits soft-capping, Low-rank KV compression |
-| **Diffusion (DiT)** | `DiT_Block`, `AdaLayerNorm`, `TimestepEmbedding` | Scale/shift modulation, Cross-Attention, Timestep MLPs |
-| **State Space (SSM)** | `Mamba_SSM_Block`, `SelectiveScan`, `Conv1D_Gate` | 1D Depthwise Conv + Discretized State-Space equations |
-| **Vision (CNN/ViT)** | `ConvNeXt_Block`, `SqueezeExcitation`, `InvertedResidual`, `PatchEmbedding` | 7x7 Depthwise Conv, SE squeeze-excite ratio, Linear projection |
-| **MLP Architectures** | `SpatialGatingUnit` (gMLP), `ResMLP_Block` | Channel splitting, spatial normalization, affine gates |
-| **Graph Neural Nets** | `MessagePassing_GNN`, `GraphAttention_GAT` | Scatter/gather reductions, node/edge feature aggregations |
-| **Recurrent** | `LSTM_Cell`, `GRU_Cell` | Gate bifurcations (sigmoid/tanh), hidden state updates |
-
----
-
-## Inspecting the Architecture Manifest
-
-The resulting `ArchitectureManifest` object provides structured access to all detected blocks and metrics:
-
-```python
-manifest = predictor.analyze("transformer.onnx")
-
-print(f"Model Name:                  {manifest.model_name}")
-print(f"Total Nodes:                 {manifest.total_nodes}")
-print(f"Primary Architecture Family: {manifest.primary_family}")
-print(f"Identified Blocks:           {len(manifest.detected_blocks)}")
-print(f"Interpretability Summary:    {manifest.interpretability_summary}")
-
-# Inspect operator distribution:
-for op, count in sorted(manifest.operator_distribution.items(), key=lambda x: -x[1])[:5]:
-    print(f"  {op}: {count}")
-
-# Inspect each detected block:
-for block in manifest.detected_blocks:
-    print(f"- [{block.block_type}] ({block.category}): confidence={block.confidence * 100:.1f}%")
-    print(f"  Nodes involved: {len(block.nodes_involved)} nodes")
-    if block.summary:
-        print(f"  Summary:        {block.summary}")
-    if block.properties:
-        print(f"  Properties:     {block.properties}")
-
-# Inspect compiler pass recommendations:
-if manifest.optimization_recommendations:
-    print("Recommended Synthesis Passes:")
-    for rec in manifest.optimization_recommendations:
-        print(f"  [+] {rec}")
-```
+The `neuron_toolkit.compiler.architectures` package provides declarative block signatures, motif discovery, and content-hashed subgraph fingerprinting for ONNX models.
 
 ---
 
@@ -168,7 +98,7 @@ for sig_name, occurrences in matches.items():
 
 ## Automated Multi-Zoo Evaluation
 
-The test suite in `tests/test_dl_zoo_evals.py` and evaluation engine in `.helper/evals/run_comprehensive_eval.py` validate the architecture predictor across hundreds of synthetic and real models:
+The test suite in `tests/test_dl_zoo_evals.py` and evaluation engine in `.helper/evals/run_comprehensive_eval.py` validate architecture block representations across hundreds of synthetic and real models:
 
 - `test_recurrent_zoo_opset18`: RNN, LSTM, GRU, QRNN, SRU
 - `test_cnn_vision_zoo_opset18`: ResNet, ConvNeXt, MobileNet, DenseNet

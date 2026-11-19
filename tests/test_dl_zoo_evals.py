@@ -254,20 +254,3 @@ def test_addon_zoo_models(spec) -> None:
         pytest.skip(f"Addon model {spec.name} not yet exported")
     _run_verify_test(p, atol=spec.atol)
 
-
-def test_architecture_block_predictor_on_baseline() -> None:
-    from neuron_toolkit.compiler.analyzer.block_predictor import (
-        ArchitectureBlockPredictor,
-    )
-
-    predictor = ArchitectureBlockPredictor()
-    model1_path = Path(".temp/diffrent_models/model1.onnx")
-    if model1_path.exists():
-        manifest = predictor.analyze(model1_path)
-        assert (
-            manifest.primary_family.startswith("Autoregressive")
-            or "Transformer" in manifest.primary_family
-        )
-        assert any(
-            "MultiHeadAttention" in b.block_type for b in manifest.detected_blocks
-        )
