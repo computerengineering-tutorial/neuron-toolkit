@@ -21,27 +21,26 @@ import sys
 import time
 from pathlib import Path
 
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
 import onnx
 
 GENERATORS = [
-    (".helper/generators/gen_recurrent_zoo.py", "Recurrent RNN/LSTM/GRU Family"),
-    (
-        ".helper/generators/gen_vision_cnn_zoo.py",
-        "Convolutional & Computer Vision Family",
-    ),
-    (
-        ".helper/generators/gen_vanilla_mlp_zoo.py",
-        "Vanilla MLP & Gated Feedforward Family",
-    ),
-    (".helper/generators/gen_gnn_zoo.py", "Graph Neural Network (GNN) Family"),
-    (
-        ".helper/generators/gen_transformer_advanced_zoo.py",
-        "Advanced Transformer & MoE Family",
-    ),
-    (
-        ".helper/generators/gen_comprehensive_attentions.py",
-        "Comprehensive Attention Family",
-    ),
+    ("generators/gen_recurrent_zoo.py", "Recurrent RNN/LSTM/GRU Family"),
+    ("generators/gen_vision_cnn_zoo.py", "Convolutional & Computer Vision Family"),
+    ("generators/gen_vanilla_mlp_zoo.py", "Vanilla MLP & Gated Feedforward Family"),
+    ("generators/gen_gnn_zoo.py", "Graph Neural Network (GNN) Family"),
+    ("generators/gen_transformer_advanced_zoo.py", "Advanced Transformer & MoE Family"),
+    ("generators/gen_comprehensive_attentions.py", "Comprehensive Attention Family"),
+    ("generators/gen_ssm_mamba_zoo.py", "State-Space SSM / Mamba / RWKV Family"),
+    ("generators/gen_diffusion_dit_zoo.py", "Diffusion & DiT Generative Family"),
+    ("generators/gen_hierarchical_vit_zoo.py", "Hierarchical ViT & PointNet Family"),
+    ("generators/gen_activation_variants.py", "Activation Variants Family"),
+    ("generators/gen_norm_variants.py", "Normalization Variants Family"),
+    ("generators/gen_linear_variants.py", "Linear & Gemm Variants Family"),
+    ("generators/gen_transformer_blocks.py", "Transformer Blocks Family"),
 ]
 
 
@@ -126,13 +125,11 @@ def main() -> None:
             [sys.executable, script_path], capture_output=True, text=True
         )
         if res.returncode != 0:
-            print(f"Error running {script_path}:\n{res.stderr}")
+            print(f"Error running {script_path}:\n{res.stderr}\n{res.stdout}")
         else:
-            # Print last few lines of output
-            lines = [
-                l for l in res.stdout.strip().split("\n") if l.startswith("  [OK]")
-            ]
-            print(f"  Successfully exported {len(lines)} models.")
+            ok_lines = [l for l in res.stdout.strip().split("\n") if l.strip().startswith("[OK]")]
+            dedup_lines = [l for l in res.stdout.strip().split("\n") if l.strip().startswith("[DEDUP]")]
+            print(f"  Processed {len(ok_lines) + len(dedup_lines)} models ({len(ok_lines)} unique saved, {len(dedup_lines)} deduplicated/symlinked).")
 
     print("\nIndexing and cataloging all models...")
     catalog = build_catalog()

@@ -16,8 +16,13 @@ Exports across ONNX Opsets 14, 17, 18, 20.
 
 from __future__ import annotations
 
+import sys
 import warnings
 from pathlib import Path
+
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
 import onnx
 import torch
@@ -198,6 +203,9 @@ class ReGLU_MLP_Block(nn.Module):
         return self.w2(self.w1(x) * F.relu(self.w3(x)))
 
 
+from generators.base import export_model as unified_export_model
+
+
 # =============================================================================
 # Multi-Opset ONNX Export Helper
 # =============================================================================
@@ -209,30 +217,15 @@ def export_model(
     base_name: str,
     opset_versions: list[int] = (14, 17, 18, 20),
 ) -> list[str]:
-    model.eval()
-    exported = []
-    for opset in opset_versions:
-        out_path = OUT_DIR / f"{base_name}_opset{opset}.onnx"
-        try:
-            torch.onnx.export(
-                model,
-                dummy_inputs,
-                str(out_path),
-                input_names=input_names,
-                output_names=output_names,
-                opset_version=opset,
-                do_constant_folding=True,
-            )
-            m_proto = onnx.load(str(out_path))
-            onnx.checker.check_model(m_proto)
-            size_kb = out_path.stat().st_size / 1024.0
-            print(
-                f"  [OK] Exported {out_path.name:<45} (opset={opset}, nodes={len(m_proto.graph.node):<3}, {size_kb:.1f} KB)"
-            )
-            exported.append(str(out_path))
-        except Exception as e:
-            print(f"  [FAIL] Failed to export {out_path.name} (opset={opset}): {e}")
-    return exported
+    return unified_export_model(
+        model=model,
+        dummy_inputs=dummy_inputs,
+        input_names=input_names,
+        output_names=output_names,
+        base_name=base_name,
+        out_dir=OUT_DIR,
+        opset_versions=opset_versions,
+    )
 
 
 def main() -> None:

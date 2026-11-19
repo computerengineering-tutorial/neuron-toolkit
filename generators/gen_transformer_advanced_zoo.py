@@ -16,8 +16,13 @@ Exports across ONNX Opsets 14, 17, 18, 20.
 from __future__ import annotations
 
 import math
+import sys
 import warnings
 from pathlib import Path
+
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
 import onnx
 import torch
@@ -290,6 +295,9 @@ class SwiGLU_RMSNorm_TransformerBlock(nn.Module):
         return x + ffn
 
 
+from generators.base import export_model as unified_export_model
+
+
 # =============================================================================
 # Multi-Opset ONNX Export Helper
 # =============================================================================
@@ -300,31 +308,18 @@ def export_model(
     output_names: list[str],
     base_name: str,
     opset_versions: list[int] = (14, 17, 18, 20),
+    dynamic_axes: dict[str, dict[int, str]] | None = None,
 ) -> list[str]:
-    model.eval()
-    exported = []
-    for opset in opset_versions:
-        out_path = OUT_DIR / f"{base_name}_opset{opset}.onnx"
-        try:
-            torch.onnx.export(
-                model,
-                dummy_inputs,
-                str(out_path),
-                input_names=input_names,
-                output_names=output_names,
-                opset_version=opset,
-                do_constant_folding=True,
-            )
-            m_proto = onnx.load(str(out_path))
-            onnx.checker.check_model(m_proto)
-            size_kb = out_path.stat().st_size / 1024.0
-            print(
-                f"  [OK] Exported {out_path.name:<45} (opset={opset}, nodes={len(m_proto.graph.node):<3}, {size_kb:.1f} KB)"
-            )
-            exported.append(str(out_path))
-        except Exception as e:
-            print(f"  [FAIL] Failed to export {out_path.name} (opset={opset}): {e}")
-    return exported
+    return unified_export_model(
+        model=model,
+        dummy_inputs=dummy_inputs,
+        input_names=input_names,
+        output_names=output_names,
+        base_name=base_name,
+        out_dir=OUT_DIR,
+        opset_versions=opset_versions,
+        dynamic_axes=dynamic_axes,
+    )
 
 
 def main() -> None:
@@ -334,6 +329,8 @@ def main() -> None:
 
     dummy_x = torch.randn(1, 16, 64)
     dummy_img = torch.randn(1, 3, 16, 16)
+    seq_dyn_axes = {"x": {0: "batch_size", 1: "seq_len"}, "out": {0: "batch_size", 1: "seq_len"}}
+    img_dyn_axes = {"img": {0: "batch_size"}, "out": {0: "batch_size"}}
 
     print("\n1. PreLN_TransformerBlock")
     export_model(
@@ -342,6 +339,7 @@ def main() -> None:
         ["x"],
         ["out"],
         "transformer_pre_ln",
+        dynamic_axes=seq_dyn_axes,
     )
 
     print("\n2. PostLN_TransformerBlock")
@@ -351,11 +349,13 @@ def main() -> None:
         ["x"],
         ["out"],
         "transformer_post_ln",
+        dynamic_axes=seq_dyn_axes,
     )
 
     print("\n3. ViT_Block")
     export_model(
-        ViT_Block(3, 4, 64, 4), (dummy_img,), ["img"], ["out"], "vit_patch_block"
+        ViT_Block(3, 4, 64, 4), (dummy_img,), ["img"], ["out"], "vit_patch_block",
+        dynamic_axes=img_dyn_axes,
     )
 
     print("\n4. MultiHeadLatentAttention_MLA")
@@ -365,11 +365,13 @@ def main() -> None:
         ["x"],
         ["out"],
         "transformer_mla",
+        dynamic_axes=seq_dyn_axes,
     )
 
     print("\n5. SparseMoE_Block")
     export_model(
-        SparseMoE_Block(64, 128, 4, 2), (dummy_x,), ["x"], ["out"], "transformer_moe"
+        SparseMoE_Block(64, 128, 4, 2), (dummy_x,), ["x"], ["out"], "transformer_moe",
+        dynamic_axes=seq_dyn_axes,
     )
 
     print("\n6. LinearAttention_Performer")
@@ -379,6 +381,7 @@ def main() -> None:
         ["x"],
         ["out"],
         "transformer_performer",
+        dynamic_axes=seq_dyn_axes,
     )
 
     print("\n7. SwiGLU_RMSNorm_TransformerBlock")
@@ -388,6 +391,7 @@ def main() -> None:
         ["x"],
         ["out"],
         "transformer_swiglu_rms",
+        dynamic_axes=seq_dyn_axes,
     )
 
     print("\n==================================================================")

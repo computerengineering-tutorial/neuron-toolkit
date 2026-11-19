@@ -11,7 +11,12 @@ Generates ONNX models for:
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
+
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
 import torch
 from torch import nn
@@ -76,91 +81,54 @@ class CombinedLinearVariants(nn.Module):
         return self.layer2(h1)
 
 
+from generators.base import export_model as unified_export_model
+
+
 def generate_all() -> None:
     models_dir = Path(".helper/models")
-    tests_dir = Path("tests/rules_json_tests")
-    models_dir.mkdir(parents=True, exist_ok=True)
-    tests_dir.mkdir(parents=True, exist_ok=True)
+    dummy_3d = torch.randn(2, 8, 16)
+    dummy_2d = torch.randn(4, 16)
+    dummy_4d = torch.randn(2, 16, 8, 8)
 
     # 1. Combined model
-    comb = CombinedLinearVariants()
-    comb.eval()
-    dummy_3d = torch.randn(2, 8, 16)
-    comb_path = models_dir / "linear_variants.onnx"
-    torch.onnx.export(
-        comb,
-        dummy_3d,
-        str(comb_path),
-        input_names=["input"],
-        output_names=["output"],
-        dynamic_axes={
-            "input": {0: "batch", 1: "time"},
-            "output": {0: "batch", 1: "time"},
-        },
-        opset_version=14,
-        dynamo=False,
+    unified_export_model(
+        CombinedLinearVariants(),
+        (dummy_3d,),
+        ["input"],
+        ["output"],
+        "linear_variants",
+        models_dir,
+        opset_versions=[14, 17, 18, 20],
+        dynamic_axes={"input": {0: "batch", 1: "time"}, "output": {0: "batch", 1: "time"}},
+        expected_target_node="Linear",
+        min_expected_reduction=0.3,
     )
-    print(f"Exported: {comb_path}")
 
     # 2. Gemm variant
-    gemm_mod = LinearGemm(16, 32)
-    gemm_mod.eval()
-    dummy_2d = torch.randn(4, 16)
-    gemm_path = models_dir / "linear_gemm.onnx"
-    torch.onnx.export(
-        gemm_mod,
-        dummy_2d,
-        str(gemm_path),
-        input_names=["input"],
-        output_names=["output"],
-        opset_version=14,
-        dynamo=False,
+    unified_export_model(
+        LinearGemm(16, 32),
+        (dummy_2d,),
+        ["input"],
+        ["output"],
+        "linear_gemm",
+        models_dir,
+        opset_versions=[14, 17, 18, 20],
+        expected_target_node="Linear",
+        min_expected_reduction=0.0,
     )
-    print(f"Exported: {gemm_path}")
 
     # 3. Conv 1x1 variant
-    conv_mod = Conv1x1Linear(16, 32)
-    conv_mod.eval()
-    dummy_4d = torch.randn(2, 16, 8, 8)
-    conv_path = models_dir / "linear_conv1x1.onnx"
-    torch.onnx.export(
-        conv_mod,
-        dummy_4d,
-        str(conv_path),
-        input_names=["input"],
-        output_names=["output"],
-        opset_version=14,
-        dynamo=False,
+    unified_export_model(
+        Conv1x1Linear(16, 32),
+        (dummy_4d,),
+        ["input"],
+        ["output"],
+        "linear_conv1x1",
+        models_dir,
+        opset_versions=[14, 17, 18, 20],
+        expected_target_node="Conv",
+        emit_json_descriptor=False,
     )
-    print(f"Exported: {conv_path}")
-
-    # Emit JSON test descriptors
-    test_specs = {
-        "linear_matmul_add_fusion": {
-            "test_id": "linear_matmul_add_fusion_test",
-            "model_path": str(comb_path),
-            "input_shapes": {"input": [2, 8, 16]},
-            "expected_target_node": "Linear",
-            "min_expected_reduction": 0.3,
-            "rtol": 1e-4,
-            "atol": 1e-4,
-        },
-        "linear_gemm_canonicalization": {
-            "test_id": "linear_gemm_canonicalization_test",
-            "model_path": str(gemm_path),
-            "input_shapes": {"input": [4, 16]},
-            "expected_target_node": "Linear",
-            "min_expected_reduction": 0.0,
-            "rtol": 1e-4,
-            "atol": 1e-4,
-        },
-    }
-
-    for name, spec in test_specs.items():
-        out_f = tests_dir / f"{name}_test.json"
-        with open(out_f, "w", encoding="utf-8") as f:
-            json.dump(spec, f, indent=2)
-        print(f"Emitted test spec: {out_f}")
 
 
 if __name__ == "__main__":

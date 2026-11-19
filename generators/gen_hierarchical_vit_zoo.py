@@ -6,8 +6,13 @@ Exports models to ONNX across opset versions 14, 17, 18, and 20.
 from __future__ import annotations
 
 import math
+import sys
 from pathlib import Path
 from typing import Any
+
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
 import onnx
 import torch
@@ -147,6 +152,8 @@ class PointNet_GlobalFeatureBlock(nn.Module):
         return global_feat.squeeze(-1)
 
 
+from generators.base import export_model as unified_export_model
+
 # =============================================================================
 # Exporter
 # =============================================================================
@@ -173,37 +180,17 @@ def export_hierarchical_zoo() -> list[dict[str, Any]]:
     catalog = []
 
     for name, (mod, dummy_inputs, input_names) in models.items():
-        mod.eval()
-        for opset in opsets:
-            out_path = OUT_DIR / f"{name}_opset{opset}.onnx"
-            try:
-                torch.onnx.export(
-                    mod,
-                    dummy_inputs,
-                    str(out_path),
-                    input_names=input_names,
-                    output_names=["out"],
-                    opset_version=opset,
-                    do_constant_folding=True,
-                )
-                m = onnx.load(str(out_path))
-                m.ir_version = min(m.ir_version, 10)
-                onnx.save(m, str(out_path))
-                catalog.append(
-                    {
-                        "name": name,
-                        "opset": opset,
-                        "path": str(out_path),
-                        "nodes": len(m.graph.node),
-                    }
-                )
-                print(
-                    f"[Hierarchical Zoo] Exported {out_path.name} (opset {opset}, {len(m.graph.node)} nodes)"
-                )
-            except Exception as e:
-                print(
-                    f"[Hierarchical Zoo] Failed to export {name} for opset {opset}: {e}"
-                )
+        exported = unified_export_model(
+            model=mod,
+            dummy_inputs=dummy_inputs,
+            input_names=input_names,
+            output_names=["out"],
+            base_name=name,
+            out_dir=OUT_DIR,
+            opset_versions=opsets,
+        )
+        for p in exported:
+            catalog.append({"name": name, "path": p})
 
     return catalog
 

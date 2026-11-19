@@ -24,8 +24,13 @@ Exports across multiple ONNX Opset versions: 14, 17, 18, 20, 23.
 from __future__ import annotations
 
 import math
+import sys
 import warnings
 from pathlib import Path
+
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
 import onnx
 import torch
@@ -486,6 +491,43 @@ class ALiBi_Attention(nn.Module):
 
 
 # =============================================================================
+# 12b. Gemma-2 Multi-Head Attention with Logits Soft-Capping
+# =============================================================================
+class Gemma2_SoftCappedAttention(nn.Module):
+    """Gemma-2 style Multi-Head Attention with Logits Soft-Capping."""
+
+    def __init__(
+        self, d_model: int = 64, num_heads: int = 4, softcap: float = 50.0
+    ) -> None:
+        super().__init__()
+        self.d_model = d_model
+        self.num_heads = num_heads
+        self.head_dim = d_model // num_heads
+        self.softcap = softcap
+
+        self.q_proj = nn.Linear(d_model, d_model, bias=False)
+        self.k_proj = nn.Linear(d_model, d_model, bias=False)
+        self.v_proj = nn.Linear(d_model, d_model, bias=False)
+        self.out_proj = nn.Linear(d_model, d_model, bias=False)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        B, S, D = x.shape
+        q = self.q_proj(x).view(B, S, self.num_heads, self.head_dim).transpose(1, 2)
+        k = self.k_proj(x).view(B, S, self.num_heads, self.head_dim).transpose(1, 2)
+        v = self.v_proj(x).view(B, S, self.num_heads, self.head_dim).transpose(1, 2)
+
+        scale = 1.0 / math.sqrt(self.head_dim)
+        scores = torch.matmul(q * scale, k.transpose(-1, -2))
+
+        # Gemma-2 Logits Soft-Capping: cap * tanh(scores / cap)
+        scores = self.softcap * torch.tanh(scores / self.softcap)
+
+        probs = torch.softmax(scores, dim=-1)
+        out = torch.matmul(probs, v).transpose(1, 2).contiguous().view(B, S, D)
+        return self.out_proj(out)
+
+
+# =============================================================================
 # Hugging Face Real Pretrained Attention Modules
 # =============================================================================
 def get_hf_gpt2_attention():
@@ -561,6 +603,9 @@ def get_hf_whisper_attention():
     return HF_Whisper_Wrapper(config)
 
 
+from generators.base import export_model as unified_export_model
+
+
 # =============================================================================
 # Generation & Multi-Opset ONNX Export Driver
 # =============================================================================
@@ -571,29 +616,23 @@ def export_model(
     output_names: list[str],
     base_name: str,
     opset_versions: list[int] = (14, 18, 20),
+    dynamic_axes: dict[str, dict[int, str]] | None = None,
 ) -> None:
-    model.eval()
-    for opset in opset_versions:
-        out_path = OUT_DIR / f"{base_name}_opset{opset}.onnx"
-        try:
-            torch.onnx.export(
-                model,
-                dummy_inputs,
-                str(out_path),
-                input_names=input_names,
-                output_names=output_names,
-                opset_version=opset,
-                do_constant_folding=True,
-            )
-            # Check model validity
-            m_proto = onnx.load(str(out_path))
-            onnx.checker.check_model(m_proto)
-            size_kb = out_path.stat().st_size / 1024.0
-            print(
-                f"  [OK] Exported {out_path.name:<45} (opset={opset}, nodes={len(m_proto.graph.node):<3}, {size_kb:.1f} KB)"
-            )
-        except Exception as e:
-            print(f"  [FAIL] Failed to export {out_path.name} (opset={opset}): {e}")
+    if dynamic_axes is None and input_names and output_names:
+        dynamic_axes = {
+            input_names[0]: {0: "batch_size", 1: "sequence_length"},
+            output_names[0]: {0: "batch_size", 1: "sequence_length"},
+        }
+    unified_export_model(
+        model=model,
+        dummy_inputs=dummy_inputs,
+        input_names=input_names,
+        output_names=output_names,
+        base_name=base_name,
+        out_dir=OUT_DIR,
+        opset_versions=opset_versions,
+        dynamic_axes=dynamic_axes,
+    )
 
 
 def main() -> None:
@@ -734,6 +773,17 @@ def main() -> None:
         ["x"],
         ["out"],
         "mha_alibi",
+        opset_versions=[14, 18, 20],
+    )
+
+    # 12b. Gemma2_SoftCappedAttention
+    print("\n12b. Gemma2_SoftCappedAttention (Gemma-2 / Grok-1)")
+    export_model(
+        Gemma2_SoftCappedAttention(d_model=64, num_heads=4, softcap=50.0),
+        (dummy_x,),
+        ["x"],
+        ["out"],
+        "mha_gemma2_softcap",
         opset_versions=[14, 18, 20],
     )
 

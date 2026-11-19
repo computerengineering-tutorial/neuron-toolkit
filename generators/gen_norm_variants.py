@@ -10,7 +10,12 @@ Generates ONNX models for:
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
+
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
 import torch
 from torch import nn
@@ -83,111 +88,65 @@ class CombinedNormVariants(nn.Module):
         return self.ln(h)
 
 
+from generators.base import export_model as unified_export_model
+
+
 def generate_all() -> None:
     models_dir = Path(".helper/models")
-    tests_dir = Path("tests/rules_json_tests")
-    models_dir.mkdir(parents=True, exist_ok=True)
-    tests_dir.mkdir(parents=True, exist_ok=True)
-
     dummy_3d = torch.randn(2, 8, 32)
+    dummy_4d = torch.randn(2, 16, 8, 8)
 
     # 1. Combined Norm model
-    comb = CombinedNormVariants(32)
-    comb.eval()
-    comb_path = models_dir / "norm_variants.onnx"
-    torch.onnx.export(
-        comb,
-        dummy_3d,
-        str(comb_path),
-        input_names=["input"],
-        output_names=["output"],
-        opset_version=14,
-        dynamo=False,
+    unified_export_model(
+        CombinedNormVariants(32),
+        (dummy_3d,),
+        ["input"],
+        ["output"],
+        "norm_variants",
+        models_dir,
+        opset_versions=[14, 17, 18, 20],
+        expected_target_node="LayerNormalization",
+        emit_json_descriptor=False,
     )
-    print(f"Exported: {comb_path}")
 
     # 2. Individual RMSNorm L2
-    rms_mod = RMSNormL2Module(32)
-    rms_mod.eval()
-    rms_path = models_dir / "norm_rmsnorm_l2.onnx"
-    torch.onnx.export(
-        rms_mod,
-        dummy_3d,
-        str(rms_path),
-        input_names=["input"],
-        output_names=["output"],
-        opset_version=14,
-        dynamo=False,
+    unified_export_model(
+        RMSNormL2Module(32),
+        (dummy_3d,),
+        ["input"],
+        ["output"],
+        "norm_rmsnorm_l2",
+        models_dir,
+        opset_versions=[14, 17, 18, 20],
+        expected_target_node="RMSNorm",
+        min_expected_reduction=0.5,
     )
-    print(f"Exported: {rms_path}")
 
     # 3. Individual LayerNorm
-    ln_mod = LayerNormExpandedModule(32)
-    ln_mod.eval()
-    ln_path = models_dir / "norm_layernorm.onnx"
-    torch.onnx.export(
-        ln_mod,
-        dummy_3d,
-        str(ln_path),
-        input_names=["input"],
-        output_names=["output"],
-        opset_version=14,
-        dynamo=False,
+    unified_export_model(
+        LayerNormExpandedModule(32),
+        (dummy_3d,),
+        ["input"],
+        ["output"],
+        "norm_layernorm",
+        models_dir,
+        opset_versions=[14, 17, 18, 20],
+        expected_target_node="LayerNormalization",
+        min_expected_reduction=0.5,
     )
-    print(f"Exported: {ln_path}")
 
     # 4. GroupNorm
-    dummy_4d = torch.randn(2, 16, 8, 8)
-    gn_mod = GroupNormModule(2, 16)
-    gn_mod.eval()
-    gn_path = models_dir / "norm_groupnorm.onnx"
-    torch.onnx.export(
-        gn_mod,
-        dummy_4d,
-        str(gn_path),
-        input_names=["input"],
-        output_names=["output"],
-        opset_version=14,
-        dynamo=False,
+    unified_export_model(
+        GroupNormModule(2, 16),
+        (dummy_4d,),
+        ["input"],
+        ["output"],
+        "norm_groupnorm",
+        models_dir,
+        opset_versions=[14, 17, 18, 20],
+        expected_target_node="GroupNorm",
+        min_expected_reduction=0.0,
     )
-    print(f"Exported: {gn_path}")
-
-    # Emit JSON test descriptors
-    test_specs = {
-        "rmsnorm_fusion": {
-            "test_id": "rmsnorm_fusion_test",
-            "model_path": str(rms_path),
-            "input_shapes": {"input": [2, 8, 32]},
-            "expected_target_node": "RMSNorm",
-            "min_expected_reduction": 0.5,
-            "rtol": 1e-4,
-            "atol": 1e-4,
-        },
-        "layernorm_fusion": {
-            "test_id": "layernorm_fusion_test",
-            "model_path": str(ln_path),
-            "input_shapes": {"input": [2, 8, 32]},
-            "expected_target_node": "LayerNormalization",
-            "min_expected_reduction": 0.5,
-            "rtol": 1e-4,
-            "atol": 1e-4,
-        },
-        "groupnorm_fusion": {
-            "test_id": "groupnorm_fusion_test",
-            "model_path": str(gn_path),
-            "input_shapes": {"input": [2, 16, 8, 8]},
-            "expected_target_node": "GroupNorm",
-            "min_expected_reduction": 0.0,
-            "rtol": 1e-4,
-            "atol": 1e-4,
-        },
-    }
-
-    for name, spec in test_specs.items():
-        out_f = tests_dir / f"{name}_test.json"
-        with open(out_f, "w", encoding="utf-8") as f:
-            json.dump(spec, f, indent=2)
-        print(f"Emitted test spec: {out_f}")
 
 
 if __name__ == "__main__":

@@ -12,7 +12,12 @@ Generates ONNX models for:
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
+
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
 import torch
 import torch.nn.functional as F
@@ -93,108 +98,67 @@ class CombinedTransformerBlock(nn.Module):
         return self.ffn(x)
 
 
+from generators.base import export_model as unified_export_model
+
+
 def generate_all() -> None:
     models_dir = Path(".helper/models")
-    tests_dir = Path("tests/rules_json_tests")
-    models_dir.mkdir(parents=True, exist_ok=True)
-    tests_dir.mkdir(parents=True, exist_ok=True)
-
     dummy = torch.randn(2, 8, 32)
-
-    # 1. Combined Transformer block model
-    comb = CombinedTransformerBlock(32, 64)
-    comb.eval()
-    comb_path = models_dir / "transformer_blocks.onnx"
-    torch.onnx.export(
-        comb,
-        dummy,
-        str(comb_path),
-        input_names=["input"],
-        output_names=["output"],
-        opset_version=14,
-        dynamo=False,
-    )
-    print(f"Exported: {comb_path}")
-
-    # 2. FeedForward GELU
-    ffn_gelu = FeedForwardGeluBlock(32, 64)
-    ffn_gelu.eval()
-    ffn_path = models_dir / "transformer_ffn_gelu.onnx"
-    torch.onnx.export(
-        ffn_gelu,
-        dummy,
-        str(ffn_path),
-        input_names=["input"],
-        output_names=["output"],
-        opset_version=14,
-        dynamo=False,
-    )
-    print(f"Exported: {ffn_path}")
-
-    # 3. FeedForward SwiGLU
-    ffn_swiglu = FeedForwardSwiGLUBlock(32, 64)
-    ffn_swiglu.eval()
-    swiglu_path = models_dir / "transformer_ffn_swiglu.onnx"
-    torch.onnx.export(
-        ffn_swiglu,
-        dummy,
-        str(swiglu_path),
-        input_names=["input"],
-        output_names=["output"],
-        opset_version=14,
-        dynamo=False,
-    )
-    print(f"Exported: {swiglu_path}")
-
-    # 4. SDPA
-    sdpa_mod = SDPABlock()
-    sdpa_mod.eval()
     q = torch.randn(2, 4, 8, 16)
     k = torch.randn(2, 4, 8, 16)
     v = torch.randn(2, 4, 8, 16)
-    sdpa_path = models_dir / "transformer_sdpa.onnx"
-    torch.onnx.export(
-        sdpa_mod,
-        (q, k, v),
-        str(sdpa_path),
-        input_names=["q", "k", "v"],
-        output_names=["output"],
-        opset_version=14,
-        dynamo=False,
+
+    # 1. Combined Transformer block model
+    unified_export_model(
+        CombinedTransformerBlock(32, 64),
+        (dummy,),
+        ["input"],
+        ["output"],
+        "transformer_blocks",
+        models_dir,
+        opset_versions=[14, 17, 18, 20],
+        expected_target_node="FeedForward",
+        emit_json_descriptor=False,
     )
-    print(f"Exported: {sdpa_path}")
 
-    # Emit JSON test descriptors
-    test_specs = {
-        "feedforward_gelu_fusion": {
-            "test_id": "feedforward_gelu_fusion_test",
-            "model_path": str(ffn_path),
-            "input_shapes": {"input": [2, 8, 32]},
-            "expected_target_node": "FeedForward",
-            "min_expected_reduction": 0.5,
-            "rtol": 1e-4,
-            "atol": 1e-4,
-        },
-        "scaled_dot_product_attention_fusion": {
-            "test_id": "scaled_dot_product_attention_fusion_test",
-            "model_path": str(sdpa_path),
-            "input_shapes": {
-                "q": [2, 4, 8, 16],
-                "k": [2, 4, 8, 16],
-                "v": [2, 4, 8, 16],
-            },
-            "expected_target_node": "ScaledDotProductAttention",
-            "min_expected_reduction": 0.3,
-            "rtol": 1e-4,
-            "atol": 1e-4,
-        },
-    }
+    # 2. FeedForward GELU
+    unified_export_model(
+        FeedForwardGeluBlock(32, 64),
+        (dummy,),
+        ["input"],
+        ["output"],
+        "transformer_ffn_gelu",
+        models_dir,
+        opset_versions=[14, 17, 18, 20],
+        expected_target_node="FeedForward",
+        min_expected_reduction=0.5,
+    )
 
-    for name, spec in test_specs.items():
-        out_f = tests_dir / f"{name}_test.json"
-        with open(out_f, "w", encoding="utf-8") as f:
-            json.dump(spec, f, indent=2)
-        print(f"Emitted test spec: {out_f}")
+    # 3. FeedForward SwiGLU
+    unified_export_model(
+        FeedForwardSwiGLUBlock(32, 64),
+        (dummy,),
+        ["input"],
+        ["output"],
+        "transformer_ffn_swiglu",
+        models_dir,
+        opset_versions=[14, 17, 18, 20],
+        expected_target_node="GatedUnit",
+        min_expected_reduction=0.3,
+    )
+
+    # 4. SDPA
+    unified_export_model(
+        SDPABlock(),
+        (q, k, v),
+        ["q", "k", "v"],
+        ["output"],
+        "transformer_sdpa",
+        models_dir,
+        opset_versions=[14, 17, 18, 20],
+        expected_target_node="ScaledDotProductAttention",
+        min_expected_reduction=0.3,
+    )
 
 
 if __name__ == "__main__":
