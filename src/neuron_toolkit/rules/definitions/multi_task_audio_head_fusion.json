@@ -17,7 +17,7 @@
     "op_type": "MultiTaskDecoderHead",
     "domain": "custom.pytorch",
     "inputs": ["$x"],
-    "outputs": ["inst_logp", "perc_prob", "vol_logp"],
+    "outputs": ["$outputs"],
     "targets": {
       "modern_onnx": {
         "op_type": "MultiTaskDecoderHead",

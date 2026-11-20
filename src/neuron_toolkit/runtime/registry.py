@@ -110,6 +110,8 @@ class OpRegistry:
             ("DeepMLP_", "DeepMLP_Norm_Act"),
             ("FeedForward_", "FeedForward"),
             ("FeedForwardSwiGLU_", "FeedForwardSwiGLU"),
+            ("FeedForwardGeGLU_", "FeedForwardGeGLU"),
+            ("FeedForwardReGLU_", "FeedForwardReGLU"),
             ("GatedUnit_", "GatedUnit"),
             ("GatedAttention_", "GatedAttention"),
         ]:
@@ -1237,29 +1239,41 @@ class OpRegistry:
                 if len(inputs) > 5 and inputs[5] is not None and inputs[5].numel() > 0
                 else None
             )
+            beta = (
+                inputs[6]
+                if len(inputs) > 6 and inputs[6] is not None and inputs[6].numel() > 0
+                else None
+            )
             eps = float(attrs.get("epsilon", 1e-12))
-            # 1. RMSNorm
-            norm = torch.norm(x, p=2, dim=-1, keepdim=True)
-            scale = (x.shape[-1] ** 0.5) / torch.clamp(norm, min=eps)
-            x_norm = x * scale
-            if gamma is not None:
-                x_norm = x_norm * gamma
+            norm_type = attrs.get("norm_type", "RMSNorm")
+            if norm_type in ("LayerNormalization", "LayerNorm"):
+                x_norm = F.layer_norm(x, (x.shape[-1],), weight=gamma, bias=beta, eps=eps)
+            else:
+                norm = torch.norm(x, p=2, dim=-1, keepdim=True)
+                scale = (x.shape[-1] ** 0.5) / torch.clamp(norm, min=eps)
+                x_norm = x * scale
+                if gamma is not None:
+                    x_norm = x_norm * gamma
             # 2. Linear 1
             h = torch.matmul(x_norm, fc1_w)
-            if fc1_b is not None:
+            if fc1_b is not None and fc1_b.numel() > 0:
                 h = h + fc1_b
             # 3. Activation
-            act = attrs.get("activation", "gelu")
-            if act == "gelu":
+            act = attrs.get("activation", "gelu").lower()
+            if act in ("gelu", "fastgelu"):
                 h = F.gelu(h)
             elif act == "relu":
                 h = F.relu(h)
-            elif act == "silu":
+            elif act in ("silu", "swish"):
                 h = F.silu(h)
+            elif act == "tanh":
+                h = torch.tanh(h)
+            elif act == "mish":
+                h = F.mish(h)
             # 4. Linear 2
             if fc2_w is not None:
                 out = torch.matmul(h, fc2_w)
-                if fc2_b is not None:
+                if fc2_b is not None and fc2_b.numel() > 0:
                     out = out + fc2_b
             else:
                 out = h
@@ -1267,10 +1281,15 @@ class OpRegistry:
 
         @self.register("custom.pytorch", "FeedForwardSwiGLU")
         @self.register("", "FeedForwardSwiGLU")
+        @self.register("custom.pytorch", "FeedForwardGeGLU")
+        @self.register("", "FeedForwardGeGLU")
+        @self.register("custom.pytorch", "FeedForwardReGLU")
+        @self.register("", "FeedForwardReGLU")
         def _feed_forward_swiglu(
             inputs: list[torch.Tensor], attrs: dict[str, Any]
         ) -> torch.Tensor:
             x = inputs[0]
+            norm_type = attrs.get("norm_type", "RMSNormalization")
             if len(inputs) in (5, 8):
                 gamma = (
                     inputs[1]
@@ -1278,11 +1297,14 @@ class OpRegistry:
                     else None
                 )
                 eps = float(attrs.get("epsilon", 1e-12))
-                norm = torch.norm(x, p=2, dim=-1, keepdim=True)
-                scale = (x.shape[-1] ** 0.5) / torch.clamp(norm, min=eps)
-                x_norm = x * scale
-                if gamma is not None:
-                    x_norm = x_norm * gamma
+                if norm_type in ("LayerNormalization", "LayerNorm"):
+                    x_norm = F.layer_norm(x, (x.shape[-1],), weight=gamma, eps=eps)
+                else:
+                    norm = torch.norm(x, p=2, dim=-1, keepdim=True)
+                    scale = (x.shape[-1] ** 0.5) / torch.clamp(norm, min=eps)
+                    x_norm = x * scale
+                    if gamma is not None:
+                        x_norm = x_norm * gamma
                 rest = inputs[2:]
             else:
                 x_norm = x
@@ -1303,7 +1325,17 @@ class OpRegistry:
             up = torch.matmul(x_norm, w_up)
             if b_up is not None and b_up.numel() > 0:
                 up = up + b_up
-            hidden = F.silu(gate) * up
+
+            act = attrs.get("activation", "").lower()
+            if not act:
+                act = "silu"
+            if act in ("gelu", "fastgelu"):
+                hidden = F.gelu(gate) * up
+            elif act in ("relu",):
+                hidden = F.relu(gate) * up
+            else:
+                hidden = F.silu(gate) * up
+
             out = torch.matmul(hidden, w_down)
             if b_down is not None and b_down.numel() > 0:
                 out = out + b_down
@@ -1339,7 +1371,7 @@ class OpRegistry:
                 x_rot = x
                 x_pass = None
 
-            interleaved = int(attrs.get("interleaved", 0 if "rotate_half" in str(attrs.get("mode", "")) or attrs.get("interleaved") == 0 else 1))
+            interleaved = int(attrs.get("interleaved", 1 if "pairwise" in str(attrs.get("mode", "")).lower() or attrs.get("interleaved") == 1 else 0))
             if interleaved == 0:
                 d = x_rot.shape[-1]
                 x1 = x_rot[..., : d // 2]
@@ -1437,8 +1469,10 @@ class OpRegistry:
             return [k, v]
 
         @self.register("custom.pytorch", "ScaledDotProductAttention")
+        @self.register("custom.pytorch", "ScaledDotProductAttentionWithMask")
         @self.register("custom.pytorch", "Attention")
         @self.register("", "ScaledDotProductAttention")
+        @self.register("", "ScaledDotProductAttentionWithMask")
         def _attention(
             inputs: list[torch.Tensor], attrs: dict[str, Any]
         ) -> torch.Tensor:
@@ -1599,19 +1633,23 @@ class OpRegistry:
             x = inputs[0]
             mode = attrs.get("mode", "freq_to_time")
             b = int(attrs.get("batch_size", 1))
+            perm = attrs.get("perm")
             if mode == "add_channel":
                 return x.unsqueeze(1)
             if mode == "freq_in":
                 # (B, C, F, T) -> (B*T, F, C)
                 B, C, F, T = x.shape
-                return x.permute(0, 3, 2, 1).reshape(B * T, F, C)
+                p = perm if perm is not None else [0, 3, 2, 1]
+                return x.permute(*p).reshape(B * T, F, C)
             if mode == "freq_to_time":
                 # (B*T, F, C) -> (B*F, T, C)
                 BT, F, C = x.shape
                 T = BT // b
-                return x.view(b, T, F, C).permute(0, 2, 1, 3).reshape(b * F, T, C)
+                p = perm if perm is not None else [0, 2, 1, 3]
+                return x.view(b, T, F, C).permute(*p).reshape(b * F, T, C)
             if mode == "time_to_conv":
                 target_shape = attrs.get("target_shape")
+                p = perm if perm is not None else [0, 3, 1, 2]
                 if target_shape:
                     target = list(target_shape)
                     if (
@@ -1620,15 +1658,16 @@ class OpRegistry:
                         and target[0] in (1, -1)
                     ):
                         target[0] = x.shape[0]
-                    return x.reshape(*target).permute(0, 3, 1, 2)
+                    return x.reshape(*target).permute(*p)
                 # (B*F, T, C) -> (B, C, F, T)
                 BF, T, C = x.shape
                 F = BF // b
-                return x.view(b, F, T, C).permute(0, 3, 1, 2)
+                return x.view(b, F, T, C).permute(*p)
             if mode == "flatten_fc":
                 # (B, C, F, T) -> (B, T, C * F)
                 B, C, F, T = x.shape
-                return x.permute(0, 3, 1, 2).reshape(B, T, C * F)
+                p = perm if perm is not None else [0, 3, 1, 2]
+                return x.permute(*p).reshape(B, T, C * F)
             raise ValueError(f"Unknown AxialRearrange mode: {mode}")
 
         @self.register("custom.pytorch", "TensorRoute")
@@ -1754,9 +1793,20 @@ class OpRegistry:
         def _spatial_gating_unit(
             inputs: list[torch.Tensor], attrs: dict[str, Any]
         ) -> torch.Tensor:
-            x = inputs[0]
-            u, v = torch.chunk(x, 2, dim=-1)
-            rem = inputs[1:]
+            if (
+                len(inputs) >= 2
+                and inputs[0] is not None
+                and inputs[1] is not None
+                and inputs[0].dim() == inputs[1].dim()
+                and inputs[0].shape[-1] == inputs[1].shape[-1]
+            ):
+                u = inputs[0]
+                v = inputs[1]
+                rem = inputs[2:]
+            else:
+                x = inputs[0]
+                u, v = torch.chunk(x, 2, dim=-1)
+                rem = inputs[1:]
             gamma = None
             beta = None
             w = None
@@ -1798,10 +1848,51 @@ class OpRegistry:
         def _highway_block(
             inputs: list[torch.Tensor], attrs: dict[str, Any]
         ) -> torch.Tensor:
-            h, gate = inputs[0], inputs[1]
-            t = torch.sigmoid(gate)
-            x = inputs[2] if len(inputs) > 2 else h
-            return h * t + x * (1.0 - t)
+            if len(inputs) == 5:
+                x, wh, bh, wt, bt = inputs
+                act_name = attrs.get("activation", "relu").lower()
+                h_raw = torch.matmul(x, wh)
+                if bh is not None and bh.numel() > 0:
+                    h_raw = h_raw + bh
+                if act_name == "relu":
+                    h = F.relu(h_raw)
+                elif act_name == "gelu":
+                    h = F.gelu(h_raw)
+                elif act_name == "tanh":
+                    h = torch.tanh(h_raw)
+                else:
+                    h = F.relu(h_raw)
+                t_raw = torch.matmul(x, wt)
+                if bt is not None and bt.numel() > 0:
+                    t_raw = t_raw + bt
+                t = torch.sigmoid(t_raw)
+                return h * t + x * (1.0 - t)
+            elif len(inputs) == 3:
+                # Disambiguate [h, gate, x] vs [x, wh, wt]
+                if inputs[1].ndim == 2 and inputs[0].ndim != inputs[1].ndim:
+                    x, wh, wt = inputs
+                    act_name = attrs.get("activation", "relu").lower()
+                    h_raw = torch.matmul(x, wh)
+                    if act_name == "relu":
+                        h = F.relu(h_raw)
+                    elif act_name == "gelu":
+                        h = F.gelu(h_raw)
+                    elif act_name == "tanh":
+                        h = torch.tanh(h_raw)
+                    else:
+                        h = F.relu(h_raw)
+                    t_raw = torch.matmul(x, wt)
+                    t = torch.sigmoid(t_raw)
+                    return h * t + x * (1.0 - t)
+                else:
+                    h, gate, x = inputs[0], inputs[1], inputs[2]
+                    t = torch.sigmoid(gate)
+                    return h * t + x * (1.0 - t)
+            else:
+                h, gate = inputs[0], inputs[1]
+                t = torch.sigmoid(gate)
+                x = inputs[2] if len(inputs) > 2 else h
+                return h * t + x * (1.0 - t)
 
         @self.register("custom.pytorch", "SqueezeExcitation")
         @self.register("", "SqueezeExcitation")
@@ -1809,29 +1900,47 @@ class OpRegistry:
             inputs: list[torch.Tensor], attrs: dict[str, Any]
         ) -> torch.Tensor:
             x = inputs[0]
-            w1, b1 = inputs[1], inputs[2]
-            w2, b2 = inputs[3], inputs[4]
+            if len(inputs) >= 5:
+                w1, b1 = inputs[1], inputs[2]
+                w2, b2 = inputs[3], inputs[4]
+            else:
+                w1, b1 = inputs[1], None
+                w2, b2 = inputs[2], None
             if x.dim() == 4:
                 pooled = x.mean(dim=(-2, -1), keepdim=True)
-                fc1 = (
-                    F.conv2d(pooled, w1, b1)
-                    if w1.dim() == 4
-                    else torch.matmul(pooled.squeeze(-1).squeeze(-1), w1) + b1
-                )
+                if w1.dim() == 4:
+                    fc1 = (
+                        F.conv2d(pooled, w1, b1)
+                        if b1 is not None and b1.numel() > 0
+                        else F.conv2d(pooled, w1)
+                    )
+                else:
+                    fc1 = torch.matmul(pooled.squeeze(-1).squeeze(-1), w1)
+                    if b1 is not None and b1.numel() > 0:
+                        fc1 = fc1 + b1
                 act = F.relu(fc1)
-                fc2 = (
-                    F.conv2d(act, w2, b2)
-                    if w2.dim() == 4
-                    else torch.matmul(act, w2) + b2
-                )
+                if w2.dim() == 4:
+                    fc2 = (
+                        F.conv2d(act, w2, b2)
+                        if b2 is not None and b2.numel() > 0
+                        else F.conv2d(act, w2)
+                    )
+                else:
+                    fc2 = torch.matmul(act, w2)
+                    if b2 is not None and b2.numel() > 0:
+                        fc2 = fc2 + b2
                 scale = torch.sigmoid(
                     fc2 if w1.dim() == 4 else fc2.unsqueeze(-1).unsqueeze(-1)
                 )
             else:
                 pooled = x.mean(dim=-2)
-                fc1 = torch.matmul(pooled, w1) + b1
+                fc1 = torch.matmul(pooled, w1)
+                if b1 is not None and b1.numel() > 0:
+                    fc1 = fc1 + b1
                 act = F.relu(fc1)
-                fc2 = torch.matmul(act, w2) + b2
+                fc2 = torch.matmul(act, w2)
+                if b2 is not None and b2.numel() > 0:
+                    fc2 = fc2 + b2
                 scale = torch.sigmoid(fc2).unsqueeze(-2)
             return x * scale
 
@@ -1846,11 +1955,16 @@ class OpRegistry:
             num_heads = int(attrs.get("num_heads", 4))
             scale = attrs.get("scale")
 
-            # Case 1: Separate Q, K, V passed (e.g. [q, k, v, out_w, out_b] or [q, k, v, out_w])
+            # Case 1: Separate Q, K, V passed (e.g. [q, k, v, out_w, out_b] or [q, k, v, mask, out_w, out_b])
             if len(inputs) >= 3 and inputs[0] is not None and inputs[0].dim() == 4 and inputs[1] is not None and inputs[1].dim() == 4:
                 q, k, v = inputs[0], inputs[1], inputs[2]
-                out_w = inputs[3] if len(inputs) > 3 and inputs[3] is not None and inputs[3].dim() == 2 else None
-                out_b = inputs[4] if len(inputs) > 4 and inputs[4] is not None and inputs[4].numel() > 0 else None
+                mask = None
+                rem = inputs[3:]
+                if rem and rem[0] is not None and rem[0].dim() in (3, 4):
+                    mask = rem[0]
+                    rem = rem[1:]
+                out_w = rem[0] if len(rem) > 0 and rem[0] is not None and rem[0].dim() == 2 else None
+                out_b = rem[1] if len(rem) > 1 and rem[1] is not None and rem[1].numel() > 0 else None
 
                 # Handle GQA KV head repetition if k heads < q heads
                 if k.shape[1] < q.shape[1]:
@@ -1861,6 +1975,8 @@ class OpRegistry:
                 d_head = q.shape[-1]
                 s = float(scale) if scale is not None else (1.0 / (d_head ** 0.5))
                 scores = torch.matmul(q * s, k.transpose(-1, -2))
+                if mask is not None:
+                    scores = scores + mask
                 probs = torch.softmax(scores, dim=-1)
                 attn_out = torch.matmul(probs, v)
 

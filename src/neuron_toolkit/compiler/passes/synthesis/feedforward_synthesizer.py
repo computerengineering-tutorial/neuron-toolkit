@@ -74,7 +74,8 @@ class FeedForwardSynthesizer(Pass):
             if not lin1 or lin1.op_type != "Linear":
                 continue
             norm = node_by_output.get(lin1.input[0])
-            if not norm or norm.op_type not in ("RMSNorm", "RMSNormalization"):
+            valid_norms = ("RMSNorm", "RMSNormalization", "LayerNormalization", "SimplifiedLayerNormalization")
+            if not norm or norm.op_type not in valid_norms:
                 continue
 
             cons = consumer_map.get(n.output[0], [])
@@ -101,6 +102,9 @@ class FeedForwardSynthesizer(Pass):
             final_out = lin2.output[0]
 
             ff_inputs = [x, norm_gamma, fc1_w, fc1_b, fc2_w, fc2_b]
+            norm_beta = norm.input[2] if len(norm.input) > 2 else ""
+            if norm_beta:
+                ff_inputs.append(norm_beta)
             ff_node = helper.make_node(
                 op_type=specialized_op,
                 inputs=ff_inputs,
@@ -108,6 +112,7 @@ class FeedForwardSynthesizer(Pass):
                 name=f"{norm.name}_fused_feedforward",
                 domain="custom.pytorch",
                 activation=act_name.lower(),
+                norm_type=norm_op,
                 doc_string=f"Fused polymorphic FeedForward ({act_name}) block",
             )
             new_nodes.append(ff_node)
@@ -128,6 +133,7 @@ class FeedForwardSynthesizer(Pass):
                     act_name=act_name,
                     norm_op=norm_op,
                     fingerprint=fp,
+                    has_beta=bool(norm_beta),
                 )
 
         if not new_nodes:
@@ -151,20 +157,24 @@ class FeedForwardSynthesizer(Pass):
         act_name: str,
         norm_op: str,
         fingerprint: str,
+        has_beta: bool = False,
     ) -> None:
         """Attach formal, content-hashed ONNX FunctionProto definition for FeedForward."""
         if any(
             f.name == fname and f.domain == "custom.pytorch" for f in model.functions
         ):
             return
+        ensure_model_latest_opset(model)
         opset_standard = helper.make_opsetid("", LATEST_OPSET)
         opset_custom = helper.make_opsetid("custom.pytorch", 1)
 
+        norm_domain = "" if norm_op in ("LayerNormalization",) else "custom.pytorch"
+        norm_inputs = ["X", "gamma", "beta"] if has_beta else ["X", "gamma"]
         norm = helper.make_node(
             norm_op,
-            inputs=["X", "gamma"],
+            inputs=norm_inputs,
             outputs=["X_norm"],
-            domain="custom.pytorch",
+            domain=norm_domain,
             epsilon=1e-12,
         )
         fc1 = helper.make_node(
@@ -186,11 +196,15 @@ class FeedForwardSynthesizer(Pass):
             domain="custom.pytorch",
         )
 
+        formal_inputs = ["X", "gamma", "fc1_w", "fc1_b", "fc2_w", "fc2_b"]
+        if has_beta:
+            formal_inputs.append("beta")
+
         ensure_specialized_function_proto(
             model=model,
             domain="custom.pytorch",
             fname=fname,
-            formal_inputs=["X", "gamma", "fc1_w", "fc1_b", "fc2_w", "fc2_b"],
+            formal_inputs=formal_inputs,
             formal_outputs=["Y"],
             body_nodes=[norm, fc1, act, fc2],
             opset_imports=[opset_standard, opset_custom],
@@ -218,9 +232,9 @@ class FeedForwardSynthesizer(Pass):
         for cand_node in graph.node:
             gate_node, up_node, silu_node = None, None, None
             mul_node = None
+            act_name = "SiLU"
 
             if cand_node.op_type.startswith("GatedUnit"):
-                # Pre-fused GatedUnit branch: only match for SwiGLU if activation is SiLU or Swish
                 cand_act = None
                 for attr in cand_node.attribute:
                     if attr.name == "activation":
@@ -229,9 +243,8 @@ class FeedForwardSynthesizer(Pass):
                     parts = cand_node.op_type.split("_")
                     if len(parts) >= 2:
                         cand_act = parts[1].lower()
-                if cand_act and cand_act.lower() not in ("silu", "swish"):
-                    # GeGLU (gelu), ReGLU (relu), etc. have different activations and must not be fused to SwiGLU
-                    continue
+                if cand_act:
+                    act_name = cand_act
                 in0, in1 = cand_node.input[0], cand_node.input[1]
                 p0 = node_by_output.get(in0)
                 p1 = node_by_output.get(in1)
@@ -240,20 +253,23 @@ class FeedForwardSynthesizer(Pass):
                     gate_node = p1
                     mul_node = cand_node
             elif cand_node.op_type == "Mul":
-                # Raw Mul(SiLU(gate), up) branch
                 mul_node = cand_node
                 in0, in1 = mul_node.input[0], mul_node.input[1]
-                if in0 in node_by_output and node_by_output[in0].op_type == "SiLU":
-                    silu_node = node_by_output[in0]
+                valid_acts = ("SiLU", "Gelu", "FastGelu", "Relu")
+                act_node = None
+                if in0 in node_by_output and node_by_output[in0].op_type in valid_acts:
+                    act_node = node_by_output[in0]
                     up_node = node_by_output.get(in1)
-                elif in1 in node_by_output and node_by_output[in1].op_type == "SiLU":
-                    silu_node = node_by_output[in1]
+                elif in1 in node_by_output and node_by_output[in1].op_type in valid_acts:
+                    act_node = node_by_output[in1]
                     up_node = node_by_output.get(in0)
 
-                if silu_node and up_node and up_node.op_type == "Linear":
-                    p_gate = node_by_output.get(silu_node.input[0])
+                if act_node and up_node and up_node.op_type == "Linear":
+                    p_gate = node_by_output.get(act_node.input[0])
                     if p_gate and p_gate.op_type == "Linear":
                         gate_node = p_gate
+                        silu_node = act_node
+                        act_name = act_node.op_type
 
             if not gate_node or not up_node or not mul_node:
                 continue
@@ -265,9 +281,15 @@ class FeedForwardSynthesizer(Pass):
 
             norm_node = node_by_output.get(x_common)
             norm_gamma = ""
-            if norm_node and norm_node.op_type in ("RMSNorm", "RMSNormalization", "LayerNorm"):
+            norm_beta = ""
+            norm_op = ""
+            valid_norms = ("RMSNorm", "RMSNormalization", "LayerNormalization", "SimplifiedLayerNormalization")
+            if norm_node and norm_node.op_type in valid_norms:
+                norm_op = norm_node.op_type
                 x = norm_node.input[0]
                 norm_gamma = norm_node.input[1]
+                if len(norm_node.input) > 2 and norm_node.input[2]:
+                    norm_beta = norm_node.input[2]
             else:
                 norm_node = None
                 x = x_common
@@ -321,12 +343,21 @@ class FeedForwardSynthesizer(Pass):
             else:
                 swiglu_inputs = [x, w_gate, w_up, w_down]
 
+            if act_name.lower() in ("gelu", "fastgelu"):
+                base_op = "FeedForwardGeGLU"
+            elif act_name.lower() in ("relu",):
+                base_op = "FeedForwardReGLU"
+            else:
+                base_op = "FeedForwardSwiGLU"
+
             swiglu_node = helper.make_node(
-                "FeedForwardSwiGLU",
+                base_op,
                 inputs=swiglu_inputs,
                 outputs=[final_out],
-                name=f"feedforward_swiglu_{count}",
+                name=f"{base_op.lower()}_{count}",
                 domain="custom.pytorch",
+                activation=act_name.lower(),
+                norm_type=norm_op,
             )
             new_nodes.append(swiglu_node)
             count += 1
@@ -344,16 +375,39 @@ class FeedForwardSynthesizer(Pass):
         graph.node.extend(kept)
 
         if mode == "function_proto" and new_nodes:
-            self._attach_feedforward_swiglu_function_def(model, input_count=len(new_nodes[0].input))
+            seen_defs = set()
+            for nn in new_nodes:
+                act = "silu"
+                for a in nn.attribute:
+                    if a.name == "activation":
+                        act = a.s.decode("utf-8") if isinstance(a.s, bytes) else str(a.s)
+                norm_op = "RMSNormalization"
+                for a in nn.attribute:
+                    if a.name == "norm_type":
+                        norm_op = a.s.decode("utf-8") if isinstance(a.s, bytes) else str(a.s)
+                key = (nn.op_type, len(nn.input), act, norm_op)
+                if key not in seen_defs:
+                    seen_defs.add(key)
+                    self._attach_feedforward_swiglu_function_def(
+                        model,
+                        func_name=nn.op_type,
+                        act_name=act,
+                        norm_op=norm_op,
+                        input_count=len(nn.input),
+                    )
 
         log.info("FeedForward SwiGLU Fusion: Fused %d SwiGLU blocks", count)
         return model
 
     def _attach_feedforward_swiglu_function_def(
-        self, model: onnx.ModelProto, input_count: int = 5
+        self,
+        model: onnx.ModelProto,
+        func_name: str = "FeedForwardSwiGLU",
+        act_name: str = "silu",
+        norm_op: str = "RMSNormalization",
+        input_count: int = 5,
     ) -> None:
-        """Attach formal ONNX FunctionProto definition for FeedForwardSwiGLU."""
-        func_name = "FeedForwardSwiGLU"
+        """Attach formal ONNX FunctionProto definition for FeedForwardSwiGLU / GeGLU / ReGLU."""
         domain = "custom.pytorch"
         if any(
             f.name == func_name and f.domain == domain and len(f.input) == input_count
@@ -363,21 +417,39 @@ class FeedForwardSynthesizer(Pass):
         surviving_funcs = [
             f
             for f in model.functions
-            if not (f.name == func_name and f.domain == domain)
+            if not (f.name == func_name and f.domain == domain and len(f.input) == input_count)
         ]
         del model.functions[:]
         model.functions.extend(surviving_funcs)
 
+        ensure_model_latest_opset(model)
         opset_standard = helper.make_opsetid("", LATEST_OPSET)
+        opset_custom = helper.make_opsetid("custom.pytorch", 1)
+
+        def make_act_nodes(in_t: str, out_t: str) -> list[onnx.NodeProto]:
+            act_lower = act_name.lower()
+            if act_lower in ("gelu", "fastgelu"):
+                return [helper.make_node("Gelu", inputs=[in_t], outputs=[out_t], domain="custom.pytorch")]
+            elif act_lower in ("relu",):
+                return [helper.make_node("Relu", inputs=[in_t], outputs=[out_t])]
+            else:
+                return [
+                    helper.make_node("Sigmoid", inputs=[in_t], outputs=["H_sig"]),
+                    helper.make_node("Mul", inputs=[in_t, "H_sig"], outputs=[out_t]),
+                ]
+
+        def make_norm_node(x_in: str, gamma_in: str, norm_out: str) -> onnx.NodeProto:
+            if norm_op in ("LayerNormalization",):
+                return helper.make_node("LayerNormalization", inputs=[x_in, gamma_in], outputs=[norm_out])
+            return helper.make_node("RMSNormalization", inputs=[x_in, gamma_in], outputs=[norm_out], domain="custom.pytorch")
 
         if input_count == 8:
             func_inputs = ["X", "gamma", "w_gate", "b_gate", "w_up", "b_up", "w_down", "b_down"]
             body_nodes = [
-                helper.make_node("RMSNormalization", inputs=["X", "gamma"], outputs=["X_norm"]),
+                make_norm_node("X", "gamma", "X_norm"),
                 helper.make_node("MatMul", inputs=["X_norm", "w_gate"], outputs=["mm_gate"]),
                 helper.make_node("Add", inputs=["mm_gate", "b_gate"], outputs=["H_gate_raw"]),
-                helper.make_node("Sigmoid", inputs=["H_gate_raw"], outputs=["H_sig"]),
-                helper.make_node("Mul", inputs=["H_gate_raw", "H_sig"], outputs=["H_act"]),
+            ] + make_act_nodes("H_gate_raw", "H_act") + [
                 helper.make_node("MatMul", inputs=["X_norm", "w_up"], outputs=["mm_up"]),
                 helper.make_node("Add", inputs=["mm_up", "b_up"], outputs=["H_up"]),
                 helper.make_node("Mul", inputs=["H_act", "H_up"], outputs=["H_mul"]),
@@ -388,8 +460,7 @@ class FeedForwardSynthesizer(Pass):
             func_inputs = ["X", "w_gate", "w_up", "w_down"]
             body_nodes = [
                 helper.make_node("MatMul", inputs=["X", "w_gate"], outputs=["H_gate_raw"]),
-                helper.make_node("Sigmoid", inputs=["H_gate_raw"], outputs=["H_sig"]),
-                helper.make_node("Mul", inputs=["H_gate_raw", "H_sig"], outputs=["H_act"]),
+            ] + make_act_nodes("H_gate_raw", "H_act") + [
                 helper.make_node("MatMul", inputs=["X", "w_up"], outputs=["H_up"]),
                 helper.make_node("Mul", inputs=["H_act", "H_up"], outputs=["H_mul"]),
                 helper.make_node("MatMul", inputs=["H_mul", "w_down"], outputs=["Y"]),
@@ -399,8 +470,7 @@ class FeedForwardSynthesizer(Pass):
             body_nodes = [
                 helper.make_node("MatMul", inputs=["X", "w_gate"], outputs=["mm_gate"]),
                 helper.make_node("Add", inputs=["mm_gate", "b_gate"], outputs=["H_gate_raw"]),
-                helper.make_node("Sigmoid", inputs=["H_gate_raw"], outputs=["H_sig"]),
-                helper.make_node("Mul", inputs=["H_gate_raw", "H_sig"], outputs=["H_act"]),
+            ] + make_act_nodes("H_gate_raw", "H_act") + [
                 helper.make_node("MatMul", inputs=["X", "w_up"], outputs=["mm_up"]),
                 helper.make_node("Add", inputs=["mm_up", "b_up"], outputs=["H_up"]),
                 helper.make_node("Mul", inputs=["H_act", "H_up"], outputs=["H_mul"]),
@@ -410,10 +480,9 @@ class FeedForwardSynthesizer(Pass):
         else:
             func_inputs = ["X", "gamma", "w_gate", "w_up", "w_down"]
             body_nodes = [
-                helper.make_node("RMSNormalization", inputs=["X", "gamma"], outputs=["X_norm"]),
+                make_norm_node("X", "gamma", "X_norm"),
                 helper.make_node("MatMul", inputs=["X_norm", "w_gate"], outputs=["H_gate_raw"]),
-                helper.make_node("Sigmoid", inputs=["H_gate_raw"], outputs=["H_sig"]),
-                helper.make_node("Mul", inputs=["H_gate_raw", "H_sig"], outputs=["H_act"]),
+            ] + make_act_nodes("H_gate_raw", "H_act") + [
                 helper.make_node("MatMul", inputs=["X_norm", "w_up"], outputs=["H_up"]),
                 helper.make_node("Mul", inputs=["H_act", "H_up"], outputs=["H_mul"]),
                 helper.make_node("MatMul", inputs=["H_mul", "w_down"], outputs=["Y"]),
@@ -425,8 +494,8 @@ class FeedForwardSynthesizer(Pass):
             inputs=func_inputs,
             outputs=["Y"],
             nodes=body_nodes,
-            opset_imports=[opset_standard],
-            doc_string="Formal FeedForward SwiGLU block",
+            opset_imports=[opset_standard, opset_custom],
+            doc_string=f"Formal {func_name} ({act_name}) block",
         )
         model.functions.append(func)
         ensure_model_latest_opset(model)

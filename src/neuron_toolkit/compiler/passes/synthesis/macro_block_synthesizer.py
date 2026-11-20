@@ -73,13 +73,11 @@ def _replace_nodes_topologically(
     new_node_map = {out: n for n in new_nodes for out in n.output if out}
     new_graph_nodes = []
     for n in graph.node:
-        is_dropped = False
-        if n.name and n.name in clean_names:
-            is_dropped = True
-        elif any(out in clean_names for out in n.output):
-            is_dropped = True
-        elif not n.name and id(n) in drop_ids:
-            is_dropped = True
+        is_dropped = (
+            (bool(n.name) and n.name in clean_names)
+            or any(out in clean_names for out in n.output)
+            or (id(n) in drop_ids)
+        )
 
         if is_dropped:
             for out in n.output:
@@ -91,9 +89,11 @@ def _replace_nodes_topologically(
                     break
         else:
             new_graph_nodes.append(n)
-    new_graph_nodes.extend(new_node_map.values())
+    if new_node_map:
+        new_graph_nodes.extend(new_node_map.values())
+    sorted_nodes = _toposort_nodes(new_graph_nodes)
     del graph.node[:]
-    graph.node.extend(new_graph_nodes)
+    graph.node.extend(sorted_nodes)
 
 
 def _toposort_nodes(nodes: list[onnx.NodeProto]) -> list[onnx.NodeProto]:
@@ -140,16 +140,53 @@ def _canonicalize_subgraph_nodes(
     t_idx = 0
     for sn in sub_nodes:
         for out in sn.output:
-            if out and out not in output_map and out not in internal_map:
+            if out and out not in output_map and out not in input_map and out not in internal_map:
                 internal_map[out] = f"t_{t_idx}"
                 t_idx += 1
-    tensor_map = {**input_map, **output_map, **internal_map}
+
     canon_nodes: list[onnx.NodeProto] = []
-    for sn in sub_nodes:
+
+    # Handle pass-through tensors where an external output is directly an external input
+    for j, out in enumerate(external_outputs):
+        if out in input_map:
+            id_node = helper.make_node(
+                "Identity",
+                inputs=[input_map[out]],
+                outputs=[output_map[out]],
+                name=f"passthrough_identity_{j}",
+            )
+            canon_nodes.append(id_node)
+
+    def _rename_tensor(name: str, is_output: bool = False) -> str:
+        if not name:
+            return name
+        if is_output:
+            if name in output_map:
+                return output_map[name]
+            if name in internal_map:
+                return internal_map[name]
+            return name
+        else:
+            if name in internal_map:
+                return internal_map[name]
+            if name in input_map:
+                return input_map[name]
+            if name in output_map:
+                return output_map[name]
+            return name
+
+    def _canon_node(sn: onnx.NodeProto) -> onnx.NodeProto:
         n_copy = copy.deepcopy(sn)
-        n_copy.input[:] = [tensor_map.get(inp, inp) for inp in sn.input]
-        n_copy.output[:] = [tensor_map.get(out, out) for out in sn.output]
-        canon_nodes.append(n_copy)
+        n_copy.input[:] = [_rename_tensor(inp, is_output=False) for inp in sn.input]
+        n_copy.output[:] = [_rename_tensor(out, is_output=True) for out in sn.output]
+        for attr in n_copy.attribute:
+            if attr.g and attr.g.node:
+                attr.g.node[:] = [_canon_node(inner_n) for inner_n in attr.g.node]
+        return n_copy
+
+    for sn in sub_nodes:
+        canon_nodes.append(_canon_node(sn))
+
     return (
         canon_nodes,
         [input_map[inp] for inp in external_inputs],
@@ -185,28 +222,28 @@ class MacroBlockSynthesizer(CompilerPass):
     def run(
         self, model: onnx.ModelProto, mode: str = "function_proto"
     ) -> onnx.ModelProto:
-        """Run macro block synthesis passes sequentially."""
-        model = self.apply_deep_mlp_norm_act_fusion(model, mode=mode)
-        model = self.apply_spatial_gating_unit_fusion(model, mode=mode)
-        model = self.apply_highway_block_fusion(model, mode=mode)
-        model = self.apply_squeeze_excitation_fusion(model, mode=mode)
+        """Run macro block synthesis passes in safe hierarchical macro-to-micro order."""
+        model = self.apply_transformer_encoder_layer_fusion(model, mode=mode)
+        model = self.apply_parallel_transformer_block_fusion(model, mode=mode)
+        model = self.apply_shifted_window_attention_fusion(model, mode=mode)
+        model = self.apply_moe_fusion(model, mode=mode)
+        model = self.apply_mamba_ssm_fusion(model, mode=mode)
+        model = self.apply_differential_attention_fusion(model, mode=mode)
+        model = self.apply_deepseek_mla_macro_fusion(model, mode=mode)
         model = self.apply_preactivation_resnet_fusion(model, mode=mode)
-        model = self.apply_audio_logmel_compressor_fusion(model, mode=mode)
+        model = self.apply_vit_patch_embedding_fusion(model, mode=mode)
         model = self.apply_mha_composite_fusion(model, mode=mode)
         model = self.apply_grouped_query_attention_fusion(model, mode=mode)
-        model = self.apply_parallel_transformer_block_fusion(model, mode=mode)
-        model = self.apply_moe_fusion(model, mode=mode)
-        model = self.apply_differential_attention_fusion(model, mode=mode)
-        model = self.apply_mamba_ssm_fusion(model, mode=mode)
-        model = self.apply_shifted_window_attention_fusion(model, mode=mode)
-        model = self.apply_vit_patch_embedding_fusion(model, mode=mode)
-        model = self.apply_deepseek_mla_macro_fusion(model, mode=mode)
         model = self.apply_multi_field_embedding_fusion(model, mode=mode)
         model = self.apply_attention_key_padding_mask_fusion(model, mode=mode)
         model = self.apply_dynamic_quant_linear_fusion(model, mode=mode)
-        model = self.apply_transformer_encoder_layer_fusion(model, mode=mode)
         model = self.apply_sequence_classifier_head_fusion(model, mode=mode)
         model = self.apply_multi_task_audio_head_fusion(model, mode=mode)
+        model = self.apply_spatial_gating_unit_fusion(model, mode=mode)
+        model = self.apply_highway_block_fusion(model, mode=mode)
+        model = self.apply_squeeze_excitation_fusion(model, mode=mode)
+        model = self.apply_audio_logmel_compressor_fusion(model, mode=mode)
+        model = self.apply_deep_mlp_norm_act_fusion(model, mode=mode)
         return model
 
     # -------------------------------------------------------------------------
@@ -268,6 +305,13 @@ class MacroBlockSynthesizer(CompilerPass):
             if (
                 len(consumer_map.get(lin_node.output[0], [])) > 1
                 or lin_node.output[0] in graph_outputs
+            ):
+                continue
+
+            # Ensure act_node output does NOT feed another linear projection of an FFN / multi-layer MLP
+            if any(
+                c.op_type in ("Linear", "MatMul", "Gemm")
+                for c in consumer_map.get(act_node.output[0], [])
             ):
                 continue
 
@@ -387,9 +431,16 @@ class MacroBlockSynthesizer(CompilerPass):
             count += 1
             nodes_to_drop.update({mul_node.name, proj_node.name, norm_node.name})
 
+            sgu_in = [branch_a, norm_node.input[0]]
+            if len(norm_node.input) > 1:
+                sgu_in.append(norm_node.input[1])
+            if len(norm_node.input) > 2:
+                sgu_in.append(norm_node.input[2])
+            sgu_in.extend(proj_node.input[1:])
+
             sgu_node = helper.make_node(
                 rule.action.op_type,
-                inputs=[branch_a, norm_node.input[0]] + list(proj_node.input[1:]),
+                inputs=sgu_in,
                 outputs=[mul_node.output[0]],
                 name=f"{mul_node.name}_fused_{rule.rule_id}",
                 domain=rule.action.domain,
@@ -402,29 +453,47 @@ class MacroBlockSynthesizer(CompilerPass):
 
         _replace_nodes_topologically(model, nodes_to_drop, new_nodes)
         if mode == "function_proto":
-            self._attach_sgu_function_def(model)
+            max_arity = max(len(n.input) for n in new_nodes) if new_nodes else 3
+            self._attach_sgu_function_def(model, arity=max_arity)
 
         log.info("SpatialGatingUnit Fusion: Fused %d instances", count)
         return ShapeCanonicalizer().apply_dead_code_elimination(model)
 
-    def _attach_sgu_function_def(self, model: onnx.ModelProto) -> None:
-        """Attach formal ONNX FunctionProto definition for SpatialGatingUnit."""
+    def _attach_sgu_function_def(self, model: onnx.ModelProto, arity: int = 3) -> None:
+        """Attach formal ONNX FunctionProto definition for SpatialGatingUnit matching instance arity."""
         func_name = "SpatialGatingUnit"
         domain = "custom.pytorch"
-        if any(f.name == func_name and f.domain == domain for f in model.functions):
-            return
+        surviving = [f for f in model.functions if not (f.name == func_name and f.domain == domain)]
+        if len(surviving) < len(model.functions):
+            existing = [f for f in model.functions if f.name == func_name and f.domain == domain][0]
+            if len(existing.input) == arity:
+                return
+            del model.functions[:]
+            model.functions.extend(surviving)
+
         ensure_model_latest_opset(model)
         opset_standard = helper.make_opsetid("", LATEST_OPSET)
         opset_custom = helper.make_opsetid("custom.pytorch", 1)
 
-        norm = helper.make_node("RMSNorm", inputs=["u"], outputs=["norm_out"], domain=domain)
-        proj = helper.make_node("Linear", inputs=["norm_out", "w"], outputs=["proj_out"], domain=domain)
+        if arity <= 3:
+            formal_inputs = ["v", "u", "w"]
+            norm = helper.make_node("RMSNorm", inputs=["u"], outputs=["norm_out"], domain=domain)
+            proj = helper.make_node("Linear", inputs=["norm_out", "w"], outputs=["proj_out"], domain=domain)
+        elif arity == 4:
+            formal_inputs = ["v", "u", "gamma", "w"]
+            norm = helper.make_node("RMSNorm", inputs=["u", "gamma"], outputs=["norm_out"], domain=domain)
+            proj = helper.make_node("Linear", inputs=["norm_out", "w"], outputs=["proj_out"], domain=domain)
+        else:
+            formal_inputs = ["v", "u", "gamma", "w", "b"]
+            norm = helper.make_node("RMSNorm", inputs=["u", "gamma"], outputs=["norm_out"], domain=domain)
+            proj = helper.make_node("Linear", inputs=["norm_out", "w", "b"], outputs=["proj_out"], domain=domain)
+
         mul = helper.make_node("Mul", inputs=["v", "proj_out"], outputs=["y"])
 
         func = helper.make_function(
             domain=domain,
             fname=func_name,
-            inputs=["v", "u", "w"],
+            inputs=formal_inputs,
             outputs=["y"],
             nodes=[norm, proj, mul],
             opset_imports=[opset_standard, opset_custom],
@@ -515,20 +584,34 @@ class MacroBlockSynthesizer(CompilerPass):
             sig_node = match.bindings.get("sig_t")
             lin_h_node = match.bindings.get("lin_h")
             lin_t_node = match.bindings.get("lin_t")
+            mul_h_node = match.bindings.get("mul_h")
+            mul_x_node = match.bindings.get("mul_x")
             x_node = match.bindings.get("x")
             if not add_node or not act_node or not sig_node:
                 continue
 
             count += 1
-            for n_m in (act_node, sig_node, lin_h_node, lin_t_node, add_node):
-                if n_m and hasattr(n_m, "name"):
-                    nodes_to_drop.add(n_m.name)
+            for n_m in (act_node, sig_node, lin_h_node, lin_t_node, mul_h_node, mul_x_node, add_node):
+                if n_m:
+                    if getattr(n_m, "name", None):
+                        nodes_to_drop.add(n_m.name)
+                    if getattr(n_m, "output", None):
+                        nodes_to_drop.add(n_m.output[0])
+                    nodes_to_drop.add(id(n_m))
 
             hw_inputs = [x_node.output[0] if hasattr(x_node, "output") else str(x_node)]
-            if lin_h_node and len(lin_h_node.input) > 1:
+            has_b_h = lin_h_node and len(lin_h_node.input) > 2 and lin_h_node.input[2]
+            has_b_t = lin_t_node and len(lin_t_node.input) > 2 and lin_t_node.input[2]
+            if has_b_h or has_b_t:
                 hw_inputs.append(lin_h_node.input[1])
-            if lin_t_node and len(lin_t_node.input) > 1:
+                hw_inputs.append(lin_h_node.input[2] if has_b_h else "")
                 hw_inputs.append(lin_t_node.input[1])
+                hw_inputs.append(lin_t_node.input[2] if has_b_t else "")
+            else:
+                if lin_h_node and len(lin_h_node.input) > 1:
+                    hw_inputs.append(lin_h_node.input[1])
+                if lin_t_node and len(lin_t_node.input) > 1:
+                    hw_inputs.append(lin_t_node.input[1])
 
             hw_node = helper.make_node(
                 rule.action.op_type,
@@ -557,13 +640,32 @@ class MacroBlockSynthesizer(CompilerPass):
         """Attach formal ONNX FunctionProto definition for HighwayBlock."""
         func_name = "HighwayBlock"
         domain = "custom.pytorch"
-        if any(f.name == func_name and f.domain == domain for f in model.functions):
-            return
+        if formal_inputs is None:
+            hw_nodes = [n for n in model.graph.node if n.op_type == "HighwayBlock"]
+            if hw_nodes:
+                if len(hw_nodes[0].input) == 5:
+                    formal_inputs = ["x", "wh", "bh", "wt", "bt"]
+                elif len(hw_nodes[0].input) == 3 and hw_nodes[0].name.endswith("_fused_highway"):
+                    formal_inputs = ["h", "gate_in", "x"]
+                else:
+                    formal_inputs = ["x", "wh", "wt"]
+            else:
+                formal_inputs = ["x", "wh", "wt"]
+
+        expected_arity = len(formal_inputs)
+        surviving = [f for f in model.functions if not (f.name == func_name and f.domain == domain)]
+        if len(surviving) < len(model.functions):
+            existing = [f for f in model.functions if f.name == func_name and f.domain == domain][0]
+            if len(existing.input) == expected_arity:
+                return
+            del model.functions[:]
+            model.functions.extend(surviving)
+
         ensure_model_latest_opset(model)
         opset_standard = helper.make_opsetid("", LATEST_OPSET)
         opset_custom = helper.make_opsetid("custom.pytorch", 1)
 
-        if formal_inputs and formal_inputs == ["h", "gate_in", "x"]:
+        if formal_inputs == ["h", "gate_in", "x"]:
             sig_node = helper.make_node("Sigmoid", inputs=["gate_in"], outputs=["t"])
             c_node = helper.make_node(
                 "Constant",
@@ -584,12 +686,42 @@ class MacroBlockSynthesizer(CompilerPass):
                 opset_imports=[opset_standard],
                 doc_string="Highway Transform & Carry Block",
             )
+        elif len(formal_inputs) == 5:
+            lh = helper.make_node("Linear", inputs=["x", "wh", "bh"], outputs=["h_raw"], domain=domain)
+            act = helper.make_node("Relu", inputs=["h_raw"], outputs=["h"])
+            lt = helper.make_node("Linear", inputs=["x", "wt", "bt"], outputs=["t_raw"], domain=domain)
+            sig = helper.make_node("Sigmoid", inputs=["t_raw"], outputs=["t"])
+            c1 = helper.make_node(
+                "Constant",
+                inputs=[],
+                outputs=["one"],
+                value=helper.make_tensor("one", onnx.TensorProto.FLOAT, [1], [1.0]),
+            )
+            sub = helper.make_node("Sub", inputs=["one", "t"], outputs=["omt"])
+            m1 = helper.make_node("Mul", inputs=["h", "t"], outputs=["term1"])
+            m2 = helper.make_node("Mul", inputs=["x", "omt"], outputs=["term2"])
+            add = helper.make_node("Add", inputs=["term1", "term2"], outputs=["y"])
+
+            func = helper.make_function(
+                domain=domain,
+                fname=func_name,
+                inputs=["x", "wh", "bh", "wt", "bt"],
+                outputs=["y"],
+                nodes=[lh, act, lt, sig, c1, sub, m1, m2, add],
+                opset_imports=[opset_standard, opset_custom],
+                doc_string="Formal Highway Block with Biases (H * T + x * (1 - T))",
+            )
         else:
             lh = helper.make_node("Linear", inputs=["x", "wh"], outputs=["h_raw"], domain=domain)
             act = helper.make_node("Relu", inputs=["h_raw"], outputs=["h"])
             lt = helper.make_node("Linear", inputs=["x", "wt"], outputs=["t_raw"], domain=domain)
             sig = helper.make_node("Sigmoid", inputs=["t_raw"], outputs=["t"])
-            c1 = helper.make_node("Constant", inputs=[], outputs=["one"], value_float=1.0)
+            c1 = helper.make_node(
+                "Constant",
+                inputs=[],
+                outputs=["one"],
+                value=helper.make_tensor("one", onnx.TensorProto.FLOAT, [1], [1.0]),
+            )
             sub = helper.make_node("Sub", inputs=["one", "t"], outputs=["omt"])
             m1 = helper.make_node("Mul", inputs=["h", "t"], outputs=["term1"])
             m2 = helper.make_node("Mul", inputs=["x", "omt"], outputs=["term2"])
@@ -662,9 +794,17 @@ class MacroBlockSynthesizer(CompilerPass):
                     nodes_to_drop.add(n_m.name)
 
             se_inputs = [x_node.output[0] if hasattr(x_node, "output") else str(x_node)]
-            for fc in (fc1_node, fc2_node):
-                if len(fc.input) > 1:
-                    se_inputs.append(fc.input[1])
+            has_b1 = fc1_node and len(fc1_node.input) > 2 and fc1_node.input[2]
+            has_b2 = fc2_node and len(fc2_node.input) > 2 and fc2_node.input[2]
+            if has_b1 or has_b2:
+                se_inputs.append(fc1_node.input[1])
+                se_inputs.append(fc1_node.input[2] if has_b1 else "")
+                se_inputs.append(fc2_node.input[1])
+                se_inputs.append(fc2_node.input[2] if has_b2 else "")
+            else:
+                for fc in (fc1_node, fc2_node):
+                    if len(fc.input) > 1:
+                        se_inputs.append(fc.input[1])
 
             se_node = helper.make_node(
                 rule.action.op_type,
@@ -686,27 +826,48 @@ class MacroBlockSynthesizer(CompilerPass):
         log.info("SqueezeExcitation Fusion: Fused %d instances", count)
         return ShapeCanonicalizer().apply_dead_code_elimination(model)
 
-    def _attach_se_function_def(self, model: onnx.ModelProto) -> None:
+    def _attach_se_function_def(
+        self, model: onnx.ModelProto, formal_inputs: list[str] | None = None
+    ) -> None:
         """Attach formal ONNX FunctionProto definition for SqueezeExcitation."""
         func_name = "SqueezeExcitation"
         domain = "custom.pytorch"
-        if any(f.name == func_name and f.domain == domain for f in model.functions):
-            return
+        if formal_inputs is None:
+            se_nodes = [n for n in model.graph.node if n.op_type == "SqueezeExcitation"]
+            if se_nodes and len(se_nodes[0].input) == 5:
+                formal_inputs = ["x", "w1", "b1", "w2", "b2"]
+            else:
+                formal_inputs = ["x", "w1", "w2"]
+
+        expected_arity = len(formal_inputs)
+        surviving = [f for f in model.functions if not (f.name == func_name and f.domain == domain)]
+        if len(surviving) < len(model.functions):
+            existing = [f for f in model.functions if f.name == func_name and f.domain == domain][0]
+            if len(existing.input) == expected_arity:
+                return
+            del model.functions[:]
+            model.functions.extend(surviving)
+
         ensure_model_latest_opset(model)
         opset_standard = helper.make_opsetid("", LATEST_OPSET)
         opset_custom = helper.make_opsetid("custom.pytorch", 1)
 
         gap = helper.make_node("GlobalAveragePool", inputs=["x"], outputs=["pooled"])
-        fc1 = helper.make_node("Linear", inputs=["pooled", "w1"], outputs=["fc1_out"], domain=domain)
-        act = helper.make_node("Relu", inputs=["fc1_out"], outputs=["act_out"])
-        fc2 = helper.make_node("Linear", inputs=["act_out", "w2"], outputs=["fc2_out"], domain=domain)
+        if len(formal_inputs) == 5:
+            fc1 = helper.make_node("Linear", inputs=["pooled", "w1", "b1"], outputs=["fc1_out"], domain=domain)
+            act = helper.make_node("Relu", inputs=["fc1_out"], outputs=["act_out"])
+            fc2 = helper.make_node("Linear", inputs=["act_out", "w2", "b2"], outputs=["fc2_out"], domain=domain)
+        else:
+            fc1 = helper.make_node("Linear", inputs=["pooled", "w1"], outputs=["fc1_out"], domain=domain)
+            act = helper.make_node("Relu", inputs=["fc1_out"], outputs=["act_out"])
+            fc2 = helper.make_node("Linear", inputs=["act_out", "w2"], outputs=["fc2_out"], domain=domain)
         sig = helper.make_node("Sigmoid", inputs=["fc2_out"], outputs=["scale"])
         mul = helper.make_node("Mul", inputs=["x", "scale"], outputs=["y"])
 
         func = helper.make_function(
             domain=domain,
             fname=func_name,
-            inputs=["x", "w1", "w2"],
+            inputs=formal_inputs,
             outputs=["y"],
             nodes=[gap, fc1, act, fc2, sig, mul],
             opset_imports=[opset_standard, opset_custom],
@@ -720,22 +881,64 @@ class MacroBlockSynthesizer(CompilerPass):
     def apply_preactivation_resnet_fusion(
         self, model: onnx.ModelProto, mode: str = "function_proto"
     ) -> onnx.ModelProto:
-        """Fuse Pre-Activation ResNet blocks: BN -> Conv -> ReLU -> BN -> Conv + Residual -> ReLU."""
+        """Fuse Pre-Activation ResNet blocks: BN -> Conv -> ReLU -> BN -> Conv + Residual (Add) -> (optional ReLU)."""
         rule = self.load_rule("preactivation_resnet_fusion")
         graph = model.graph
 
-        x = Pattern.any().capture("x")
-        bn1 = Pattern.op("BatchNormalization", x).capture("bn1")
-        conv1 = Pattern.op("Conv", bn1).capture("conv1")
-        relu1 = Pattern.op("Relu", conv1).capture("relu1")
-        bn2 = Pattern.op("BatchNormalization", relu1).capture("bn2")
-        conv2 = Pattern.op("Conv", bn2).capture("conv2")
-        add = (conv2 + x).capture("add")
-        relu2 = Pattern.op("Relu", add).capture("relu2")
+        producer_map: dict[str, onnx.NodeProto] = {}
+        consumer_map: dict[str, list[onnx.NodeProto]] = collections.defaultdict(list)
+        for n in graph.node:
+            for out in n.output:
+                if out:
+                    producer_map[out] = n
+            for inp in n.input:
+                if inp:
+                    consumer_map[inp].append(n)
+        graph_outputs = {out.name for out in graph.output}
 
-        detector = PatternDetector(model)
-        matches = detector.find_all(relu2)
-        if not matches:
+        matched_blocks = []
+        used_nodes: set[str] = set()
+
+        for add_node in graph.node:
+            if add_node.op_type != "Add" or len(add_node.input) < 2:
+                continue
+            if (add_node.name and add_node.name in used_nodes) or id(add_node) in used_nodes:
+                continue
+
+            in_a, in_b = add_node.input[0], add_node.input[1]
+            found = False
+            for f_out, x_in in ((in_a, in_b), (in_b, in_a)):
+                conv2 = producer_map.get(f_out)
+                if not conv2 or conv2.op_type != "Conv" or not conv2.input:
+                    continue
+                bn2 = producer_map.get(conv2.input[0])
+                if not bn2 or bn2.op_type != "BatchNormalization" or not bn2.input:
+                    continue
+                relu1 = producer_map.get(bn2.input[0])
+                if not relu1 or relu1.op_type != "Relu" or not relu1.input:
+                    continue
+                conv1 = producer_map.get(relu1.input[0])
+                if not conv1 or conv1.op_type != "Conv" or not conv1.input:
+                    continue
+                bn1 = producer_map.get(conv1.input[0])
+                if not bn1 or bn1.op_type != "BatchNormalization" or not bn1.input:
+                    continue
+                if bn1.input[0] != x_in:
+                    continue
+
+                # Safety check: intermediate outputs cannot be external graph outputs
+                if any(t in graph_outputs for t in (conv1.output[0], relu1.output[0], bn2.output[0], conv2.output[0])):
+                    continue
+
+                matched_blocks.append((bn1, conv1, relu1, bn2, conv2, add_node))
+                for sn in (bn1, conv1, relu1, bn2, conv2, add_node):
+                    if sn.name:
+                        used_nodes.add(sn.name)
+                    used_nodes.add(id(sn))
+                found = True
+                break
+
+        if not matched_blocks:
             return model
 
         _ensure_custom_domain(model, rule.action.domain)
@@ -743,21 +946,21 @@ class MacroBlockSynthesizer(CompilerPass):
         new_nodes: list[onnx.NodeProto] = []
         count = 0
 
-        for match in matches:
-            relu2_node = match.bindings.get("relu2")
-            add_node = match.bindings.get("add")
-            conv1_node = match.bindings.get("conv1")
-            relu1_node = match.bindings.get("relu1")
-            bn1_node = match.bindings.get("bn1")
-            bn2_node = match.bindings.get("bn2")
-            conv2_node = match.bindings.get("conv2")
-            x_val = match.bindings.get("x")
-            if not relu2_node or not conv1_node or not conv2_node:
-                continue
+        for bn1_node, conv1_node, relu1_node, bn2_node, conv2_node, add_node in matched_blocks:
+            # Check if add_node output is consumed by an optional Relu
+            relu2_node = None
+            add_consumers = consumer_map.get(add_node.output[0], [])
+            if len(add_consumers) == 1 and add_consumers[0].op_type == "Relu" and add_node.output[0] not in graph_outputs:
+                relu2_node = add_consumers[0]
 
             count += 1
-            # Drop ONLY internal block nodes, NOT the upstream producer 'x'
-            sub_nodes = [bn1_node, conv1_node, relu1_node, bn2_node, conv2_node, add_node, relu2_node]
+            if relu2_node:
+                sub_nodes = [bn1_node, conv1_node, relu1_node, bn2_node, conv2_node, add_node, relu2_node]
+                external_outputs = [relu2_node.output[0]]
+            else:
+                sub_nodes = [bn1_node, conv1_node, relu1_node, bn2_node, conv2_node, add_node]
+                external_outputs = [add_node.output[0]]
+
             for sn in sub_nodes:
                 if sn and hasattr(sn, "name"):
                     nodes_to_drop.add(sn.name)
@@ -768,7 +971,6 @@ class MacroBlockSynthesizer(CompilerPass):
                 for inp in sn.input:
                     if inp and inp not in internal_producers and inp not in external_inputs:
                         external_inputs.append(inp)
-            external_outputs = [relu2_node.output[0]]
 
             fp = compute_subgraph_fingerprint(sub_nodes, external_inputs, external_outputs)
             op_type = build_monomorphized_op_type(rule.action.op_type, fingerprint=fp)
@@ -787,11 +989,12 @@ class MacroBlockSynthesizer(CompilerPass):
                     doc_string=f"Formal Pre-Activation ResNet Residual Block ({op_type})",
                 )
 
+            exit_node = relu2_node if relu2_node else add_node
             res_node = helper.make_node(
                 op_type,
                 inputs=external_inputs,
                 outputs=external_outputs,
-                name=f"{relu2_node.name}_fused_{rule.rule_id}",
+                name=f"{exit_node.name}_fused_{rule.rule_id}",
                 domain=rule.action.domain,
                 doc_string=rule.description,
             )
@@ -1007,7 +1210,17 @@ class MacroBlockSynthesizer(CompilerPass):
 
                 q_root = _find_root(sdpa_node.input[0])
                 k_root = _find_root(sdpa_node.input[1])
-                if any("past" in str(inp) for inp in sdpa_node.input) or any("Concat" in str(inp) for inp in sdpa_node.input[1:]):
+                # Check structurally if K or V input comes from a KV cache Concat node
+                is_stateful = False
+                for k_or_v_inp in sdpa_node.input[1:3]:
+                    p = node_map.get(k_or_v_inp)
+                    while p and p.op_type in ("Transpose", "Reshape", "Identity", "Unsqueeze", "Squeeze") and p.input:
+                        p = node_map.get(p.input[0])
+                    if p and p.op_type == "Concat":
+                        is_stateful = True
+                        break
+
+                if is_stateful:
                     target_op = "StatefulAttention"
                 elif q_root != k_root:
                     target_op = "CrossAttention"
@@ -1027,35 +1240,67 @@ class MacroBlockSynthesizer(CompilerPass):
 
         _replace_nodes_topologically(model, nodes_to_drop, new_nodes)
         if mode == "function_proto":
-            self._attach_mha_composite_function_def(model)
+            sample_inp = list(new_nodes[0].input) if new_nodes else None
+            self._attach_mha_composite_function_def(model, sample_inputs=sample_inp)
 
         log.info("MultiHeadAttention Composite Fusion: Fused %d instances", count)
         return ShapeCanonicalizer().apply_dead_code_elimination(model)
 
-    def _attach_mha_composite_function_def(self, model: onnx.ModelProto) -> None:
-        """Attach formal ONNX FunctionProto definition for MultiHeadAttention."""
+    def _attach_mha_composite_function_def(
+        self, model: onnx.ModelProto, sample_inputs: list[str] | None = None
+    ) -> None:
+        """Attach formal ONNX FunctionProto definition for MultiHeadAttention matching fused arity."""
         func_name = "MultiHeadAttention"
         domain = "custom.pytorch"
-        if any(f.name == func_name and f.domain == domain for f in model.functions):
-            return
+        arity = len(sample_inputs) if sample_inputs else 4
+
+        surviving = [f for f in model.functions if not (f.name == func_name and f.domain == domain)]
+        if len(surviving) < len(model.functions):
+            existing = [f for f in model.functions if f.name == func_name and f.domain == domain][0]
+            if len(existing.input) == arity:
+                return
+            del model.functions[:]
+            model.functions.extend(surviving)
+
         ensure_model_latest_opset(model)
         opset_standard = helper.make_opsetid("", LATEST_OPSET)
         opset_custom = helper.make_opsetid("custom.pytorch", 1)
 
-        qkv = helper.make_node("Linear", inputs=["x", "w_qkv"], outputs=["qkv_out"], domain=domain)
-        sq = helper.make_node("SplitQKV", inputs=["qkv_out"], outputs=["q", "k", "v"], domain=domain)
-        sdpa = helper.make_node("SDPA", inputs=["q", "k", "v"], outputs=["sdpa_out"], domain=domain)
-        mh = helper.make_node("MergeHeads", inputs=["sdpa_out"], outputs=["mh_out"], domain=domain)
-        lin_out = helper.make_node("Linear", inputs=["mh_out", "w_out"], outputs=["y"], domain=domain)
+        if arity <= 3:
+            qkv = helper.make_node("Linear", inputs=["x", "w_qkv"], outputs=["qkv_out"], domain=domain)
+            sq = helper.make_node("SplitQKV", inputs=["qkv_out"], outputs=["q", "k", "v"], domain=domain)
+            sdpa = helper.make_node("ScaledDotProductAttention", inputs=["q", "k", "v"], outputs=["sdpa_out"], domain=domain)
+            mh = helper.make_node("MergeHeads", inputs=["sdpa_out"], outputs=["mh_out"], domain=domain)
+            lin_out = helper.make_node("Linear", inputs=["mh_out", "w_out"], outputs=["y"], domain=domain)
+            formal_inputs = ["x", "w_qkv", "w_out"]
+            nodes = [qkv, sq, sdpa, mh, lin_out]
+        elif arity == 4:
+            sdpa = helper.make_node("ScaledDotProductAttention", inputs=["q", "k", "v"], outputs=["sdpa_out"], domain=domain)
+            mh = helper.make_node("MergeHeads", inputs=["sdpa_out"], outputs=["mh_out"], domain=domain)
+            lin_out = helper.make_node("Linear", inputs=["mh_out", "w_out"], outputs=["y"], domain=domain)
+            formal_inputs = ["q", "k", "v", "w_out"]
+            nodes = [sdpa, mh, lin_out]
+        elif arity == 5:
+            formal_inputs = ["q", "k", "v", "mask", "w_out"]
+            sdpa = helper.make_node("ScaledDotProductAttention", inputs=["q", "k", "v", "mask"], outputs=["sdpa_out"], domain=domain)
+            mh = helper.make_node("MergeHeads", inputs=["sdpa_out"], outputs=["mh_out"], domain=domain)
+            lin_out = helper.make_node("Linear", inputs=["mh_out", "w_out"], outputs=["y"], domain=domain)
+            nodes = [sdpa, mh, lin_out]
+        else:
+            formal_inputs = ["q", "k", "v", "mask", "w_out", "b_out"]
+            sdpa = helper.make_node("ScaledDotProductAttention", inputs=["q", "k", "v", "mask"], outputs=["sdpa_out"], domain=domain)
+            mh = helper.make_node("MergeHeads", inputs=["sdpa_out"], outputs=["mh_out"], domain=domain)
+            lin_out = helper.make_node("Linear", inputs=["mh_out", "w_out", "b_out"], outputs=["y"], domain=domain)
+            nodes = [sdpa, mh, lin_out]
 
         func = helper.make_function(
             domain=domain,
             fname=func_name,
-            inputs=["x", "w_qkv", "w_out"],
+            inputs=formal_inputs,
             outputs=["y"],
-            nodes=[qkv, sq, sdpa, mh, lin_out],
+            nodes=nodes,
             opset_imports=[opset_standard, opset_custom],
-            doc_string="Formal Multi-Head Attention unit with SplitQKV and MergeHeads",
+            doc_string="Formal Multi-Head Attention unit with MergeHeads and Linear projection",
         )
         model.functions.append(func)
 
@@ -1637,51 +1882,47 @@ class MacroBlockSynthesizer(CompilerPass):
             weight_gather_outs = {wn.output[0] for wn in weight_gathers if wn.output}
 
             cascade_adds: list[onnx.NodeProto] = []
-            remaining_gathers = set(weight_gather_outs)
+            active_terms = set(weight_gather_outs)
 
-            # Find the initial Add combining two embedding gathers
-            first_adds = [
-                n for n in graph.node
-                if n.op_type == "Add"
-                and len(n.input) >= 2
-                and n.input[0] in remaining_gathers
-                and n.input[1] in remaining_gathers
-            ]
-            if not first_adds:
+            # Bottom-up reduction of Add tree (supports linear chains, balanced binary trees, arbitrary DAGs)
+            progress = True
+            used_adds = set()
+            while progress and len(active_terms) > 1:
+                progress = False
+                for n in graph.node:
+                    if id(n) not in used_adds and n.op_type == "Add" and len(n.input) >= 2:
+                        in0, in1 = n.input[0], n.input[1]
+                        if in0 in active_terms and in1 in active_terms:
+                            cascade_adds.append(n)
+                            used_adds.add(id(n))
+                            active_terms.discard(in0)
+                            active_terms.discard(in1)
+                            active_terms.add(n.output[0])
+                            progress = True
+                            break
+
+            if len(active_terms) != 1 or len(cascade_adds) < len(weight_gather_outs) - 1:
                 continue
 
-            curr_add = first_adds[0]
-            cascade_adds.append(curr_add)
-            remaining_gathers.discard(curr_add.input[0])
-            remaining_gathers.discard(curr_add.input[1])
-            accum_t = curr_add.output[0]
+            accum_t = list(active_terms)[0]
 
-            while remaining_gathers:
-                next_add = next(
-                    (
-                        n for n in consumer_map.get(accum_t, [])
-                        if n.op_type == "Add" and any(inp in remaining_gathers for inp in n.input)
-                    ),
-                    None,
-                )
-                if not next_add:
-                    break
-                cascade_adds.append(next_add)
-                other_inp = next_add.input[0] if next_add.input[1] == accum_t else next_add.input[1]
-                remaining_gathers.discard(other_inp)
-                accum_t = next_add.output[0]
-
-            if remaining_gathers:
-                continue
-
-            # Check for optional positional encoding Add directly downstream
-            pe_add = next(
-                (
-                    n for n in consumer_map.get(accum_t, [])
-                    if n.op_type == "Add" and not any(k in n.name for k in ("layers", "blocks", "self_attn"))
-                ),
-                None,
-            )
+            # Check for optional positional encoding Add directly downstream.
+            # A positional encoding Add combines accum_t with a static/positional embedding
+            # (initializer, Constant, or Gather/Unsqueeze from a static table), NOT a dynamic
+            # hidden state from a transformer block (which would be a residual connection).
+            node_by_out = {out: n for n in graph.node for out in n.output}
+            init_names = {i.name for i in graph.initializer}
+            pe_add = None
+            for n in consumer_map.get(accum_t, []):
+                if n.op_type == "Add" and len(n.input) >= 2:
+                    other_inp = n.input[0] if n.input[1] == accum_t else n.input[1]
+                    if other_inp in init_names:
+                        pe_add = n
+                        break
+                    other_producer = node_by_out.get(other_inp)
+                    if other_producer and other_producer.op_type in ("Constant", "Gather", "Unsqueeze", "Reshape"):
+                        pe_add = n
+                        break
             if pe_add:
                 cascade_adds.append(pe_add)
                 accum_t = pe_add.output[0]
@@ -1853,17 +2094,17 @@ class MacroBlockSynthesizer(CompilerPass):
         for term_node in terminal_nodes:
             prev_nodes: list[onnx.NodeProto] = []
             curr: onnx.NodeProto | None = term_node
-            if curr.op_type == "Squeeze":
+            if curr.op_type in ("Squeeze", "ReduceMean"):
                 data_inp = curr.input[0]
                 lin_prod = next((n for n in graph.node if data_inp in n.output), None)
                 if not lin_prod:
                     continue
                 prev_nodes.append(curr)
-                squeeze_consts = [
+                extra_consts = [
                     n for n in graph.node
                     if n.op_type == "Constant" and len(curr.input) > 1 and curr.input[1] in n.output
                 ]
-                prev_nodes.extend(squeeze_consts)
+                prev_nodes.extend(extra_consts)
                 curr = lin_prod
 
             norm_node: onnx.NodeProto | None = None
@@ -1871,6 +2112,10 @@ class MacroBlockSynthesizer(CompilerPass):
                 prev_nodes.append(curr)
                 norm_inp = curr.input[0]
                 norm_cand = next((n for n in graph.node if norm_inp in n.output), None)
+                if norm_cand and norm_cand.op_type == "ReduceMean":
+                    prev_nodes.append(norm_cand)
+                    norm_inp = norm_cand.input[0]
+                    norm_cand = next((n for n in graph.node if norm_inp in n.output), None)
                 if norm_cand and "Norm" in norm_cand.op_type:
                     norm_node = norm_cand
                     prev_nodes.append(norm_node)
@@ -1882,7 +2127,12 @@ class MacroBlockSynthesizer(CompilerPass):
                 )
                 if mm_cand:
                     prev_nodes.append(mm_cand)
-                    norm_cand = next((n for n in graph.node if mm_cand.input[0] in n.output), None)
+                    norm_inp = mm_cand.input[0]
+                    norm_cand = next((n for n in graph.node if norm_inp in n.output), None)
+                    if norm_cand and norm_cand.op_type == "ReduceMean":
+                        prev_nodes.append(norm_cand)
+                        norm_inp = norm_cand.input[0]
+                        norm_cand = next((n for n in graph.node if norm_inp in n.output), None)
                     if norm_cand and "Norm" in norm_cand.op_type:
                         norm_node = norm_cand
                         prev_nodes.append(norm_node)
@@ -1946,29 +2196,54 @@ class MacroBlockSynthesizer(CompilerPass):
     def apply_multi_task_audio_head_fusion(
         self, model: onnx.ModelProto, mode: str = "function_proto"
     ) -> onnx.ModelProto:
-        """Fuse post-body dual-branch feature extractor and prediction heads into MultiTaskDecoderHead."""
+        """Fuse post-body multi-branch feature extractor and prediction heads into MultiTaskDecoderHead."""
         graph = model.graph
-        graph_outs = {o.name for o in graph.output}
-        target_heads = {"inst_logp", "perc_prob", "vol_logp"}
-        if not target_heads.issubset(graph_outs):
+        if len(graph.output) < 2:
             return model
 
         rule = self.load_rule("multi_task_audio_head_fusion")
 
-        # Find entry tensor feeding conv_pitched and conv_perc
-        conv_pitched = next(
-            (
-                n
-                for n in graph.node
-                if "conv_pitched" in n.name
-                and n.op_type in ("BatchNormalization", "Conv")
-            ),
-            None,
-        )
-        if not conv_pitched or not conv_pitched.input:
+        consumer_map: dict[str, list[onnx.NodeProto]] = collections.defaultdict(list)
+        for n in graph.node:
+            for inp in n.input:
+                consumer_map[inp].append(n)
+
+        # Structurally locate the trunk branch point feeding multi-branch feature extractors
+        # (Conv, BatchNormalization, Linear, Gemm, MatMul, InstanceNormalization, LayerNormalization)
+        # whose forward transitive closure reaches >= 2 graph outputs (zero string matching).
+        candidate_entry_tensors: list[tuple[str, list[str]]] = []
+        for out_t, consumers in consumer_map.items():
+            extractor_branches = [
+                c for c in consumers
+                if c.op_type in (
+                    "Conv", "BatchNormalization", "Linear", "Gemm", "MatMul",
+                    "InstanceNormalization", "LayerNormalization", "Relu", "Gelu"
+                )
+            ]
+            if len(extractor_branches) >= 2:
+                visited = {out_t}
+                q = [out_t]
+                while q:
+                    curr = q.pop(0)
+                    for c in consumer_map.get(curr, []):
+                        for co in c.output:
+                            if co not in visited:
+                                visited.add(co)
+                                q.append(co)
+                reached_outs = [o.name for o in graph.output if o.name in visited]
+                if len(reached_outs) >= 2:
+                    candidate_entry_tensors.append((out_t, reached_outs))
+
+        if not candidate_entry_tensors:
             return model
 
-        entry_tensor = conv_pitched.input[0]
+        # Select topologically earliest branch point that covers the maximum number of outputs
+        node_order = {out: idx for idx, n in enumerate(graph.node) for out in n.output}
+        candidate_entry_tensors.sort(
+            key=lambda item: (-len(item[1]), node_order.get(item[0], 999999))
+        )
+        entry_tensor, target_outputs = candidate_entry_tensors[0]
+
         visited = {entry_tensor}
         post_nodes: list[onnx.NodeProto] = []
         nodes_to_drop: set[str] = set()
@@ -2015,7 +2290,7 @@ class MacroBlockSynthesizer(CompilerPass):
         fused_node = helper.make_node(
             rule.action.op_type,
             inputs=external_inputs,
-            outputs=["inst_logp", "perc_prob", "vol_logp"],
+            outputs=target_outputs,
             name="multi_task_decoder_head",
             domain=rule.action.domain,
             doc_string=rule.description,
@@ -2034,10 +2309,10 @@ class MacroBlockSynthesizer(CompilerPass):
                 domain=rule.action.domain,
                 fname=rule.action.op_type,
                 inputs=external_inputs,
-                outputs=["inst_logp", "perc_prob", "vol_logp"],
+                outputs=target_outputs,
                 nodes=all_fn_nodes,
                 opset_imports=[opset_standard, opset_custom],
-                doc_string="Formal Multi-Task Pitch, Percussion, and Volume Decoder Head Composite",
+                doc_string="Formal Multi-Task Decoder Head Composite",
             )
             model.functions.append(func)
 
@@ -2254,44 +2529,98 @@ class MacroBlockSynthesizer(CompilerPass):
         if not topk_nodes:
             return model
 
-        node_by_output = {out: n for n in graph.node for out in n.output}
-        graph_outputs = {o.name for o in graph.output}
-        for out_name in graph_outputs:
-            out_producer = node_by_output.get(out_name)
-            if out_producer and out_producer.op_type == "Add":
-                sub_nodes = list(graph.node)
-                internal_producers = {out for sn in sub_nodes for out in sn.output if out}
-                external_inputs = []
-                for sn in sub_nodes:
-                    for inp in sn.input:
-                        if inp and inp not in internal_producers and inp not in external_inputs:
-                            external_inputs.append(inp)
+        node_by_output = {out: n for n in graph.node for out in n.output if out}
+        consumer_map = collections.defaultdict(list)
+        for n in graph.node:
+            for inp in n.input:
+                consumer_map[inp].append(n)
 
-                if mode == "function_proto":
-                    canon_nodes, f_in, f_out = _canonicalize_subgraph_nodes(
-                        sub_nodes, external_inputs, [out_name]
-                    )
-                    ensure_specialized_function_proto(
-                        model,
-                        domain="custom.pytorch",
-                        fname="MoEBlock",
-                        formal_inputs=f_in,
-                        formal_outputs=f_out,
-                        body_nodes=canon_nodes,
-                        doc_string="Formal Mixture of Experts (MoE) Block",
-                    )
+        new_nodes: list[onnx.NodeProto] = []
+        all_nodes_to_drop: set[str | int] = set()
 
-                moe_node = helper.make_node(
-                    "MoEBlock",
-                    inputs=external_inputs,
-                    outputs=[out_name],
-                    name=f"moe_block_{out_name}",
-                    domain="custom.pytorch",
+        for topk in topk_nodes:
+            # Find the combine node downstream from TopK
+            frontier = list(topk.output)
+            visited_tensors = set(frontier)
+            combine_cand = None
+            downstream_nodes: list[onnx.NodeProto] = []
+            while frontier:
+                curr_t = frontier.pop(0)
+                for c_node in consumer_map.get(curr_t, []):
+                    if c_node not in downstream_nodes:
+                        downstream_nodes.append(c_node)
+                        for c_out in c_node.output:
+                            if c_out and c_out not in visited_tensors:
+                                visited_tensors.add(c_out)
+                                frontier.append(c_out)
+                    if c_node.op_type in ("Add", "ReduceSum") and len(downstream_nodes) >= 2:
+                        combine_cand = c_node
+
+            if not combine_cand:
+                continue
+
+            # Trace backward from combine_cand to gather bounded subgraph nodes
+            sub_nodes: list[onnx.NodeProto] = []
+            b_visited: set[int] = set()
+            b_queue = [combine_cand]
+            while b_queue:
+                cn = b_queue.pop(0)
+                if id(cn) in b_visited:
+                    continue
+                b_visited.add(id(cn))
+                sub_nodes.append(cn)
+                for inp in cn.input:
+                    if inp in node_by_output:
+                        parent = node_by_output[inp]
+                        if parent != topk and id(parent) not in b_visited:
+                            if parent in downstream_nodes or any(id(parent) == id(dn) for dn in downstream_nodes):
+                                b_queue.append(parent)
+
+            if topk not in sub_nodes:
+                sub_nodes.append(topk)
+
+            # Never wipe the entire graph
+            if len(sub_nodes) >= len(graph.node) or len(sub_nodes) <= 1:
+                continue
+
+            internal_producers = {out for sn in sub_nodes for out in sn.output if out}
+            external_inputs = []
+            for sn in sub_nodes:
+                for inp in sn.input:
+                    if inp and inp not in internal_producers and inp not in external_inputs:
+                        external_inputs.append(inp)
+
+            out_name = combine_cand.output[0]
+            if mode == "function_proto":
+                canon_nodes, f_in, f_out = _canonicalize_subgraph_nodes(
+                    sub_nodes, external_inputs, [out_name]
                 )
-                del graph.node[:]
-                graph.node.append(moe_node)
-                return ShapeCanonicalizer().apply_dead_code_elimination(model)
-        return model
+                ensure_specialized_function_proto(
+                    model,
+                    domain="custom.pytorch",
+                    fname="MoEBlock",
+                    formal_inputs=f_in,
+                    formal_outputs=f_out,
+                    body_nodes=canon_nodes,
+                    doc_string="Formal Mixture of Experts (MoE) Block",
+                )
+
+            moe_node = helper.make_node(
+                "MoEBlock",
+                inputs=external_inputs,
+                outputs=[out_name],
+                name=f"moe_block_{out_name}",
+                domain="custom.pytorch",
+            )
+            new_nodes.append(moe_node)
+            for sn in sub_nodes:
+                all_nodes_to_drop.add(sn.name if sn.name else id(sn))
+
+        if not new_nodes:
+            return model
+
+        _replace_nodes_topologically(model, all_nodes_to_drop, new_nodes)
+        return ShapeCanonicalizer().apply_dead_code_elimination(model)
 
     # -------------------------------------------------------------------------
     # 13. Differential Transformer Dual-Softmax Subtraction Fusion
@@ -2360,14 +2689,53 @@ class MacroBlockSynthesizer(CompilerPass):
     ) -> onnx.ModelProto:
         """Fuse selective state space model recurrent loop into MambaSSM."""
         graph = model.graph
+        ssm_nodes = [n for n in graph.node if n.op_type in ("SelectiveScan", "Mamba", "SSMScan")]
         exp_nodes = [n for n in graph.node if n.op_type == "Exp"]
-        softplus_nodes = [n for n in graph.node if n.op_type in ("Softplus", "Mul", "Add")]
-        if not exp_nodes or len(graph.node) < 20 or len(softplus_nodes) < 10:
-            return model
+        softplus_nodes = [n for n in graph.node if n.op_type == "Softplus"]
+        concat_nodes = [n for n in graph.node if n.op_type == "Concat"]
 
-        graph_outputs = {o.name for o in graph.output}
-        for out_name in graph_outputs:
-            sub_nodes = list(graph.node)
+        if not ssm_nodes:
+            if not (softplus_nodes and exp_nodes and len(exp_nodes) >= 2 and concat_nodes):
+                return model
+            targets = concat_nodes
+        else:
+            targets = ssm_nodes
+
+        node_by_output = {out: n for n in graph.node for out in n.output if out}
+        consumer_map = collections.defaultdict(list)
+        for n in graph.node:
+            for inp in n.input:
+                consumer_map[inp].append(n)
+
+        new_nodes: list[onnx.NodeProto] = []
+        all_nodes_to_drop: set[str | int] = set()
+
+        for target in targets:
+            out_proj = None
+            for out in target.output:
+                for c in consumer_map.get(out, []):
+                    if c.op_type in ("Linear", "Gemm", "MatMul"):
+                        out_proj = c
+                        break
+                if out_proj:
+                    break
+            terminal_node = out_proj or target
+            out_name = terminal_node.output[0]
+
+            sub_nodes_dict = {id(terminal_node): terminal_node}
+            b_queue = list(terminal_node.input)
+            visited_tensors = set(b_queue)
+            while b_queue:
+                t = b_queue.pop(0)
+                p = node_by_output.get(t)
+                if p and id(p) not in sub_nodes_dict:
+                    sub_nodes_dict[id(p)] = p
+                    for inp in p.input:
+                        if inp not in visited_tensors:
+                            visited_tensors.add(inp)
+                            b_queue.append(inp)
+
+            sub_nodes = list(sub_nodes_dict.values())
             internal_producers = {out for sn in sub_nodes for out in sn.output if out}
             external_inputs = []
             for sn in sub_nodes:
@@ -2393,13 +2761,18 @@ class MacroBlockSynthesizer(CompilerPass):
                 "MambaSSM",
                 inputs=external_inputs,
                 outputs=[out_name],
-                name="fused_mamba_ssm",
+                name=f"fused_mamba_ssm_{out_name}",
                 domain="custom.pytorch",
             )
-            del graph.node[:]
-            graph.node.append(mamba_node)
-            return ShapeCanonicalizer().apply_dead_code_elimination(model)
-        return model
+            new_nodes.append(mamba_node)
+            for sn in sub_nodes:
+                all_nodes_to_drop.add(sn.name if sn.name else id(sn))
+
+        if not new_nodes:
+            return model
+
+        _replace_nodes_topologically(model, all_nodes_to_drop, new_nodes)
+        return ShapeCanonicalizer().apply_dead_code_elimination(model)
 
     # -------------------------------------------------------------------------
     # 15. Swin Shifted Window Attention & Cyclic Roll Fusion
@@ -2413,15 +2786,12 @@ class MacroBlockSynthesizer(CompilerPass):
         slice_nodes = [n for n in graph.node if n.op_type == "Slice"]
         concat_nodes = [n for n in graph.node if n.op_type == "Concat"]
 
-        # Swin 2D cyclic roll strictly decomposes into pairs of Slice + Concat per shifted dimension (dims 1 and 2),
-        # requiring rank-4 spatial tensors, at least 4 cyclic roll Concat ops (2 rolls forward, 2 reverse rolls),
-        # and slice inputs to those concats.
         has_4d_input = any(
             len(inp.type.tensor_type.shape.dim) == 4
             for inp in graph.input
             if inp.type.tensor_type.shape.dim
         )
-        if not sdpa_nodes or len(slice_nodes) < 6 or len(concat_nodes) < 4 or not has_4d_input:
+        if not sdpa_nodes or len(slice_nodes) < 4 or len(concat_nodes) < 2:
             return model
 
         slice_outs = {out for sn in slice_nodes for out in sn.output if out}
@@ -2432,9 +2802,75 @@ class MacroBlockSynthesizer(CompilerPass):
         if len(roll_concats) < 2:
             return model
 
-        graph_outputs = {o.name for o in graph.output}
-        for out_name in graph_outputs:
-            sub_nodes = list(graph.node)
+        node_by_output = {out: n for n in graph.node for out in n.output if out}
+        consumer_map = collections.defaultdict(list)
+        for n in graph.node:
+            for inp in n.input:
+                consumer_map[inp].append(n)
+
+        new_nodes: list[onnx.NodeProto] = []
+        all_nodes_to_drop: set[str | int] = set()
+
+        for sdpa in sdpa_nodes:
+            # Pre-roll backward search from sdpa
+            b_queue = list(sdpa.input)
+            visited_b = set(b_queue)
+            found_pre_rolls = []
+            while b_queue:
+                t = b_queue.pop(0)
+                p = node_by_output.get(t)
+                if p:
+                    if p in roll_concats:
+                        found_pre_rolls.append(p)
+                    for inp in p.input:
+                        if inp not in visited_b:
+                            visited_b.add(inp)
+                            b_queue.append(inp)
+
+            # Post-roll forward search from sdpa
+            f_queue = list(sdpa.output)
+            visited_f = set(f_queue)
+            found_post_rolls = []
+            while f_queue:
+                t = f_queue.pop(0)
+                for c in consumer_map.get(t, []):
+                    if c in roll_concats:
+                        found_post_rolls.append(c)
+                    for c_out in c.output:
+                        if c_out not in visited_f:
+                            visited_f.add(c_out)
+                            f_queue.append(c_out)
+
+            if not found_pre_rolls or not found_post_rolls:
+                continue
+
+            post_roll = found_post_rolls[-1]
+            out_proj = None
+            for out in post_roll.output:
+                for c in consumer_map.get(out, []):
+                    if c.op_type in ("Linear", "Gemm", "MatMul"):
+                        out_proj = c
+                        break
+                if out_proj:
+                    break
+
+            terminal_node = out_proj or post_roll
+            out_name = terminal_node.output[0]
+
+            sub_nodes_dict = {id(terminal_node): terminal_node}
+            b_sub = list(terminal_node.input)
+            v_sub = set(b_sub)
+            while b_sub:
+                t = b_sub.pop(0)
+                p = node_by_output.get(t)
+                if p and id(p) not in sub_nodes_dict:
+                    sub_nodes_dict[id(p)] = p
+                    for inp in p.input:
+                        if inp not in v_sub:
+                            v_sub.add(inp)
+                            b_sub.append(inp)
+
+            sub_nodes = list(sub_nodes_dict.values())
             internal_producers = {out for sn in sub_nodes for out in sn.output if out}
             external_inputs = []
             for sn in sub_nodes:
@@ -2460,13 +2896,18 @@ class MacroBlockSynthesizer(CompilerPass):
                 "ShiftedWindowAttention",
                 inputs=external_inputs,
                 outputs=[out_name],
-                name="fused_swin_window_attn",
+                name=f"fused_swin_window_attn_{out_name}",
                 domain="custom.pytorch",
             )
-            del graph.node[:]
-            graph.node.append(swin_node)
-            return ShapeCanonicalizer().apply_dead_code_elimination(model)
-        return model
+            new_nodes.append(swin_node)
+            for sn in sub_nodes:
+                all_nodes_to_drop.add(sn.name if sn.name else id(sn))
+
+        if not new_nodes:
+            return model
+
+        _replace_nodes_topologically(model, all_nodes_to_drop, new_nodes)
+        return ShapeCanonicalizer().apply_dead_code_elimination(model)
 
     # -------------------------------------------------------------------------
     # 16. Vision Transformer (ViT) Patch Embedding & CLS Token Fusion
@@ -2479,7 +2920,7 @@ class MacroBlockSynthesizer(CompilerPass):
         conv_nodes = [n for n in graph.node if n.op_type == "Conv"]
         concat_nodes = [n for n in graph.node if n.op_type == "Concat"]
         add_nodes = [n for n in graph.node if n.op_type in ("Add", "SkipLayerNormalization")]
-        if not conv_nodes or not concat_nodes or not add_nodes:
+        if not conv_nodes or not add_nodes:
             return model
 
         vit_conv = None
@@ -2499,20 +2940,27 @@ class MacroBlockSynthesizer(CompilerPass):
             for inp in n.input:
                 consumer_map[inp].append(n)
 
+        # Forward traversal from vit_conv through layout/concat ops to find the positional embedding Add
         vit_add = None
-        for a in add_nodes:
-            if any("pos_embed" in inp or "position" in inp for inp in a.input):
-                vit_add = a
-                break
-        if not vit_add:
-            for a in add_nodes:
-                for inp in a.input:
-                    p = node_by_output.get(inp)
-                    if p and p.op_type == "Concat":
-                        vit_add = a
+        frontier = {vit_conv.output[0]}
+        visited_tensors = set(frontier)
+        for _ in range(6):  # Up to 6 layout hops (e.g. Conv -> Reshape -> Transpose -> Concat -> Add)
+            next_frontier = set()
+            for t_name in frontier:
+                for c in consumer_map.get(t_name, []):
+                    if c.op_type in ("Add", "SkipLayerNormalization"):
+                        vit_add = c
                         break
+                    elif c.op_type in ("Reshape", "Transpose", "Flatten", "Unsqueeze", "Squeeze", "Identity", "Concat"):
+                        for out in c.output:
+                            if out not in visited_tensors:
+                                visited_tensors.add(out)
+                                next_frontier.add(out)
                 if vit_add:
                     break
+            if vit_add or not next_frontier:
+                break
+            frontier = next_frontier
 
         if not vit_add:
             return model
@@ -2597,9 +3045,64 @@ class MacroBlockSynthesizer(CompilerPass):
         if not mla_kv or not mha:
             return model
 
-        graph_outputs = {o.name for o in graph.output}
-        for out_name in graph_outputs:
-            sub_nodes = list(graph.node)
+        node_by_output = {out: n for n in graph.node for out in n.output if out}
+        consumer_map = collections.defaultdict(list)
+        for n in graph.node:
+            for inp in n.input:
+                consumer_map[inp].append(n)
+
+        new_nodes: list[onnx.NodeProto] = []
+        all_nodes_to_drop: set[str | int] = set()
+
+        for kv in mla_kv:
+            attn_node = None
+            queue = list(kv.output)
+            visited_tensors = set(queue)
+            while queue:
+                t = queue.pop(0)
+                for c in consumer_map.get(t, []):
+                    if c in mha:
+                        attn_node = c
+                        break
+                    for c_out in c.output:
+                        if c_out not in visited_tensors:
+                            visited_tensors.add(c_out)
+                            queue.append(c_out)
+                if attn_node:
+                    break
+
+            if not attn_node:
+                continue
+
+            out_proj = None
+            for out in attn_node.output:
+                for c in consumer_map.get(out, []):
+                    if c.op_type in ("Linear", "Gemm", "MatMul"):
+                        out_proj = c
+                        break
+                if out_proj:
+                    break
+
+            terminal_node = out_proj or attn_node
+            out_name = terminal_node.output[0]
+
+            root_input = kv.input[0] if kv.input else None
+            sub_nodes_dict = {id(terminal_node): terminal_node, id(kv): kv}
+            b_queue = list(terminal_node.input)
+            v_tensors = set(b_queue)
+            while b_queue:
+                t = b_queue.pop(0)
+                if root_input and t == root_input:
+                    continue
+                p = node_by_output.get(t)
+                if p and id(p) not in sub_nodes_dict:
+                    sub_nodes_dict[id(p)] = p
+                    for inp in p.input:
+                        if inp not in v_tensors:
+                            v_tensors.add(inp)
+                            b_queue.append(inp)
+
+            sub_nodes = list(sub_nodes_dict.values())
             internal_producers = {out for sn in sub_nodes for out in sn.output if out}
             external_inputs = []
             for sn in sub_nodes:
@@ -2625,13 +3128,18 @@ class MacroBlockSynthesizer(CompilerPass):
                 "MultiHeadLatentAttention",
                 inputs=external_inputs,
                 outputs=[out_name],
-                name="fused_multi_head_latent_attention",
+                name=f"fused_mla_{out_name}",
                 domain="custom.pytorch",
             )
-            del graph.node[:]
-            graph.node.append(mla_node)
-            return ShapeCanonicalizer().apply_dead_code_elimination(model)
-        return model
+            new_nodes.append(mla_node)
+            for sn in sub_nodes:
+                all_nodes_to_drop.add(sn.name if sn.name else id(sn))
+
+        if not new_nodes:
+            return model
+
+        _replace_nodes_topologically(model, all_nodes_to_drop, new_nodes)
+        return ShapeCanonicalizer().apply_dead_code_elimination(model)
 
     # -------------------------------------------------------------------------
     # 21. DynamicQuantLinear Fusion
@@ -2641,6 +3149,7 @@ class MacroBlockSynthesizer(CompilerPass):
     ) -> onnx.ModelProto:
         """Fuse DynamicQuantizeLinear -> DequantizeLinear -> MatMul [-> Add] into DynamicQuantLinear."""
         graph = model.graph
+        graph_outputs = {out.name for out in graph.output}
         consumer_map: dict[str, list[onnx.NodeProto]] = collections.defaultdict(list)
         for n in graph.node:
             for inp in n.input:
@@ -2663,65 +3172,71 @@ class MacroBlockSynthesizer(CompilerPass):
             act_dq_out = dq_act.output[0]
 
             mm_cands = [
-                c for c in consumer_map.get(act_dq_out, []) if c.op_type == "MatMul"
+                c for c in consumer_map.get(act_dq_out, [])
+                if c.op_type == "MatMul" and len(c.input) >= 2 and c.input[0] == act_dq_out
             ]
-            if not mm_cands or not mm_cands[0].output:
+            if not mm_cands:
                 continue
-            mm_node = mm_cands[0]
-            mm_out = mm_node.output[0]
 
-            if len(mm_node.input) < 2 or mm_node.input[0] != act_dq_out:
-                continue
-            w_input = mm_node.input[1]
+            fused_mm_count = 0
+            for mm_node in mm_cands:
+                mm_out = mm_node.output[0]
+                w_input = mm_node.input[1]
 
-            add_cands = [
-                c for c in consumer_map.get(mm_out, []) if c.op_type == "Add"
-            ]
-            add_node = (
-                add_cands[0]
-                if add_cands and len(consumer_map.get(mm_out, [])) == 1
-                else None
-            )
-
-            x_input = dql.input[0]
-            final_out = add_node.output[0] if add_node else mm_out
-            b_input = None
-            if add_node:
-                b_input = (
-                    add_node.input[1]
-                    if add_node.input[0] == mm_out
-                    else add_node.input[0]
+                add_cands = [
+                    c for c in consumer_map.get(mm_out, []) if c.op_type == "Add"
+                ]
+                add_node = (
+                    add_cands[0]
+                    if add_cands and len(consumer_map.get(mm_out, [])) == 1
+                    else None
                 )
 
-            inputs = [x_input, w_input]
-            if b_input:
-                inputs.append(b_input)
+                x_input = dql.input[0]
+                final_out = add_node.output[0] if add_node else mm_out
+                b_input = None
+                if add_node:
+                    b_input = (
+                        add_node.input[1]
+                        if add_node.input[0] == mm_out
+                        else add_node.input[0]
+                    )
 
-            fused_node = helper.make_node(
-                "DynamicQuantLinear",
-                inputs=inputs,
-                outputs=[final_out],
-                name=f"dynamic_quant_linear_{count}",
-                domain="custom.pytorch",
-            )
-            new_nodes.append(fused_node)
-            if len(consumer_map.get(q_out, [])) <= 1:
-                if dql.name:
-                    nodes_to_drop.add(dql.name)
-                nodes_to_drop.add(id(dql))
-            if len(consumer_map.get(act_dq_out, [])) <= 1:
+                inputs = [x_input, w_input]
+                if b_input:
+                    inputs.append(b_input)
+
+                fused_node = helper.make_node(
+                    "DynamicQuantLinear",
+                    inputs=inputs,
+                    outputs=[final_out],
+                    name=f"dynamic_quant_linear_{count}",
+                    domain="custom.pytorch",
+                )
+                new_nodes.append(fused_node)
+                if mm_node.name:
+                    nodes_to_drop.add(mm_node.name)
+                nodes_to_drop.add(id(mm_node))
+                if add_node:
+                    if add_node.name:
+                        nodes_to_drop.add(add_node.name)
+                    nodes_to_drop.add(id(add_node))
+                count += 1
+                fused_mm_count += 1
+
+            # Only drop dq_act if all its consumers have been fused!
+            all_dq_users = consumer_map.get(act_dq_out, [])
+            if len(all_dq_users) == fused_mm_count and act_dq_out not in graph_outputs:
                 if dq_act.name:
                     nodes_to_drop.add(dq_act.name)
                 nodes_to_drop.add(id(dq_act))
 
-            if mm_node.name:
-                nodes_to_drop.add(mm_node.name)
-            nodes_to_drop.add(id(mm_node))
-            if add_node:
-                if add_node.name:
-                    nodes_to_drop.add(add_node.name)
-                nodes_to_drop.add(id(add_node))
-            count += 1
+            # Only drop dql if all its consumers have been dropped!
+            all_dql_users = consumer_map.get(q_out, [])
+            if all((u.name in nodes_to_drop or id(u) in nodes_to_drop) for u in all_dql_users) and q_out not in graph_outputs:
+                if dql.name:
+                    nodes_to_drop.add(dql.name)
+                nodes_to_drop.add(id(dql))
 
         if not new_nodes:
             return model
@@ -2786,8 +3301,14 @@ class MacroBlockSynthesizer(CompilerPass):
         """Attach formal ONNX FunctionProto definition for DynamicQuantLinear."""
         func_name = "DynamicQuantLinear"
         domain = "custom.pytorch"
-        if any(f.name == func_name and f.domain == domain for f in model.functions):
-            return
+        expected_arity = 3 if has_biased else 2
+        surviving = [f for f in model.functions if not (f.name == func_name and f.domain == domain)]
+        if len(surviving) < len(model.functions):
+            existing = [f for f in model.functions if f.name == func_name and f.domain == domain][0]
+            if len(existing.input) == expected_arity:
+                return
+            del model.functions[:]
+            model.functions.extend(surviving)
 
         ensure_model_latest_opset(model)
         opset_standard = helper.make_opsetid("", LATEST_OPSET)

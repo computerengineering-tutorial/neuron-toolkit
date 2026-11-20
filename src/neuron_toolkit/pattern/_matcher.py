@@ -230,7 +230,7 @@ class MatchingMixin:
             return False
 
         snap = ctx.snapshot()
-        name = getattr(node, "name", f"node_{id(node)}")
+        name = getattr(node, "name", None) or f"node_{id(node)}"
         ctx.visited.add(name)
         used_inits: set[str] = set()
 
@@ -272,7 +272,7 @@ class MatchingMixin:
 
         # Fast path for standard 1 or 2 parent commutative inputs (avoids SciPy overhead)
         if len(actual_parents) <= 2 and len(non_const_pats) <= 2:
-            name = getattr(node, "name", f"node_{id(node)}")
+            name = getattr(node, "name", None) or f"node_{id(node)}"
             for perm in itertools.permutations(actual_parents, len(non_const_pats)):
                 mismatch = False
                 for p, pat in zip(perm, non_const_pats, strict=False):
@@ -300,7 +300,7 @@ class MatchingMixin:
             log.warning("Too many parents for commutative match, limiting search")
             actual_parents = actual_parents[:8]
 
-        name = getattr(node, "name", f"node_{id(node)}")
+        name = getattr(node, "name", None) or f"node_{id(node)}"
 
         # High-performance SciPy C-backed Maximum Bipartite Matching for 3+ parents
         with contextlib.suppress(Exception):
@@ -378,19 +378,14 @@ class MatchingMixin:
         return True
 
     def _get_parent_nodes(self, node: object, ctx: MatchContext) -> list[object | None]:
-        """Get the parent nodes for a given node, filtering out visited ones."""
+        """Get the parent nodes for a given node."""
         parents: list[object | None] = []
         node_inputs = getattr(node, "input", [])
         for inp in node_inputs:
             if not inp or inp in self._tensor_map:
                 parents.append(None)
                 continue
-            parent = self.output_to_node.get(inp)
-            p_name = getattr(parent, "name", f"node_{id(parent)}") if parent else None
-            if parent and p_name not in ctx.visited:
-                parents.append(parent)
-            else:
-                parents.append(None)
+            parents.append(self.output_to_node.get(inp))
         return parents
 
     def _match_init_const_node(

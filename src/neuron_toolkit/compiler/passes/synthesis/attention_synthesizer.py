@@ -23,7 +23,7 @@ from neuron_toolkit.compiler.architectures.fingerprint import (
     compute_subgraph_fingerprint,
     ensure_specialized_function_proto,
 )
-from neuron_toolkit.compiler.base import CompilerContext, Pass, LATEST_OPSET
+from neuron_toolkit.compiler.base import CompilerContext, Pass, LATEST_OPSET, ensure_model_latest_opset
 from neuron_toolkit.compiler.passes.canonicalization.shape_canonicalizer import (
     ShapeCanonicalizer,
 )
@@ -264,26 +264,55 @@ class AttentionSynthesizer(Pass):
         log.info("RoPE Fusion: Fused %d RotaryEmbedding instances", rope_count)
         return ShapeCanonicalizer().apply_dead_code_elimination(model)
 
-    def _attach_rope_function_def(self, model: onnx.ModelProto) -> None:
-        """Attach formal ONNX FunctionProto definition for RotaryEmbedding."""
+    def _attach_rope_function_def(
+        self, model: onnx.ModelProto, arity: int | None = None
+    ) -> None:
+        """Attach formal ONNX FunctionProto definition for RotaryEmbedding with true rotate_half rotation."""
         func_name = "RotaryEmbedding"
         domain = "custom.pytorch"
-        if any(f.name == func_name and f.domain == domain for f in model.functions):
-            return
+        if arity is None:
+            rope_nodes = [n for n in model.graph.node if n.op_type == "RotaryEmbedding"]
+            arity = len(rope_nodes[0].input) if rope_nodes else 3
+
+        surviving = [f for f in model.functions if not (f.name == func_name and f.domain == domain)]
+        if len(surviving) < len(model.functions):
+            existing = [f for f in model.functions if f.name == func_name and f.domain == domain][0]
+            if len(existing.input) == arity:
+                return
+            del model.functions[:]
+            model.functions.extend(surviving)
+
+        ensure_model_latest_opset(model)
         opset_standard = helper.make_opsetid("", LATEST_OPSET)
-        cos_node = helper.make_node("Cos", inputs=["theta"], outputs=["cos"])
-        sin_node = helper.make_node("Sin", inputs=["theta"], outputs=["sin"])
+
+        split_node = helper.make_node(
+            "Split", inputs=["x"], outputs=["x1", "x2"], axis=-1, num_outputs=2
+        )
+        neg_node = helper.make_node("Neg", inputs=["x2"], outputs=["neg_x2"])
+        concat_node = helper.make_node(
+            "Concat", inputs=["neg_x2", "x1"], outputs=["rot"], axis=-1
+        )
         m_cos = helper.make_node("Mul", inputs=["x", "cos"], outputs=["q_cos"])
-        m_sin = helper.make_node("Mul", inputs=["x", "sin"], outputs=["q_sin"])
+        m_sin = helper.make_node("Mul", inputs=["rot", "sin"], outputs=["q_sin"])
         add_node = helper.make_node("Add", inputs=["q_cos", "q_sin"], outputs=["y"])
+
+        if arity == 3:
+            formal_inputs = ["x", "cos", "sin"]
+            nodes = [split_node, neg_node, concat_node, m_cos, m_sin, add_node]
+        else:
+            formal_inputs = ["x", "theta"]
+            cos_node = helper.make_node("Cos", inputs=["theta"], outputs=["cos"])
+            sin_node = helper.make_node("Sin", inputs=["theta"], outputs=["sin"])
+            nodes = [cos_node, sin_node, split_node, neg_node, concat_node, m_cos, m_sin, add_node]
+
         rope_func = helper.make_function(
             domain=domain,
             fname=func_name,
-            inputs=["x", "theta"],
+            inputs=formal_inputs,
             outputs=["y"],
-            nodes=[cos_node, sin_node, m_cos, m_sin, add_node],
+            nodes=nodes,
             opset_imports=[opset_standard],
-            doc_string="Rotary position embedding function",
+            doc_string="Rotary position embedding function with rotate_half",
         )
         model.functions.append(rope_func)
 
@@ -307,14 +336,26 @@ class AttentionSynthesizer(Pass):
                 "Cast",
             ):
                 curr = n.input[0]
-            elif n.op_type == "Einsum":
-                scatter_nodes = [
-                    node
-                    for node in node_by_output.values()
-                    if node.op_type == "ScatterND" and node.input
-                ]
-                if scatter_nodes:
-                    return scatter_nodes[0].input[0]
+            elif n.op_type in ("Einsum", "Mul", "MatMul"):
+                # Trace back locally through inputs of Einsum/Mul/MatMul to find if an input branch contains ScatterND
+                found_freq = None
+                for inp in n.input:
+                    q = [inp]
+                    sub_visited = set()
+                    while q:
+                        sub_curr = q.pop(0)
+                        if sub_curr in sub_visited:
+                            continue
+                        sub_visited.add(sub_curr)
+                        sub_n = node_by_output.get(sub_curr)
+                        if sub_n:
+                            if sub_n.op_type == "ScatterND":
+                                found_freq = sub_n.input[0] if sub_n.input else sub_curr
+                                break
+                            if sub_n.op_type in ("Slice", "Reshape", "Expand", "Unsqueeze", "Cast", "Squeeze"):
+                                q.extend(sub_n.input)
+                    if found_freq:
+                        return found_freq
                 return curr
             else:
                 break
@@ -359,6 +400,9 @@ class AttentionSynthesizer(Pass):
                         continue
                     other_inp = other_inps[0]
                     gate_in = sig_node.input[0]
+                    if other_inp == gate_in:
+                        # Self-activation (e.g. x * Sigmoid(x) == SiLU); not a 2-stream gating unit
+                        continue
 
                     nodes_to_remove.add(id(n))
                     # Only remove sig_node if no other node consumes its output
@@ -420,7 +464,12 @@ class AttentionSynthesizer(Pass):
             f.name == fname and f.domain == "custom.pytorch" for f in model.functions
         ):
             return
+        ensure_model_latest_opset(model)
         opset_standard = helper.make_opsetid("", LATEST_OPSET)
+        opset_imports = [opset_standard]
+        if act_name not in ("Relu", "Tanh", "Sigmoid"):
+            opset_imports.append(helper.make_opsetid("custom.pytorch", 1))
+
         sig_node = helper.make_node(
             act_name,
             inputs=["gate"],
@@ -436,7 +485,7 @@ class AttentionSynthesizer(Pass):
             formal_inputs=["x", "gate"],
             formal_outputs=["y"],
             body_nodes=[sig_node, mul_node],
-            opset_imports=[opset_standard],
+            opset_imports=opset_imports,
             doc_string=f"Content-hashed polymorphic GatedUnit ({act_name}) [{fingerprint}]",
         )
 
@@ -463,29 +512,18 @@ class AttentionSynthesizer(Pass):
         domain = "custom.pytorch"
         if any(f.name == func_name and f.domain == domain for f in model.functions):
             return
+        ensure_model_latest_opset(model)
         opset_standard = helper.make_opsetid("", LATEST_OPSET)
-        t_node = helper.make_node(
-            "Transpose", inputs=["gate"], outputs=["gate_t"], perm=[0, 2, 1]
-        )
-        axes_node = helper.make_node(
-            "Constant",
-            inputs=[],
-            outputs=["axes_val"],
-            value=helper.make_tensor("axes_val", onnx.TensorProto.INT64, [1], [-1]),
-        )
-        u_node = helper.make_node(
-            "Unsqueeze", inputs=["gate_t", "axes_val"], outputs=["gate_4d"]
-        )
-        sig_node = helper.make_node("Sigmoid", inputs=["gate_4d"], outputs=["sig_out"])
+        sig_node = helper.make_node("Sigmoid", inputs=["gate"], outputs=["sig_out"])
         mul_node = helper.make_node("Mul", inputs=["x", "sig_out"], outputs=["y"])
         gate_func = helper.make_function(
             domain=domain,
             fname=func_name,
             inputs=["x", "gate"],
             outputs=["y"],
-            nodes=[t_node, axes_node, u_node, sig_node, mul_node],
+            nodes=[sig_node, mul_node],
             opset_imports=[opset_standard],
-            doc_string="Gated unit attention projection function",
+            doc_string="Generic rank-agnostic GatedUnit function",
         )
         model.functions.append(gate_func)
 
@@ -512,7 +550,16 @@ class AttentionSynthesizer(Pass):
 
         for n in graph.node:
             if n.op_type == "MatMul" and len(n.input) == 2:
-                in0 = node_by_output.get(n.input[0])
+                curr_inp = n.input[0]
+                intermediate_nodes: list[onnx.NodeProto] = []
+                while curr_inp in node_by_output:
+                    cand = node_by_output[curr_inp]
+                    if cand.op_type in ("Dropout", "Identity", "Cast"):
+                        intermediate_nodes.append(cand)
+                        curr_inp = cand.input[0]
+                    else:
+                        break
+                in0 = node_by_output.get(curr_inp)
                 if in0 and in0.op_type == "Softmax":
                     scores = in0.input[0]
                     v = n.input[1]
@@ -526,6 +573,12 @@ class AttentionSynthesizer(Pass):
                         and in0.output[0] not in graph_outputs
                     ):
                         nodes_to_remove.add(id(in0))
+                    for inode in intermediate_nodes:
+                        if (
+                            len(consumer_map.get(inode.output[0], [])) <= 1
+                            and inode.output[0] not in graph_outputs
+                        ):
+                            nodes_to_remove.add(id(inode))
                     node_name = n.name or f"sm_matmul_{sm_count}"
                     sm_node = helper.make_node(
                         op_type="SoftmaxMatMul",
@@ -562,6 +615,7 @@ class AttentionSynthesizer(Pass):
         domain = "custom.pytorch"
         if any(f.name == func_name and f.domain == domain for f in model.functions):
             return
+        ensure_model_latest_opset(model)
         opset_standard = helper.make_opsetid("", LATEST_OPSET)
         sm_node = helper.make_node(
             "Softmax", inputs=["scores"], outputs=["probs"], axis=-1
@@ -583,20 +637,38 @@ class AttentionSynthesizer(Pass):
         tr_node: onnx.NodeProto,
         k_raw_input: str,
         nodes_to_drop: set[int],
+        consumer_map: dict[str, list[onnx.NodeProto]] | None = None,
+        extra_nodes: list[onnx.NodeProto] | None = None,
     ) -> str:
         """Handle transposition on K input, retaining head-permutation if not identity."""
         perm_attrs = [a for a in tr_node.attribute if a.name == "perm"]
         if perm_attrs and len(perm_attrs[0].ints) >= 2:
             p = list(perm_attrs[0].ints)
             new_perm = p[:-2] + [p[-1], p[-2]]
+            is_shared = consumer_map is not None and len(consumer_map.get(tr_node.output[0], [])) > 1
             if new_perm == list(range(len(p))):
-                nodes_to_drop.add(id(tr_node))
+                if not is_shared:
+                    nodes_to_drop.add(id(tr_node))
                 return k_raw_input
+            if is_shared:
+                if extra_nodes is not None:
+                    new_out = f"{tr_node.output[0]}_k_perm"
+                    new_tr = helper.make_node(
+                        "Transpose",
+                        inputs=[k_raw_input],
+                        outputs=[new_out],
+                        perm=new_perm,
+                        name=f"{tr_node.name}_k_perm" if tr_node.name else "",
+                    )
+                    extra_nodes.append(new_tr)
+                    return new_out
+                return tr_node.output[0]
             perm_attrs[0].ints[:] = new_perm
             if tr_node.input[0] != k_raw_input:
                 tr_node.input[0] = k_raw_input
             return tr_node.output[0]
-        nodes_to_drop.add(id(tr_node))
+        if consumer_map is None or len(consumer_map.get(tr_node.output[0], [])) <= 1:
+            nodes_to_drop.add(id(tr_node))
         return k_raw_input
 
     # -------------------------------------------------------------------------
@@ -611,8 +683,18 @@ class AttentionSynthesizer(Pass):
             out: n for n in graph.node for out in n.output
         }
         sm_nodes = [n for n in graph.node if n.op_type == "SoftmaxMatMul"]
+        if not sm_nodes:
+            model = self.apply_softmax_matmul_fusion(model, mode=mode)
+            graph = model.graph
+            node_by_output = {out: n for n in graph.node for out in n.output}
+            sm_nodes = [n for n in graph.node if n.op_type == "SoftmaxMatMul"]
         replacements: dict[int, onnx.NodeProto] = {}
         nodes_to_drop: set[int] = set()
+        extra_nodes: list[onnx.NodeProto] = []
+        consumer_map: dict[str, list[onnx.NodeProto]] = collections.defaultdict(list)
+        for n in graph.node:
+            for inp in n.input:
+                consumer_map[inp].append(n)
 
         inits = {i.name for i in graph.initializer}
         init_map: dict[str, np.ndarray] = {
@@ -741,10 +823,12 @@ class AttentionSynthesizer(Pass):
                             )
                             else k_sub.input[0]
                         )
-                    k_inp = self._handle_k_transpose(k_cand, k_raw, nodes_to_drop)
+                    k_inp = self._handle_k_transpose(
+                        k_cand, k_raw, nodes_to_drop, consumer_map=consumer_map, extra_nodes=extra_nodes
+                    )
                 else:
                     k_inp = self._handle_k_transpose(
-                        k_cand, k_cand.input[0], nodes_to_drop
+                        k_cand, k_cand.input[0], nodes_to_drop, consumer_map=consumer_map, extra_nodes=extra_nodes
                     )
             elif k_cand and k_cand.op_type in ("Mul", "Div"):
                 nodes_to_drop.add(id(k_cand))
@@ -763,7 +847,7 @@ class AttentionSynthesizer(Pass):
                 k_sub = node_by_output.get(k_inp_cand)
                 if k_sub and k_sub.op_type == "Transpose":
                     k_inp = self._handle_k_transpose(
-                        k_sub, k_sub.input[0], nodes_to_drop
+                        k_sub, k_sub.input[0], nodes_to_drop, consumer_map=consumer_map, extra_nodes=extra_nodes
                     )
                 else:
                     k_inp = k_inp_cand
@@ -797,14 +881,20 @@ class AttentionSynthesizer(Pass):
         kept = []
         for n in graph.node:
             if id(n) in replacements:
+                if extra_nodes:
+                    kept.extend(extra_nodes)
+                    extra_nodes = []
                 kept.append(replacements[id(n)])
             elif id(n) not in nodes_to_drop:
                 kept.append(n)
+        if extra_nodes:
+            kept.extend(extra_nodes)
         del graph.node[:]
         graph.node.extend(kept)
 
         if mode == "function_proto":
-            self._attach_sdpa_function_def(model)
+            has_mask = any(len(n.input) >= 4 for n in replacements.values())
+            self._attach_sdpa_function_def(model, has_mask=has_mask)
 
         log.info(
             "ScaledDotProductAttention Fusion: Fused %d attention blocks",
@@ -812,34 +902,74 @@ class AttentionSynthesizer(Pass):
         )
         return ShapeCanonicalizer().apply_dead_code_elimination(model)
 
-    def _attach_sdpa_function_def(self, model: onnx.ModelProto) -> None:
+    def _attach_sdpa_function_def(
+        self, model: onnx.ModelProto, has_mask: bool = False
+    ) -> None:
         """Attach formal ONNX FunctionProto definition for ScaledDotProductAttention."""
         func_name = "ScaledDotProductAttention"
         domain = "custom.pytorch"
-        if any(f.name == func_name and f.domain == domain for f in model.functions):
-            return
+        expected_arity = 4 if has_mask else 3
+
+        surviving = [f for f in model.functions if not (f.name == func_name and f.domain == domain)]
+        if len(surviving) < len(model.functions):
+            existing = [f for f in model.functions if f.name == func_name and f.domain == domain][0]
+            if len(existing.input) == expected_arity:
+                return
+            del model.functions[:]
+            model.functions.extend(surviving)
+
+        ensure_model_latest_opset(model)
         opset_standard = helper.make_opsetid("", LATEST_OPSET)
         k_trans = helper.make_node(
             "Transpose", inputs=["K"], outputs=["KT"], perm=[0, 1, 3, 2]
         )
         mm1 = helper.make_node("MatMul", inputs=["Q", "KT"], outputs=["RawScores"])
-        scale_val = helper.make_tensor(
-            "scale_val", onnx.TensorProto.FLOAT, [1], [0.125]
+
+        # Dynamically compute 1 / sqrt(d_k) from head dimension of Q without hardcoding!
+        q_shape = helper.make_node("Shape", inputs=["Q"], outputs=["q_shape"])
+        idx = helper.make_node(
+            "Constant",
+            inputs=[],
+            outputs=["idx_neg1"],
+            value=helper.make_tensor("idx_neg1", onnx.TensorProto.INT64, [1], [-1]),
         )
-        c_scale = helper.make_node(
-            "Constant", inputs=[], outputs=["scale_const"], value=scale_val
+        gather = helper.make_node(
+            "Gather", inputs=["q_shape", "idx_neg1"], outputs=["d_k_int"], axis=0
+        )
+        cast = helper.make_node(
+            "Cast", inputs=["d_k_int"], outputs=["d_k_flt"], to=onnx.TensorProto.FLOAT
+        )
+        pow_c = helper.make_node(
+            "Constant",
+            inputs=[],
+            outputs=["pow_val"],
+            value=helper.make_tensor("pow_val", onnx.TensorProto.FLOAT, [1], [-0.5]),
+        )
+        scale_node = helper.make_node(
+            "Pow", inputs=["d_k_flt", "pow_val"], outputs=["scale_const"]
         )
         mul_scale = helper.make_node(
-            "Mul", inputs=["RawScores", "scale_const"], outputs=["Scores"]
+            "Mul", inputs=["RawScores", "scale_const"], outputs=["ScaledScores" if has_mask else "Scores"]
         )
+        nodes = [k_trans, mm1, q_shape, idx, gather, cast, pow_c, scale_node, mul_scale]
+        formal_inputs = ["Q", "K", "V"]
+        if has_mask:
+            add_mask = helper.make_node(
+                "Add", inputs=["ScaledScores", "Mask"], outputs=["Scores"]
+            )
+            nodes.append(add_mask)
+            formal_inputs.append("Mask")
+
         sm = helper.make_node("Softmax", inputs=["Scores"], outputs=["Probs"], axis=-1)
         mm2 = helper.make_node("MatMul", inputs=["Probs", "V"], outputs=["Y"])
+        nodes.extend([sm, mm2])
+
         func = helper.make_function(
             domain=domain,
             fname=func_name,
-            inputs=["Q", "K", "V"],
+            inputs=formal_inputs,
             outputs=["Y"],
-            nodes=[k_trans, mm1, c_scale, mul_scale, sm, mm2],
+            nodes=nodes,
             opset_imports=[opset_standard],
             doc_string="Scaled Dot-Product Attention function",
         )
@@ -858,6 +988,11 @@ class AttentionSynthesizer(Pass):
         }
         replacements: dict[int, onnx.NodeProto] = {}
         nodes_to_drop: set[int] = set()
+        extra_nodes: list[onnx.NodeProto] = []
+        consumer_map: dict[str, list[onnx.NodeProto]] = collections.defaultdict(list)
+        for n in graph.node:
+            for inp in n.input:
+                consumer_map[inp].append(n)
 
         unbind_nodes = [n for n in graph.node if n.op_type == "Unbind"]
         for unbind in unbind_nodes:
@@ -903,9 +1038,14 @@ class AttentionSynthesizer(Pass):
         kept = []
         for n in graph.node:
             if id(n) in replacements:
+                if extra_nodes:
+                    kept.extend(extra_nodes)
+                    extra_nodes = []
                 kept.append(replacements[id(n)])
             elif id(n) not in nodes_to_drop:
                 kept.append(n)
+        if extra_nodes:
+            kept.extend(extra_nodes)
         del graph.node[:]
         graph.node.extend(kept)
 
@@ -921,6 +1061,7 @@ class AttentionSynthesizer(Pass):
         domain = "custom.pytorch"
         if any(f.name == func_name and f.domain == domain for f in model.functions):
             return
+        ensure_model_latest_opset(model)
         opset_standard = helper.make_opsetid("", LATEST_OPSET)
         s = helper.make_node("Split", inputs=["QKV"], outputs=["Q", "K", "V"], axis=0)
         func = helper.make_function(
@@ -949,6 +1090,11 @@ class AttentionSynthesizer(Pass):
 
         replacements: dict[int, onnx.NodeProto] = {}
         nodes_to_drop: set[int] = set()
+        extra_nodes: list[onnx.NodeProto] = []
+        consumer_map: dict[str, list[onnx.NodeProto]] = collections.defaultdict(list)
+        for n in graph.node:
+            for inp in n.input:
+                consumer_map[inp].append(n)
 
         gated_units = [
             n
@@ -992,9 +1138,14 @@ class AttentionSynthesizer(Pass):
         kept = []
         for n in graph.node:
             if id(n) in replacements:
+                if extra_nodes:
+                    kept.extend(extra_nodes)
+                    extra_nodes = []
                 kept.append(replacements[id(n)])
             elif id(n) not in nodes_to_drop:
                 kept.append(n)
+        if extra_nodes:
+            kept.extend(extra_nodes)
         del graph.node[:]
         graph.node.extend(kept)
 
@@ -1008,20 +1159,31 @@ class AttentionSynthesizer(Pass):
         """Attach formal ONNX FunctionProto definition for MergeHeads."""
         func_name = "MergeHeads"
         domain = "custom.pytorch"
-        if any(f.name == func_name and f.domain == domain for f in model.functions):
-            return
+        surviving = [f for f in model.functions if not (f.name == func_name and f.domain == domain)]
+        if len(surviving) < len(model.functions):
+            del model.functions[:]
+            model.functions.extend(surviving)
+
+        ensure_model_latest_opset(model)
         opset_standard = helper.make_opsetid("", LATEST_OPSET)
         t = helper.make_node(
-            "Transpose", inputs=["X"], outputs=["Y"], perm=[0, 2, 1, 3]
+            "Transpose", inputs=["X"], outputs=["T"], perm=[0, 2, 1, 3]
         )
+        shape_const = helper.make_node(
+            "Constant",
+            inputs=[],
+            outputs=["shape_val"],
+            value=helper.make_tensor("shape_val", onnx.TensorProto.INT64, [3], [0, 0, -1]),
+        )
+        r = helper.make_node("Reshape", inputs=["T", "shape_val"], outputs=["Y"])
         func = helper.make_function(
             domain=domain,
             fname=func_name,
             inputs=["X"],
             outputs=["Y"],
-            nodes=[t],
+            nodes=[t, shape_const, r],
             opset_imports=[opset_standard],
-            doc_string="Merge attention heads function",
+            doc_string="Merge attention heads function with Reshape to 3D",
         )
         model.functions.append(func)
 
@@ -1267,6 +1429,7 @@ class AttentionSynthesizer(Pass):
             f.name == fname and f.domain == "custom.pytorch" for f in model.functions
         ):
             return
+        ensure_model_latest_opset(model)
         opset_standard = helper.make_opsetid("", LATEST_OPSET)
         opset_custom = helper.make_opsetid("custom.pytorch", 1)
 
@@ -1500,7 +1663,13 @@ class AttentionSynthesizer(Pass):
         graph.node.extend(new_nodes)
 
         if mode == "function_proto":
-            self._attach_logits_softcap_function_def(model)
+            target_cap = 50.0
+            for r in replacements.values():
+                for a in r.attribute:
+                    if a.name == "softcap":
+                        target_cap = float(a.f)
+                        break
+            self._attach_logits_softcap_function_def(model, cap_val=target_cap)
 
         log.info(
             "Gemma-2 SoftCapping Fusion: Fused %d soft-capping blocks",
@@ -1508,19 +1677,47 @@ class AttentionSynthesizer(Pass):
         )
         return ShapeCanonicalizer().apply_dead_code_elimination(model)
 
-    def _attach_logits_softcap_function_def(self, model: onnx.ModelProto) -> None:
+    def _attach_logits_softcap_function_def(
+        self, model: onnx.ModelProto, cap_val: float | None = None
+    ) -> None:
         """Attach formal ONNX FunctionProto definition for LogitsSoftCap."""
         func_name = "LogitsSoftCap"
         domain = "custom.pytorch"
-        if any(f.name == func_name and f.domain == domain for f in model.functions):
-            return
+        if cap_val is None:
+            cap_val = 50.0
+            for n in model.graph.node:
+                if n.op_type == "LogitsSoftCap":
+                    for a in n.attribute:
+                        if a.name == "softcap":
+                            cap_val = float(a.f)
+                            break
+                    break
+
+        surviving = [f for f in model.functions if not (f.name == func_name and f.domain == domain)]
+        if len(surviving) < len(model.functions):
+            existing = [f for f in model.functions if f.name == func_name and f.domain == domain][0]
+            matched_cap = False
+            for node in existing.node:
+                if node.op_type == "Constant" and node.output and node.output[0] == "cap_val":
+                    for attr in node.attribute:
+                        if attr.name == "value":
+                            arr = numpy_helper.to_array(attr.t)
+                            if arr.size == 1 and abs(float(arr.item()) - float(cap_val)) < 1e-4:
+                                matched_cap = True
+                                break
+            if matched_cap:
+                return
+            del model.functions[:]
+            model.functions.extend(surviving)
+
+        ensure_model_latest_opset(model)
         opset_standard = helper.make_opsetid("", LATEST_OPSET)
         c_node = helper.make_node(
             "Constant",
             inputs=[],
             outputs=["cap_val"],
             value=helper.make_tensor(
-                "cap_val", onnx.TensorProto.FLOAT, [1], [50.0]
+                "cap_val", onnx.TensorProto.FLOAT, [1], [float(cap_val)]
             ),
         )
         div_node = helper.make_node(
@@ -1539,7 +1736,7 @@ class AttentionSynthesizer(Pass):
             outputs=["y"],
             nodes=[c_node, div_node, tanh_node, mul_node],
             opset_imports=[opset_standard],
-            doc_string="Gemma-2 style logits soft-capping function: cap * tanh(x / cap)",
+            doc_string=f"Gemma-2 style logits soft-capping function: cap * tanh(x / cap) [cap={cap_val}]",
         )
         model.functions.append(func)
 
@@ -1551,6 +1748,9 @@ class AttentionSynthesizer(Pass):
     ) -> onnx.ModelProto:
         """Synthesize DeepSeek MLA low-rank KV latent projection and expansion."""
         graph = model.graph
+        node_by_output: dict[str, onnx.NodeProto] = {
+            out: n for n in graph.node for out in n.output if out
+        }
         consumer_map: dict[str, list[onnx.NodeProto]] = {}
         for n in graph.node:
             for inp in n.input:
@@ -1568,7 +1768,45 @@ class AttentionSynthesizer(Pass):
             consumers = consumer_map.get(c_kv, [])
             up_proj_consumers = [c for c in consumers if c.op_type in linear_ops]
             if len(up_proj_consumers) == 2:
-                up_k, up_v = up_proj_consumers[0], up_proj_consumers[1]
+                c0, c1 = up_proj_consumers[0], up_proj_consumers[1]
+
+                def reaches_softmax(start_tensor: str, max_depth: int = 15) -> bool:
+                    queue = [start_tensor]
+                    visited = set()
+                    depth = 0
+                    while queue and depth < max_depth:
+                        curr = queue.pop(0)
+                        if curr in visited:
+                            continue
+                        visited.add(curr)
+                        for user in consumer_map.get(curr, []):
+                            if user.op_type == "Softmax":
+                                return True
+                            queue.extend(user.output)
+                        depth += 1
+                    return False
+
+                def is_v_consumer(out_t: str) -> bool:
+                    for user in consumer_map.get(out_t, []):
+                        if user.op_type in ("MatMul", "SoftmaxMatMul"):
+                            for other_inp in user.input:
+                                if other_inp != out_t:
+                                    p = node_by_output.get(other_inp)
+                                    if p and (p.op_type == "Softmax" or p.op_type == "SoftmaxMatMul"):
+                                        return True
+                    return False
+
+                if reaches_softmax(c0.output[0]) and not reaches_softmax(c1.output[0]):
+                    up_k, up_v = c0, c1
+                elif reaches_softmax(c1.output[0]) and not reaches_softmax(c0.output[0]):
+                    up_k, up_v = c1, c0
+                elif is_v_consumer(c1.output[0]) and not is_v_consumer(c0.output[0]):
+                    up_k, up_v = c0, c1
+                elif is_v_consumer(c0.output[0]) and not is_v_consumer(c1.output[0]):
+                    up_k, up_v = c1, c0
+                else:
+                    up_k, up_v = c0, c1
+
                 out_k = up_k.output[0]
                 out_v = up_v.output[0]
 

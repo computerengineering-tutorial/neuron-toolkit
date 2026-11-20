@@ -16,7 +16,12 @@ import numpy as np
 import onnx
 from onnx import helper, numpy_helper
 
-from neuron_toolkit.compiler.base import CompilerContext, Pass, LATEST_OPSET
+from neuron_toolkit.compiler.base import (
+    CompilerContext,
+    Pass,
+    LATEST_OPSET,
+    ensure_model_latest_opset,
+)
 from neuron_toolkit.compiler.passes.canonicalization.shape_canonicalizer import (
     ShapeCanonicalizer,
 )
@@ -178,7 +183,19 @@ class AxialSynthesizer(Pass):
                 if ends_name and ends_name in node_by_output:
                     curr_n = node_by_output[ends_name]
                     while curr_n:
-                        nodes_to_remove.add(curr_n.name or curr_n.output[0])
+                        # Only delete ancestor if all its consumers are in nodes_to_remove
+                        curr_out = curr_n.output[0] if curr_n.output else ""
+                        if curr_out in graph_outputs:
+                            break
+                        users = consumer_map.get(curr_out, [])
+                        can_delete = all(
+                            (u.name in nodes_to_remove or (u.output and u.output[0] in nodes_to_remove))
+                            for u in users
+                        )
+                        if not can_delete:
+                            break
+
+                        nodes_to_remove.add(curr_n.name or curr_out)
                         if curr_n.input and curr_n.input[0] in node_by_output:
                             prev = node_by_output[curr_n.input[0]]
                             if prev.op_type in (
@@ -210,29 +227,101 @@ class AxialSynthesizer(Pass):
             model.opset_import.append(helper.make_opsetid(custom_domain, 1))
 
         if mode == "function_proto":
-            self._attach_tensor_route_function_def(model)
+            sample_r = new_route_nodes[0]
+            attrs = {
+                a.name: (
+                    a.i
+                    if a.type == onnx.AttributeProto.INT
+                    else (
+                        a.s.decode("utf-8")
+                        if a.type == onnx.AttributeProto.STRING and isinstance(a.s, bytes)
+                        else a.s
+                    )
+                )
+                for a in sample_r.attribute
+            }
+            self._attach_tensor_route_function_def(
+                model,
+                axis=attrs.get("axis", 1),
+                index=attrs.get("index", 0),
+                slice_axis=attrs.get("slice_axis"),
+                slice_start=attrs.get("slice_start", 0),
+                slice_end=attrs.get("slice_end"),
+            )
 
         log.info("Index Tensor Routing: Fused %d routing patterns", route_count)
         return model
 
-    def _attach_tensor_route_function_def(self, model: onnx.ModelProto) -> None:
+    def _attach_tensor_route_function_def(
+        self,
+        model: onnx.ModelProto,
+        axis: int = 1,
+        index: int = 0,
+        slice_axis: int | None = None,
+        slice_start: int = 0,
+        slice_end: int | None = None,
+    ) -> None:
         """Attach formal ONNX FunctionProto definition for TensorRoute."""
         func_name = "TensorRoute"
         domain = "custom.pytorch"
-        if any(f.name == func_name and f.domain == domain for f in model.functions):
-            return
+        surviving = [f for f in model.functions if not (f.name == func_name and f.domain == domain)]
+        del model.functions[:]
+        model.functions.extend(surviving)
+
+        ensure_model_latest_opset(model)
         opset_standard = helper.make_opsetid("", LATEST_OPSET)
-        gather_node = helper.make_node(
-            "Gather", inputs=["x", "idx"], outputs=["y"], axis=1
+        c_idx = helper.make_node(
+            "Constant",
+            inputs=[],
+            outputs=["idx_const"],
+            value=helper.make_tensor("idx_const", onnx.TensorProto.INT64, [1], [index]),
         )
+        nodes = [c_idx]
+        g_out_name = "g_out" if slice_axis is not None else "y"
+        gather_node = helper.make_node(
+            "Gather", inputs=["x", "idx_const"], outputs=[g_out_name], axis=axis
+        )
+        nodes.append(gather_node)
+
+        if slice_axis is not None:
+            c_start = helper.make_node(
+                "Constant",
+                inputs=[],
+                outputs=["start_const"],
+                value=helper.make_tensor("start_const", onnx.TensorProto.INT64, [1], [slice_start]),
+            )
+            c_end = helper.make_node(
+                "Constant",
+                inputs=[],
+                outputs=["end_const"],
+                value=helper.make_tensor(
+                    "end_const",
+                    onnx.TensorProto.INT64,
+                    [1],
+                    [slice_end if slice_end is not None else 9223372036854775807],
+                ),
+            )
+            c_axis = helper.make_node(
+                "Constant",
+                inputs=[],
+                outputs=["axis_const"],
+                value=helper.make_tensor("axis_const", onnx.TensorProto.INT64, [1], [slice_axis]),
+            )
+            s_node = helper.make_node(
+                "Slice",
+                inputs=[g_out_name, "start_const", "end_const", "axis_const"],
+                outputs=["y"],
+            )
+            nodes.extend([c_start, c_end, c_axis, s_node])
+
         route_func = helper.make_function(
             domain=domain,
             fname=func_name,
-            inputs=["x", "idx"],
+            inputs=["x"],
             outputs=["y"],
-            nodes=[gather_node],
+            nodes=nodes,
             opset_imports=[opset_standard],
-            doc_string="Tensor Index Routing layer",
+            doc_string="Tensor Index Routing layer preserving Gather and Slice",
         )
         model.functions.append(route_func)
 
@@ -288,22 +377,22 @@ class AxialSynthesizer(Pass):
 
         if mode == "function_proto":
             num_outputs = len(new_nodes[0].output) if new_nodes else 3
-            self._attach_unbind_function_def(model, num_outputs=num_outputs)
+            axis = 0
+            if new_nodes:
+                for a in new_nodes[0].attribute:
+                    if a.name == "axis":
+                        axis = a.i
+            self._attach_unbind_function_def(model, num_outputs=num_outputs, axis=axis)
 
         log.info("Unbind Fusion: Fused %d Unbind instances", unbind_count)
         return ShapeCanonicalizer().apply_dead_code_elimination(model)
 
     def _attach_unbind_function_def(
-        self, model: onnx.ModelProto, num_outputs: int = 3
+        self, model: onnx.ModelProto, num_outputs: int = 3, axis: int = 0
     ) -> None:
         """Attach formal ONNX FunctionProto definition for Unbind."""
         func_name = "Unbind"
         domain = "custom.pytorch"
-        if any(
-            f.name == func_name and f.domain == domain and len(f.output) == num_outputs
-            for f in model.functions
-        ):
-            return
         surviving = [
             f
             for f in model.functions
@@ -312,12 +401,19 @@ class AxialSynthesizer(Pass):
         del model.functions[:]
         model.functions.extend(surviving)
 
+        ensure_model_latest_opset(model)
         opset_standard = helper.make_opsetid("", LATEST_OPSET)
         s_outputs = [f"s{i}" for i in range(num_outputs)]
         y_outputs = [f"y{i}" for i in range(num_outputs)]
-        sp_node = helper.make_node("Split", inputs=["x"], outputs=s_outputs, axis=0)
+        sp_node = helper.make_node("Split", inputs=["x"], outputs=s_outputs, axis=axis)
+        axes_const = helper.make_node(
+            "Constant",
+            inputs=[],
+            outputs=["axes_const"],
+            value=helper.make_tensor("axes_const", onnx.TensorProto.INT64, [1], [axis]),
+        )
         sq_nodes = [
-            helper.make_node("Squeeze", inputs=[s_outputs[i]], outputs=[y_outputs[i]])
+            helper.make_node("Squeeze", inputs=[s_outputs[i], "axes_const"], outputs=[y_outputs[i]])
             for i in range(num_outputs)
         ]
         unbind_func = helper.make_function(
@@ -325,9 +421,9 @@ class AxialSynthesizer(Pass):
             fname=func_name,
             inputs=["x"],
             outputs=y_outputs,
-            nodes=[sp_node] + sq_nodes,
+            nodes=[sp_node, axes_const] + sq_nodes,
             opset_imports=[opset_standard],
-            doc_string="Unbind multi-head projections along axis",
+            doc_string=f"Unbind multi-head projections along axis={axis}",
         )
         model.functions.append(unbind_func)
 
@@ -383,30 +479,32 @@ class AxialSynthesizer(Pass):
             # 2. freq_to_time: Reshape -> Transpose(perm=[0, 2, 1, 3]) -> Reshape
             if n.op_type == "Transpose" and n.name not in nodes_to_drop:
                 perm = [a.ints for a in n.attribute if a.name == "perm"]
-                if perm and list(perm[0]) == [0, 2, 1, 3]:
-                    prod = node_by_output.get(n.input[0])
-                    consumers = [cn for cn in graph.node if n.output[0] in cn.input]
-                    if (
-                        prod
-                        and prod.op_type == "Reshape"
-                        and len(consumers) == 1
-                        and consumers[0].op_type == "Reshape"
-                    ):
-                        r1 = prod
-                        r2 = consumers[0]
-                        nodes_to_drop.update({r1.name, n.name, r2.name})
-                        new_nodes.append(
-                            helper.make_node(
-                                "AxialRearrange",
-                                inputs=[r1.input[0]],
-                                outputs=[r2.output[0]],
-                                name=f"{n.name}_fused_freq_to_time",
-                                domain="custom.pytorch",
-                                mode="freq_to_time",
-                                batch_size=1,
-                            )
+                perm_val = list(perm[0]) if perm else []
+                prod = node_by_output.get(n.input[0])
+                consumers = [cn for cn in graph.node if n.output[0] in cn.input]
+                if (
+                    perm_val == [0, 2, 1, 3]
+                    and prod
+                    and prod.op_type == "Reshape"
+                    and len(consumers) == 1
+                    and consumers[0].op_type == "Reshape"
+                ):
+                    r1 = prod
+                    r2 = consumers[0]
+                    nodes_to_drop.update({r1.name, n.name, r2.name})
+                    new_nodes.append(
+                        helper.make_node(
+                            "AxialRearrange",
+                            inputs=[r1.input[0]],
+                            outputs=[r2.output[0]],
+                            name=f"{n.name}_fused_freq_to_time",
+                            domain="custom.pytorch",
+                            mode="freq_to_time",
+                            batch_size=1,
+                            perm=perm_val,
                         )
-                        rearrange_count += 1
+                    )
+                    rearrange_count += 1
 
             # 3. time_to_conv: Reshape -> Transpose(perm=[0, 3, 1, 2])
             if n.op_type == "Transpose" and n.name not in nodes_to_drop:
@@ -504,28 +602,101 @@ class AxialSynthesizer(Pass):
             model.opset_import.append(helper.make_opsetid(custom_domain, 1))
 
         if mode == "function_proto":
-            self._attach_axial_rearrange_function_def(model)
+            mode_str = "freq_to_time"
+            perm_val = None
+            if new_nodes:
+                for a in new_nodes[0].attribute:
+                    if a.name == "mode":
+                        mode_str = (
+                            a.s.decode("utf-8")
+                            if isinstance(a.s, bytes)
+                            else str(a.s)
+                        )
+                    elif a.name == "perm":
+                        perm_val = list(a.ints)
+            self._attach_axial_rearrange_function_def(model, mode=mode_str, perm=perm_val)
 
         log.info(
             "AxialRearrange Fusion: Fused %d AxialRearrange instances", rearrange_count
         )
         return ShapeCanonicalizer().apply_dead_code_elimination(model)
 
-    def _attach_axial_rearrange_function_def(self, model: onnx.ModelProto) -> None:
+    def _attach_axial_rearrange_function_def(
+        self,
+        model: onnx.ModelProto,
+        mode: str = "freq_to_time",
+        perm: list[int] | None = None,
+    ) -> None:
         """Attach formal ONNX FunctionProto definition for AxialRearrange."""
         func_name = "AxialRearrange"
         domain = "custom.pytorch"
-        if any(f.name == func_name and f.domain == domain for f in model.functions):
-            return
+        surviving = [f for f in model.functions if not (f.name == func_name and f.domain == domain)]
+        del model.functions[:]
+        model.functions.extend(surviving)
+
+        ensure_model_latest_opset(model)
         opset_standard = helper.make_opsetid("", LATEST_OPSET)
-        id_node = helper.make_node("Identity", inputs=["x"], outputs=["y"])
+        if mode == "add_channel":
+            axes_const = helper.make_node(
+                "Constant",
+                inputs=[],
+                outputs=["axes_const"],
+                value=helper.make_tensor("axes_const", onnx.TensorProto.INT64, [1], [1]),
+            )
+            node = helper.make_node("Unsqueeze", inputs=["x", "axes_const"], outputs=["y"])
+            nodes = [axes_const, node]
+        elif mode == "freq_in":
+            t = helper.make_node("Transpose", inputs=["x"], outputs=["t_out"], perm=perm or [0, 3, 2, 1])
+            c_shape = helper.make_node(
+                "Constant",
+                inputs=[],
+                outputs=["shape_const"],
+                value=helper.make_tensor("shape_const", onnx.TensorProto.INT64, [3], [-1, 0, 0]),
+            )
+            r = helper.make_node("Reshape", inputs=["t_out", "shape_const"], outputs=["y"])
+            nodes = [t, c_shape, r]
+        elif mode == "freq_to_time":
+            # Reshape 3D -> 4D, Transpose 4D -> 4D, Reshape 4D -> 3D
+            c_shape1 = helper.make_node(
+                "Constant",
+                inputs=[],
+                outputs=["shape_4d"],
+                value=helper.make_tensor("shape_4d", onnx.TensorProto.INT64, [4], [1, -1, 0, 0]),
+            )
+            r1 = helper.make_node("Reshape", inputs=["x", "shape_4d"], outputs=["x_4d"])
+            t = helper.make_node("Transpose", inputs=["x_4d"], outputs=["t_out"], perm=perm or [0, 2, 1, 3])
+            c_shape2 = helper.make_node(
+                "Constant",
+                inputs=[],
+                outputs=["shape_3d"],
+                value=helper.make_tensor("shape_3d", onnx.TensorProto.INT64, [3], [-1, 0, 0]),
+            )
+            r2 = helper.make_node("Reshape", inputs=["t_out", "shape_3d"], outputs=["y"])
+            nodes = [c_shape1, r1, t, c_shape2, r2]
+        elif mode == "time_to_conv":
+            t = helper.make_node("Transpose", inputs=["x"], outputs=["y"], perm=perm or [0, 3, 1, 2])
+            nodes = [t]
+        elif mode == "flatten_fc":
+            t = helper.make_node("Transpose", inputs=["x"], outputs=["t_out"], perm=perm or [0, 3, 1, 2])
+            c_shape = helper.make_node(
+                "Constant",
+                inputs=[],
+                outputs=["shape_const"],
+                value=helper.make_tensor("shape_const", onnx.TensorProto.INT64, [3], [0, 0, -1]),
+            )
+            r = helper.make_node("Reshape", inputs=["t_out", "shape_const"], outputs=["y"])
+            nodes = [t, c_shape, r]
+        else:
+            id_node = helper.make_node("Identity", inputs=["x"], outputs=["y"])
+            nodes = [id_node]
+
         rearrange_func = helper.make_function(
             domain=domain,
             fname=func_name,
             inputs=["x"],
             outputs=["y"],
-            nodes=[id_node],
+            nodes=nodes,
             opset_imports=[opset_standard],
-            doc_string="Axial conformer rearrangement function (freq_in, freq_to_time, time_to_conv, add_channel)",
+            doc_string=f"Axial conformer rearrangement function ({mode})",
         )
         model.functions.append(rearrange_func)
