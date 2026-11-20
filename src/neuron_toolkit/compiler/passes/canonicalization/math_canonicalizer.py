@@ -39,6 +39,7 @@ class MathCanonicalizer(Pass):
             model = self.apply_linear_fusion(model, mode=context.mode)
         if context.should_run("continuous_math"):
             model = self.apply_continuous_math_collapse(model)
+        model = self.apply_reciprocal_mul_fold(model)
 
         nodes_after = len(model.graph.node)
         context.record_pass(self.name, nodes_before, nodes_after)
@@ -187,10 +188,15 @@ class MathCanonicalizer(Pass):
                     w_dtype = np.float32
                     if w_name in init_arrays:
                         w_arr = init_arrays[w_name]
-                        out_features = w_arr.shape[-1]
+                        out_features = w_arr.shape[-1] if w_arr.ndim >= 1 else 1
                         w_dtype = w_arr.dtype
                     else:
                         for vi in list(graph.value_info) + list(graph.input) + list(graph.output):
+                            if vi.name == n.output[0] and vi.type.tensor_type.shape.dim:
+                                last_d = vi.type.tensor_type.shape.dim[-1]
+                                if last_d.dim_value > 0:
+                                    out_features = last_d.dim_value
+                                break
                             if vi.name == w_name and vi.type.tensor_type.shape.dim:
                                 last_d = vi.type.tensor_type.shape.dim[-1]
                                 if last_d.dim_value > 0:
@@ -201,11 +207,6 @@ class MathCanonicalizer(Pass):
                                     if hasattr(helper, "tensor_dtype_to_np_dtype")
                                     else np.float32
                                 )
-                                break
-                            if vi.name == n.output[0] and vi.type.tensor_type.shape.dim:
-                                last_d = vi.type.tensor_type.shape.dim[-1]
-                                if last_d.dim_value > 0:
-                                    out_features = last_d.dim_value
                                 break
 
                     if out_features is not None:
@@ -378,4 +379,58 @@ class MathCanonicalizer(Pass):
         log.info(
             "Continuous Math Collapse: Folded %d constant math operations", math_count
         )
+        return model
+
+    def apply_reciprocal_mul_fold(self, model: onnx.ModelProto) -> onnx.ModelProto:
+        """Fold Mul(num, Reciprocal(denom)) -> Div(num, denom)."""
+        graph = model.graph
+        node_by_output = {out: n for n in graph.node for out in n.output if out}
+        consumer_map: dict[str, list[onnx.NodeProto]] = collections.defaultdict(list)
+        for n in graph.node:
+            for inp in n.input:
+                consumer_map[inp].append(n)
+        graph_outputs = {out.name for out in graph.output}
+
+        nodes_to_drop = set()
+        replacements = {}
+        for n in graph.node:
+            if n.op_type == "Mul" and len(n.input) == 2:
+                in0, in1 = n.input[0], n.input[1]
+                p0 = node_by_output.get(in0)
+                p1 = node_by_output.get(in1)
+                recip_node = None
+                num_input = None
+                if p0 and p0.op_type == "Reciprocal" and len(p0.input) == 1:
+                    recip_node = p0
+                    num_input = in1
+                elif p1 and p1.op_type == "Reciprocal" and len(p1.input) == 1:
+                    recip_node = p1
+                    num_input = in0
+
+                if recip_node is not None and num_input is not None:
+                    denom_input = recip_node.input[0]
+                    div_node = helper.make_node(
+                        "Div",
+                        inputs=[num_input, denom_input],
+                        outputs=list(n.output),
+                        name=f"{n.name}_folded_div",
+                    )
+                    replacements[id(n)] = div_node
+                    if (
+                        len(consumer_map.get(recip_node.output[0], [])) <= 1
+                        and recip_node.output[0] not in graph_outputs
+                    ):
+                        nodes_to_drop.add(id(recip_node))
+
+        if not replacements:
+            return model
+
+        surviving = []
+        for n in graph.node:
+            if id(n) in replacements:
+                surviving.append(replacements[id(n)])
+            elif id(n) not in nodes_to_drop:
+                surviving.append(n)
+        del graph.node[:]
+        graph.node.extend(surviving)
         return model

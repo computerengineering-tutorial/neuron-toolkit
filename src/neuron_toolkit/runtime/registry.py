@@ -295,6 +295,8 @@ class OpRegistry:
                 return data
 
             pt_mode = "replicate" if mode == "edge" else mode
+            if pt_mode in ("replicate", "reflect") and (data.dim() < 3 or data.dim() > 5):
+                pt_mode = "constant"
             if pt_mode == "constant":
                 pad_val = (
                     bool(val)

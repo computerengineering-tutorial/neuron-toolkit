@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any
 
 import onnx
 
-from neuron_toolkit.compiler.base import CompilerContext, LATEST_OPSET
+from neuron_toolkit.compiler.base import CompilerContext, LATEST_OPSET, ensure_model_latest_opset
 from neuron_toolkit.compiler.exporters.onnx_exporter import OnnxExporter
 from neuron_toolkit.compiler.passes.canonicalization.activation_canonicalizer import (
     ActivationCanonicalizer,
@@ -82,6 +82,8 @@ class OptimizationPipeline:
 
         if context is None:
             context = CompilerContext(mode=self.mode)
+
+        ensure_model_latest_opset(model)
 
         log.info(
             "Starting 3-stage optimization pipeline (mode=%s, initial_nodes=%d)",
@@ -270,6 +272,7 @@ class OptimizationPipeline:
         # Stage 3: Target Exporter & Serialization
         # -------------------------------------------------------------
         model = self.exporter.export(model, context)
+        ensure_model_latest_opset(model)
 
         log.info(
             "Optimization complete. Final nodes: %d",

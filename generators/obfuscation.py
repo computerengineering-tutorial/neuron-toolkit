@@ -762,11 +762,48 @@ def strategy_onnx_reciprocal_mul_for_div(model: onnx.ModelProto, seed: int = 42)
     mutated = copy.deepcopy(model)
     graph = mutated.graph
 
+    int_types = {
+        TensorProto.INT64,
+        TensorProto.INT32,
+        TensorProto.INT16,
+        TensorProto.INT8,
+        TensorProto.UINT64,
+        TensorProto.UINT32,
+        TensorProto.UINT16,
+        TensorProto.UINT8,
+    }
+    init_types = {i.name: i.data_type for i in graph.initializer}
+    val_types = {
+        vi.name: vi.type.tensor_type.elem_type
+        for vi in list(graph.value_info) + list(graph.input)
+    }
+
+    const_int_outputs = set()
+    for n in graph.node:
+        if n.op_type == "Constant":
+            for attr in n.attribute:
+                if attr.name == "value" and attr.t.data_type in int_types:
+                    const_int_outputs.update(n.output)
+        elif n.op_type in ("Shape", "Size", "NonZero"):
+            const_int_outputs.update(n.output)
+
     new_nodes: list[onnx.NodeProto] = []
     for node in graph.node:
         if node.op_type == "Div" and len(node.input) == 2:
             num = node.input[0]
             denom = node.input[1]
+            # ONNX Reciprocal only supports floating-point types; never apply to integer division
+            if (
+                denom in const_int_outputs
+                or num in const_int_outputs
+                or init_types.get(denom) in int_types
+                or init_types.get(num) in int_types
+                or val_types.get(denom) in int_types
+                or val_types.get(num) in int_types
+            ):
+                new_nodes.append(node)
+                continue
+
             out = node.output[0]
             recip_out = f"{denom}_recip_{seed}"
 

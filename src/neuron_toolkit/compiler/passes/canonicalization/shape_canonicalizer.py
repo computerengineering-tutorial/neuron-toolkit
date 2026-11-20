@@ -415,10 +415,9 @@ class ShapeCanonicalizer(Pass):
                     and (prev_node.name or prev_node.output[0]) not in nodes_to_drop
                 ):
                     interm = prev_node.output[0]
-                    if interm not in graph_outputs:
+                    if interm not in graph_outputs and len(consumer_map.get(interm, [])) <= 1:
                         n.input[0] = prev_node.input[0]
-                        if len(consumer_map.get(interm, [])) <= 1:
-                            nodes_to_drop.add(prev_node.name or interm)
+                        nodes_to_drop.add(prev_node.name or interm)
                         modified = True
 
             if not modified:
@@ -826,5 +825,17 @@ class ShapeCanonicalizer(Pass):
                 break
             del graph.node[:]
             graph.node.extend(surviving)
+
+        # Prune unused initializers whose values are not consumed by any node or function
+        all_used_inputs = collect_used_inputs(graph.node)
+        for fn in model.functions:
+            all_used_inputs.update(collect_used_inputs(fn.node))
+        filtered_inits = [
+            i
+            for i in graph.initializer
+            if i.name in all_used_inputs or i.name in graph_outputs
+        ]
+        del graph.initializer[:]
+        graph.initializer.extend(filtered_inits)
 
         return model

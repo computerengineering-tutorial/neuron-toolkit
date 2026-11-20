@@ -27,15 +27,16 @@ import logging
 import re
 from pathlib import Path
 
+import numpy as np
 import onnx
-from onnx import helper
+from onnx import helper, numpy_helper
 
 from neuron_toolkit.compiler.architectures.fingerprint import (
     build_monomorphized_op_type,
     compute_subgraph_fingerprint,
     ensure_specialized_function_proto,
 )
-from neuron_toolkit.compiler.base import CompilerPass, LATEST_OPSET
+from neuron_toolkit.compiler.base import CompilerPass, LATEST_OPSET, ensure_model_latest_opset
 from neuron_toolkit.compiler.passes.canonicalization.shape_canonicalizer import (
     ShapeCanonicalizer,
 )
@@ -53,11 +54,20 @@ def _ensure_custom_domain(model: onnx.ModelProto, domain: str = "custom.pytorch"
 
 
 def _replace_nodes_topologically(
-    graph: onnx.GraphProto,
+    graph_or_model: onnx.GraphProto | onnx.ModelProto,
     nodes_to_drop: set[str | int],
     new_nodes: list[onnx.NodeProto],
 ) -> None:
     """Replace dropped nodes in-place at the topological exit positions."""
+    if isinstance(graph_or_model, onnx.ModelProto):
+        model = graph_or_model
+        graph = model.graph
+        for n in new_nodes:
+            if n.domain and n.domain not in ("", "ai.onnx"):
+                _ensure_custom_domain(model, n.domain)
+    else:
+        graph = graph_or_model
+
     clean_names = {x for x in nodes_to_drop if isinstance(x, str) and x}
     drop_ids = {x for x in nodes_to_drop if isinstance(x, int)}
     new_node_map = {out: n for n in new_nodes for out in n.output if out}
@@ -66,7 +76,9 @@ def _replace_nodes_topologically(
         is_dropped = False
         if n.name and n.name in clean_names:
             is_dropped = True
-        elif id(n) in drop_ids:
+        elif any(out in clean_names for out in n.output):
+            is_dropped = True
+        elif not n.name and id(n) in drop_ids:
             is_dropped = True
 
         if is_dropped:
@@ -319,7 +331,7 @@ class MacroBlockSynthesizer(CompilerPass):
         if not new_nodes:
             return model
 
-        _replace_nodes_topologically(graph, nodes_to_drop, new_nodes)
+        _replace_nodes_topologically(model, nodes_to_drop, new_nodes)
         log.info("DeepMLP Norm Act Fusion: Fused %d instances", count)
         return ShapeCanonicalizer().apply_dead_code_elimination(model)
 
@@ -388,7 +400,7 @@ class MacroBlockSynthesizer(CompilerPass):
         if not new_nodes:
             return model
 
-        _replace_nodes_topologically(graph, nodes_to_drop, new_nodes)
+        _replace_nodes_topologically(model, nodes_to_drop, new_nodes)
         if mode == "function_proto":
             self._attach_sgu_function_def(model)
 
@@ -401,6 +413,7 @@ class MacroBlockSynthesizer(CompilerPass):
         domain = "custom.pytorch"
         if any(f.name == func_name and f.domain == domain for f in model.functions):
             return
+        ensure_model_latest_opset(model)
         opset_standard = helper.make_opsetid("", LATEST_OPSET)
         opset_custom = helper.make_opsetid("custom.pytorch", 1)
 
@@ -449,6 +462,7 @@ class MacroBlockSynthesizer(CompilerPass):
         matches = detector.find_all(add_out)
         if not matches:
             # Fallback: check pre-fused GatedUnit + carry branch pattern
+            # Only match if carry branch is Sub(1.0, Sigmoid(gate_in)) where Sigmoid(gate_in) matches GatedUnit's gate_in
             node_by_output = {out: n for n in graph.node for out in n.output if out}
             nodes_to_drop = set()
             new_nodes = []
@@ -465,25 +479,26 @@ class MacroBlockSynthesizer(CompilerPass):
                         sub_cand = node_by_output.get(carry_mul.input[0]) or node_by_output.get(carry_mul.input[1])
                         x_tensor = carry_mul.input[1] if sub_cand == node_by_output.get(carry_mul.input[0]) else carry_mul.input[0]
                         if sub_cand and sub_cand.op_type == "Sub":
-                            sig_cand = node_by_output.get(sub_cand.input[1]) or node_by_output.get(sub_cand.input[0])
-                            nodes_to_drop.update({n.name, gated_cand.name, carry_mul.name, sub_cand.name})
-                            if sig_cand:
-                                nodes_to_drop.add(sig_cand.name)
-                            hw_inputs = [gated_cand.input[0], gated_cand.input[1], x_tensor]
-                            _ensure_custom_domain(model, "custom.pytorch")
-                            hw_node = helper.make_node(
-                                "HighwayBlock",
-                                inputs=hw_inputs,
-                                outputs=[n.output[0]],
-                                name=f"{n.name}_fused_highway",
-                                domain="custom.pytorch",
-                                activation="Sigmoid",
-                            )
-                            new_nodes.append(hw_node)
-                            count += 1
+                            sig_node = node_by_output.get(sub_cand.input[1]) or node_by_output.get(sub_cand.input[0])
+                            if sig_node and sig_node.op_type == "Sigmoid" and len(sig_node.input) >= 1:
+                                gate_in = sig_node.input[0]
+                                if gate_in == gated_cand.input[1]:
+                                    nodes_to_drop.update({n.name, gated_cand.name, carry_mul.name, sub_cand.name, sig_node.name})
+                                    hw_inputs = [gated_cand.input[0], gate_in, x_tensor]
+                                    _ensure_custom_domain(model, "custom.pytorch")
+                                    hw_node = helper.make_node(
+                                        "HighwayBlock",
+                                        inputs=hw_inputs,
+                                        outputs=[n.output[0]],
+                                        name=f"{n.name}_fused_highway",
+                                        domain="custom.pytorch",
+                                        activation="Sigmoid",
+                                    )
+                                    new_nodes.append(hw_node)
+                                    count += 1
             if not new_nodes:
                 return model
-            _replace_nodes_topologically(graph, nodes_to_drop, new_nodes)
+            _replace_nodes_topologically(model, nodes_to_drop, new_nodes)
             if mode == "function_proto":
                 self._attach_highway_function_def(model, formal_inputs=["h", "gate_in", "x"])
             log.info("HighwayBlock Fusion: Fused %d instances", count)
@@ -529,7 +544,7 @@ class MacroBlockSynthesizer(CompilerPass):
         if not new_nodes:
             return model
 
-        _replace_nodes_topologically(graph, nodes_to_drop, new_nodes)
+        _replace_nodes_topologically(model, nodes_to_drop, new_nodes)
         if mode == "function_proto":
             self._attach_highway_function_def(model)
 
@@ -544,6 +559,7 @@ class MacroBlockSynthesizer(CompilerPass):
         domain = "custom.pytorch"
         if any(f.name == func_name and f.domain == domain for f in model.functions):
             return
+        ensure_model_latest_opset(model)
         opset_standard = helper.make_opsetid("", LATEST_OPSET)
         opset_custom = helper.make_opsetid("custom.pytorch", 1)
 
@@ -663,7 +679,7 @@ class MacroBlockSynthesizer(CompilerPass):
         if not new_nodes:
             return model
 
-        _replace_nodes_topologically(graph, nodes_to_drop, new_nodes)
+        _replace_nodes_topologically(model, nodes_to_drop, new_nodes)
         if mode == "function_proto":
             self._attach_se_function_def(model)
 
@@ -676,6 +692,7 @@ class MacroBlockSynthesizer(CompilerPass):
         domain = "custom.pytorch"
         if any(f.name == func_name and f.domain == domain for f in model.functions):
             return
+        ensure_model_latest_opset(model)
         opset_standard = helper.make_opsetid("", LATEST_OPSET)
         opset_custom = helper.make_opsetid("custom.pytorch", 1)
 
@@ -783,7 +800,7 @@ class MacroBlockSynthesizer(CompilerPass):
         if not new_nodes:
             return model
 
-        _replace_nodes_topologically(graph, nodes_to_drop, new_nodes)
+        _replace_nodes_topologically(model, nodes_to_drop, new_nodes)
         log.info("PreActivation ResNet Fusion: Fused %d ResidualBlock instances", count)
         return ShapeCanonicalizer().apply_dead_code_elimination(model)
 
@@ -793,6 +810,7 @@ class MacroBlockSynthesizer(CompilerPass):
         domain = "custom.pytorch"
         if any(f.name == func_name and f.domain == domain for f in model.functions):
             return
+        ensure_model_latest_opset(model)
         opset_standard = helper.make_opsetid("", LATEST_OPSET)
         opset_custom = helper.make_opsetid("custom.pytorch", 1)
 
@@ -896,7 +914,7 @@ class MacroBlockSynthesizer(CompilerPass):
         if not new_nodes:
             return model
 
-        _replace_nodes_topologically(graph, nodes_to_drop, new_nodes)
+        _replace_nodes_topologically(model, nodes_to_drop, new_nodes)
         log.info("Audio LogMel Compressor Fusion: Fused %d instances", count)
         return ShapeCanonicalizer().apply_dead_code_elimination(model)
 
@@ -906,6 +924,7 @@ class MacroBlockSynthesizer(CompilerPass):
         domain = "custom.pytorch"
         if any(f.name == func_name and f.domain == domain for f in model.functions):
             return
+        ensure_model_latest_opset(model)
         opset_standard = helper.make_opsetid("", LATEST_OPSET)
         opset_custom = helper.make_opsetid("custom.pytorch", 1)
 
@@ -1006,7 +1025,7 @@ class MacroBlockSynthesizer(CompilerPass):
         if not new_nodes:
             return model
 
-        _replace_nodes_topologically(graph, nodes_to_drop, new_nodes)
+        _replace_nodes_topologically(model, nodes_to_drop, new_nodes)
         if mode == "function_proto":
             self._attach_mha_composite_function_def(model)
 
@@ -1019,6 +1038,7 @@ class MacroBlockSynthesizer(CompilerPass):
         domain = "custom.pytorch"
         if any(f.name == func_name and f.domain == domain for f in model.functions):
             return
+        ensure_model_latest_opset(model)
         opset_standard = helper.make_opsetid("", LATEST_OPSET)
         opset_custom = helper.make_opsetid("custom.pytorch", 1)
 
@@ -1147,7 +1167,7 @@ class MacroBlockSynthesizer(CompilerPass):
         if not new_nodes:
             return model
 
-        _replace_nodes_topologically(graph, nodes_to_drop, new_nodes)
+        _replace_nodes_topologically(model, nodes_to_drop, new_nodes)
         if mode == "function_proto":
             self._attach_gated_mha_composite_function_def(model)
 
@@ -1160,6 +1180,7 @@ class MacroBlockSynthesizer(CompilerPass):
         domain = "custom.pytorch"
         if any(f.name == func_name and f.domain == domain for f in model.functions):
             return
+        ensure_model_latest_opset(model)
         opset_standard = helper.make_opsetid("", LATEST_OPSET)
         opset_custom = helper.make_opsetid("custom.pytorch", 1)
 
@@ -1251,7 +1272,7 @@ class MacroBlockSynthesizer(CompilerPass):
         if not new_nodes:
             return model
 
-        _replace_nodes_topologically(graph, nodes_to_drop, new_nodes)
+        _replace_nodes_topologically(model, nodes_to_drop, new_nodes)
         if mode == "function_proto":
             self._attach_transformer_block_function_def(model)
 
@@ -1264,6 +1285,7 @@ class MacroBlockSynthesizer(CompilerPass):
         domain = "custom.pytorch"
         if any(f.name == func_name and f.domain == domain for f in model.functions):
             return
+        ensure_model_latest_opset(model)
         opset_standard = helper.make_opsetid("", LATEST_OPSET)
         opset_custom = helper.make_opsetid("custom.pytorch", 1)
 
@@ -1296,240 +1318,238 @@ class MacroBlockSynthesizer(CompilerPass):
         new_nodes: list[onnx.NodeProto] = []
         count = 0
 
-        # 1. Universally discover repeating layer stack across any framework
-        INTRA_BLOCK_COMPONENTS = {
-            "fc", "ln", "proj", "linear", "norm", "act", "mul", "add",
-            "matmul", "conv", "bn", "init", "const", "input", "output",
-            "weight", "bias", "node", "res", "sub", "div", "shape", "slice",
-            "transpose", "select", "cast", "identity",
+        # 1. Pure graph-topology discovery of dual-residual Transformer layers (Zero node-name dependency)
+        producer_map: dict[str, onnx.NodeProto] = {
+            out: n for n in graph.node for out in n.output if out
         }
-
-        depth_indices: dict[int, dict[str, set[int]]] = collections.defaultdict(
-            lambda: collections.defaultdict(set)
-        )
-        for n in graph.node:
-            parts = re.split(r"[/.]", n.name)
-            for d, part in enumerate(parts[:-1]):
-                m = re.match(r"^([a-zA-Z0-9_\-]*?)[_.]?(\d+)$", part)
-                if m:
-                    p = parts[d - 1] if part.isdigit() and d > 0 else (m.group(1) or "indexed")
-                    if p.lower() in INTRA_BLOCK_COMPONENTS:
-                        continue
-                    idx = int(m.group(2))
-                    if idx < 100:
-                        depth_indices[d][p].add(idx)
-
-        best_depth = None
-        best_indices: list[int] = []
-        for d in depth_indices:
-            prefixes_at_d = {p for p, idxs in depth_indices[d].items() if len(idxs) >= 2}
-            if not prefixes_at_d:
-                continue
-            candidate_all = set.union(*(depth_indices[d][p] for p in prefixes_at_d))
-            if 0 not in candidate_all and 1 in candidate_all:
-                for n in graph.node:
-                    parts = re.split(r"[/.]", n.name)
-                    if len(parts) > d + 1 and parts[d] in prefixes_at_d:
-                        candidate_all.add(0)
-                        break
-            seq: list[int] = []
-            start = 0 if 0 in candidate_all else 1
-            curr = start
-            while curr in candidate_all:
-                seq.append(curr)
-                curr += 1
-            if len(seq) >= 2 and (not best_indices or len(seq) > len(best_indices)):
-                best_depth = d
-                best_indices = seq
-
-        flat_prefix = None
-        if not best_indices:
-            flat_indices: dict[str, set[int]] = collections.defaultdict(set)
-            for n in graph.node:
-                for m in re.finditer(r"(?:^|[._/])([a-zA-Z0-9_\-]+?)[_.]?(\d+)(?:(?![0-9])[._/]|$)", n.name):
-                    p = m.group(1).lower()
-                    if p in INTRA_BLOCK_COMPONENTS or p.isdigit() or len(p) < 2:
-                        continue
-                    idx = int(m.group(2))
-                    if idx < 100:
-                        flat_indices[p].add(idx)
-
-            for p, idxs in flat_indices.items():
-                if len(idxs) >= 2:
-                    seq = []
-                    start = 0 if 0 in idxs else 1
-                    curr = start
-                    while curr in idxs:
-                        seq.append(curr)
-                        curr += 1
-                    if len(seq) >= 2 and len(seq) > len(best_indices):
-                        best_indices = seq
-                        flat_prefix = p
-
-        if not best_indices:
-            return model
-
-        sorted_indices = best_indices
-        producers = {out: n for n in graph.node for out in n.output if out}
-        consumer_map = collections.defaultdict(list)
+        consumer_map: dict[str, list[onnx.NodeProto]] = collections.defaultdict(list)
         for n in graph.node:
             for inp in n.input:
                 consumer_map[inp].append(n)
         graph_outputs = {o.name for o in graph.output}
-        prefixes_at_depth = (
-            {p for p, idxs in depth_indices[best_depth].items() if len(idxs) >= 2}
-            if best_depth is not None
-            else set()
-        )
+        node_order = {id(n): i for i, n in enumerate(graph.node)}
 
-        # 2. Universally identify terminal residual merge node for each layer
-        terminals: dict[int, onnx.NodeProto] = {}
-        layer_scoped_nodes: dict[int, list[onnx.NodeProto]] = collections.defaultdict(list)
+        def can_reach(start_tensor: str, target_tensor: str, max_depth: int = 25) -> bool:
+            if not start_tensor or not target_tensor or target_tensor not in producer_map:
+                return False
+            visited = set()
+            queue = [(target_tensor, 0)]
+            while queue:
+                curr, depth = queue.pop(0)
+                if curr == start_tensor:
+                    return True
+                if depth >= max_depth or curr in visited:
+                    continue
+                visited.add(curr)
+                p = producer_map.get(curr)
+                if p:
+                    for inp in p.input:
+                        if inp:
+                            if inp == start_tensor:
+                                return True
+                            queue.append((inp, depth + 1))
+            return False
 
-        for n in graph.node:
-            parts = re.split(r"[/.]", n.name)
-            if best_depth is not None and len(parts) > best_depth:
-                part = parts[best_depth]
-                m = re.match(r"^([a-zA-Z0-9_\-]*?)[_.]?(\d+)$", part)
-                if m and int(m.group(2)) in sorted_indices:
-                    layer_scoped_nodes[int(m.group(2))].append(n)
-                elif 0 in sorted_indices and part in prefixes_at_depth:
-                    layer_scoped_nodes[0].append(n)
-            else:
-                for idx in sorted_indices:
-                    pattern = (
-                        rf"(?:^|[._/]){flat_prefix}[._]?{idx}(?:(?![0-9])[._/]|$)"
-                        if flat_prefix
-                        else rf"(?:^|[._/]){idx}(?:(?![0-9])[._/]|$)"
-                    )
-                    if re.search(pattern, n.name, re.IGNORECASE):
-                        layer_scoped_nodes[idx].append(n)
+        merge_nodes = [
+            n
+            for n in graph.node
+            if n.op_type in ("Add", "SkipLayerNormalization") and len(n.input) >= 2
+        ]
+
+        detected_blocks = []
+        used_merges = set()
+
+        for m2 in merge_nodes:
+            if id(m2) in used_merges:
+                continue
+            in_a, in_b = m2.input[0], m2.input[1]
+
+            m1 = None
+            x_in = None
+            r1 = None
+
+            # 1. Check if one of m2's inputs is directly m1 (or Norm(m1))
+            for cand_r1, cand_branch in ((in_a, in_b), (in_b, in_a)):
+                curr = cand_r1
+                if curr in producer_map and producer_map[curr].op_type in (
+                    "LayerNormalization",
+                    "RMSNorm",
+                ):
+                    curr = producer_map[curr].input[0]
+                if (
+                    curr in producer_map
+                    and producer_map[curr].op_type in ("Add", "SkipLayerNormalization")
+                    and id(producer_map[curr]) not in used_merges
+                    and len(producer_map[curr].input) >= 2
+                ):
+                    potential_m1 = producer_map[curr]
+                    p_a, p_b = potential_m1.input[0], potential_m1.input[1]
+                    if can_reach(p_a, p_b):
+                        m1 = potential_m1
+                        x_in = p_a
+                        r1 = cand_r1
+                        break
+                    elif can_reach(p_b, p_a):
+                        m1 = potential_m1
+                        x_in = p_b
+                        r1 = cand_r1
                         break
 
-        for idx in sorted_indices:
-            l_nodes = layer_scoped_nodes.get(idx, [])
-            res_cands = [
-                n
-                for n in l_nodes
-                if n.op_type in ("Add", "SkipLayerNormalization")
-            ]
-            if not res_cands:
-                res_cands = [
-                    n
-                    for n in l_nodes
-                    if n.op_type == "LayerNormalization"
-                ]
-            if res_cands:
-                terminals[idx] = res_cands[-1]
+            # 2. Fallback to reachability if not found directly
+            if m1 is None:
+                if can_reach(in_a, in_b):
+                    r1 = in_a
+                elif can_reach(in_b, in_a):
+                    r1 = in_b
+                else:
+                    continue
 
-        valid_indices = [idx for idx in sorted_indices if idx in terminals]
-        if not valid_indices:
+                curr = r1
+                if curr in producer_map and producer_map[curr].op_type in (
+                    "LayerNormalization",
+                    "RMSNorm",
+                ):
+                    curr = producer_map[curr].input[0]
+                if curr not in producer_map:
+                    continue
+                potential_m1 = producer_map[curr]
+                if (
+                    id(potential_m1) in used_merges
+                    or potential_m1.op_type not in ("Add", "SkipLayerNormalization")
+                    or len(potential_m1.input) < 2
+                ):
+                    continue
+                p_a, p_b = potential_m1.input[0], potential_m1.input[1]
+                if can_reach(p_a, p_b):
+                    m1 = potential_m1
+                    x_in = p_a
+                elif can_reach(p_b, p_a):
+                    m1 = potential_m1
+                    x_in = p_b
+                else:
+                    continue
+
+            # In a Transformer layer, Sub-block 1 is Attention, never FFN.
+            # If Sub-block 1 is an FFN (Linear -> Act -> Linear), this is an MLP/FFN stack, not a Transformer.
+            is_ffn_1 = False
+            q_chk = [x_in]
+            visited_chk = set()
+            while q_chk:
+                cur_t = q_chk.pop(0)
+                if cur_t in visited_chk or cur_t == m1.output[0]:
+                    continue
+                visited_chk.add(cur_t)
+                for consumer in consumer_map.get(cur_t, []):
+                    if consumer.op_type in ("Gelu", "FastGelu", "Relu", "SiLU", "Tanh", "Mish"):
+                        inp_c = producer_map.get(consumer.input[0])
+                        if inp_c and inp_c.op_type in ("Linear", "MatMul", "Gemm"):
+                            out_c = consumer_map.get(consumer.output[0], [])
+                            if any(oc.op_type in ("Linear", "MatMul", "Gemm") for oc in out_c):
+                                is_ffn_1 = True
+                                break
+                    for out in consumer.output:
+                        if out and out not in visited_chk:
+                            q_chk.append(out)
+                if is_ffn_1:
+                    break
+
+            if is_ffn_1:
+                continue
+
+            used_merges.add(id(m1))
+            used_merges.add(id(m2))
+
+            final_out = m2.output[0]
+            c_m2 = consumer_map.get(final_out, [])
+            if len(c_m2) == 1 and c_m2[0].op_type in ("LayerNormalization", "RMSNorm"):
+                final_out = c_m2[0].output[0]
+
+            # Forward reachability from x_in bounded by final_out
+            forward_reachable = set()
+            q_fwd = [x_in]
+            while q_fwd:
+                c = q_fwd.pop(0)
+                if c in forward_reachable:
+                    continue
+                forward_reachable.add(c)
+                if c == final_out:
+                    continue
+                for consumer in consumer_map.get(c, []):
+                    for out in consumer.output:
+                        if out and out not in forward_reachable:
+                            q_fwd.append(out)
+
+            # Backward reachability from final_out bounded by x_in
+            backward_reachable = set()
+            q_bwd = [final_out]
+            while q_bwd:
+                c = q_bwd.pop(0)
+                if c in backward_reachable:
+                    continue
+                backward_reachable.add(c)
+                if c == x_in:
+                    continue
+                p = producer_map.get(c)
+                if p:
+                    for inp in p.input:
+                        if inp and inp not in backward_reachable:
+                            q_bwd.append(inp)
+
+            internal_tensors = forward_reachable.intersection(backward_reachable)
+            block_nodes = [
+                n for n in graph.node
+                if any(out in internal_tensors and out != x_in for out in n.output)
+            ]
+            if len(block_nodes) >= 3:
+                # If a block is composed of multiple independent FeedForward or GatedUnit sub-blocks with NO Attention,
+                # it is an MLP stack / Gated MLP, NOT a Transformer Encoder block.
+                ffn_ops = [n for n in block_nodes if "FeedForward" in n.op_type]
+                gated_ops = [n for n in block_nodes if "GatedUnit" in n.op_type]
+                has_attention_op = any("Attention" in n.op_type or "Softmax" in n.op_type or "sdpa" in n.op_type.lower() for n in block_nodes)
+                if (len(ffn_ops) >= 2 or len(gated_ops) >= 2) and not has_attention_op:
+                    continue
+
+                block_nodes.sort(key=lambda n: node_order.get(id(n), 0))
+                detected_blocks.append(
+                    {
+                        "input": x_in,
+                        "output": final_out,
+                        "block_nodes": block_nodes,
+                    }
+                )
+
+        if not detected_blocks:
             return model
 
-        sorted_indices = valid_indices
         _ensure_custom_domain(model, rule.action.domain)
 
-        # 3. Universally find activation boundary before the first layer
-        first_idx = sorted_indices[0]
-        first_term = terminals[first_idx]
-
-        norms: list[onnx.NodeProto] = []
-        visited_norm: set[str] = set()
-
-        def _find_norms(t: str) -> None:
-            if not t or t not in producers:
-                return
-            p = producers[t]
-            if p.name in visited_norm:
-                return
-            visited_norm.add(p.name)
-            if p.op_type in ("LayerNormalization", "SkipLayerNormalization"):
-                norms.append(p)
-            for inp in p.input:
-                _find_norms(inp)
-
-        _find_norms(first_term.output[0])
-        node_order = {n.name: i for i, n in enumerate(graph.node)}
-        norms.sort(key=lambda n: node_order.get(n.name, 0))
-        curr_b = norms[0].input[0] if norms and norms[0].input else first_term.input[0]
-        while curr_b in producers and producers[curr_b].op_type in ("Reshape", "Transpose", "Identity"):
-            curr_b = producers[curr_b].input[0]
-        in_boundary_0 = curr_b
-
-        # 4. Topologically extract layer subgraphs
-        layer_raw_nodes: dict[int, list[onnx.NodeProto]] = {}
-        for i, idx in enumerate(sorted_indices):
-            term = terminals.get(idx)
-            if not term or not term.output:
-                continue
-            prev_idx = sorted_indices[i - 1] if i > 0 else None
-            in_boundary = (
-                terminals[prev_idx].output[0]
-                if prev_idx is not None and prev_idx in terminals and terminals[prev_idx].output
-                else in_boundary_0
-            )
-            visited: set[str] = set()
-            nodes: list[onnx.NodeProto] = []
-
-            def _dfs(t: str) -> None:
-                if not t or (in_boundary and t == in_boundary) or t not in producers:
-                    return
-                node = producers[t]
-                if node.name in visited or (in_boundary and in_boundary in node.output):
-                    return
-                visited.add(node.name)
-                nodes.append(node)
-                for inp in node.input:
-                    _dfs(inp)
-
-            _dfs(term.output[0])
-            layer_raw_nodes[idx] = nodes
-
-        # Find any node shared across layers (e.g. shared attention mask computation)
-        shared_counts = collections.Counter()
-        for raw_nodes in layer_raw_nodes.values():
-            for n in raw_nodes:
-                shared_counts[n.name] += 1
-        shared_nodes = {k for k, v in shared_counts.items() if v > 1}
-
-        # 5. Build macro block for each layer
-        for idx in sorted_indices:
-            term = terminals.get(idx)
-            if not term or not term.output:
-                continue
-
-            raw_ex = [
-                n
-                for n in layer_raw_nodes.get(idx, [])
-                if n.name not in shared_nodes
-            ]
-            scoped = layer_scoped_nodes.get(idx, [])
-            l_nodes = raw_ex if len(raw_ex) >= len(scoped) and len(raw_ex) >= 3 else scoped
-
-            if len(l_nodes) < 3:
-                continue
-
-            l_nodes.sort(key=lambda n: node_order.get(n.name, 0))
-            final_node = term
-            out_y = final_node.output[0]
-
+        for idx, block in enumerate(detected_blocks):
+            l_nodes = block["block_nodes"]
+            out_y = block["output"]
             internal_producers = {out for sn in l_nodes for out in sn.output if out}
             ext_inps: list[str] = []
             for sn in l_nodes:
                 for inp in sn.input:
                     if inp and inp not in internal_producers and inp not in ext_inps:
                         ext_inps.append(inp)
+
             l_nodes_ids = {id(n) for n in l_nodes}
             ext_outs = [out_y]
             for sn in l_nodes:
                 for out in sn.output:
                     if out and out != out_y and out not in ext_outs:
-                        if out in graph_outputs or any(id(c) not in l_nodes_ids for c in consumer_map.get(out, [])):
+                        if out in graph_outputs or any(
+                            id(c) not in l_nodes_ids
+                            for c in consumer_map.get(out, [])
+                        ):
                             ext_outs.append(out)
 
             for n in l_nodes:
                 if n.name:
                     nodes_to_drop.add(n.name)
+                for out in n.output:
+                    if out:
+                        nodes_to_drop.add(out)
                 nodes_to_drop.add(id(n))
 
             fp = compute_subgraph_fingerprint(l_nodes, ext_inps, ext_outs)
@@ -1563,7 +1583,7 @@ class MacroBlockSynthesizer(CompilerPass):
         if not new_nodes:
             return model
 
-        _replace_nodes_topologically(graph, nodes_to_drop, new_nodes)
+        _replace_nodes_topologically(model, nodes_to_drop, new_nodes)
         from neuron_toolkit.runtime.runner import toposort_graph
         sorted_nodes = toposort_graph(model)
         del graph.node[:]
@@ -1802,7 +1822,7 @@ class MacroBlockSynthesizer(CompilerPass):
         if not new_nodes:
             return model
 
-        _replace_nodes_topologically(graph, nodes_to_drop, new_nodes)
+        _replace_nodes_topologically(model, nodes_to_drop, new_nodes)
         log.info("AttentionKeyPaddingMask Fusion: Fused %d mask generators", len(new_nodes))
         return ShapeCanonicalizer().apply_dead_code_elimination(model)
 
@@ -2002,7 +2022,12 @@ class MacroBlockSynthesizer(CompilerPass):
         )
 
         if mode == "function_proto":
-            opset_standard = helper.make_opsetid("", LATEST_OPSET)
+            model_opset = 17
+            for op in model.opset_import:
+                if op.domain in ("", "ai.onnx"):
+                    model_opset = op.version
+                    break
+            opset_standard = helper.make_opsetid("", model_opset)
             opset_custom = helper.make_opsetid(rule.action.domain, 1)
 
             func = helper.make_function(
@@ -2453,7 +2478,7 @@ class MacroBlockSynthesizer(CompilerPass):
         graph = model.graph
         conv_nodes = [n for n in graph.node if n.op_type == "Conv"]
         concat_nodes = [n for n in graph.node if n.op_type == "Concat"]
-        add_nodes = [n for n in graph.node if n.op_type in ("Add", "SkipLayerNormalization", "LayerNormalization")]
+        add_nodes = [n for n in graph.node if n.op_type in ("Add", "SkipLayerNormalization")]
         if not conv_nodes or not concat_nodes or not add_nodes:
             return model
 
@@ -2536,7 +2561,23 @@ class MacroBlockSynthesizer(CompilerPass):
             name="fused_vit_patch_embed",
             domain="custom.pytorch",
         )
-        nodes_to_drop = {id(sn) for sn in sub_nodes}
+        sub_node_ids = {id(sn) for sn in sub_nodes}
+        nodes_to_drop = set()
+        for sn in sub_nodes:
+            if sn == vit_add:
+                nodes_to_drop.add(id(sn))
+                continue
+            has_external_consumer = False
+            for out in sn.output:
+                for consumer in consumer_map.get(out, []):
+                    if id(consumer) not in sub_node_ids:
+                        has_external_consumer = True
+                        break
+                if has_external_consumer:
+                    break
+            if not has_external_consumer:
+                nodes_to_drop.add(id(sn))
+
         surviving = [n for n in graph.node if id(n) not in nodes_to_drop]
         surviving.append(vit_node)
         del graph.node[:]
@@ -2664,8 +2705,18 @@ class MacroBlockSynthesizer(CompilerPass):
                 domain="custom.pytorch",
             )
             new_nodes.append(fused_node)
-            nodes_to_drop.update({n.name for n in [dql, dq_act, mm_node] if n.name})
-            nodes_to_drop.update({id(dql), id(dq_act), id(mm_node)})
+            if len(consumer_map.get(q_out, [])) <= 1:
+                if dql.name:
+                    nodes_to_drop.add(dql.name)
+                nodes_to_drop.add(id(dql))
+            if len(consumer_map.get(act_dq_out, [])) <= 1:
+                if dq_act.name:
+                    nodes_to_drop.add(dq_act.name)
+                nodes_to_drop.add(id(dq_act))
+
+            if mm_node.name:
+                nodes_to_drop.add(mm_node.name)
+            nodes_to_drop.add(id(mm_node))
             if add_node:
                 if add_node.name:
                     nodes_to_drop.add(add_node.name)
@@ -2679,9 +2730,49 @@ class MacroBlockSynthesizer(CompilerPass):
 
         if mode == "function_proto":
             has_biased = any(len(n.input) >= 3 and n.input[2] for n in new_nodes)
+            if has_biased:
+                init_arrays = {
+                    i.name: numpy_helper.to_array(i) for i in graph.initializer
+                }
+                for n in new_nodes:
+                    if len(n.input) == 2:
+                        w_name = n.input[1]
+                        out_features = None
+                        w_dtype = np.float32
+                        if w_name in init_arrays:
+                            w_arr = init_arrays[w_name]
+                            out_features = w_arr.shape[-1]
+                            w_dtype = w_arr.dtype
+                        else:
+                            for vi in list(graph.value_info) + list(graph.input) + list(graph.output):
+                                if vi.name == w_name and vi.type.tensor_type.shape.dim:
+                                    last_d = vi.type.tensor_type.shape.dim[-1]
+                                    if last_d.dim_value > 0:
+                                        out_features = last_d.dim_value
+                                    elem_t = vi.type.tensor_type.elem_type
+                                    w_dtype = (
+                                        helper.tensor_dtype_to_np_dtype(elem_t)
+                                        if hasattr(helper, "tensor_dtype_to_np_dtype")
+                                        else np.float32
+                                    )
+                                    break
+                                if vi.name == n.output[0] and vi.type.tensor_type.shape.dim:
+                                    last_d = vi.type.tensor_type.shape.dim[-1]
+                                    if last_d.dim_value > 0:
+                                        out_features = last_d.dim_value
+                                    break
+                        if out_features is not None:
+                            zero_b_name = f"{w_name}_zero_bias"
+                            if zero_b_name not in init_arrays:
+                                zero_arr = np.zeros(out_features, dtype=w_dtype)
+                                init_arrays[zero_b_name] = zero_arr
+                                graph.initializer.append(
+                                    numpy_helper.from_array(zero_arr, name=zero_b_name)
+                                )
+                            n.input.append(zero_b_name)
             self._attach_dynamic_quant_linear_function_def(model, has_biased=has_biased)
 
-        _replace_nodes_topologically(graph, nodes_to_drop, new_nodes)
+        _replace_nodes_topologically(model, nodes_to_drop, new_nodes)
         from neuron_toolkit.runtime.runner import toposort_graph
         sorted_nodes = toposort_graph(model)
         del graph.node[:]
@@ -2698,6 +2789,7 @@ class MacroBlockSynthesizer(CompilerPass):
         if any(f.name == func_name and f.domain == domain for f in model.functions):
             return
 
+        ensure_model_latest_opset(model)
         opset_standard = helper.make_opsetid("", LATEST_OPSET)
 
         dql = helper.make_node(

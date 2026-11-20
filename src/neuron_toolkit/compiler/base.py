@@ -11,6 +11,34 @@ import onnx
 LATEST_OPSET: int = onnx.defs.onnx_opset_version()
 
 
+def ensure_model_latest_opset(model: onnx.ModelProto) -> None:
+    """Ensure model targets the modern latest ONNX opset for clean simplification."""
+    has_std = False
+    existing_domains = set()
+    for op in model.opset_import:
+        if op.domain in ("", "ai.onnx"):
+            op.version = LATEST_OPSET
+            has_std = True
+        existing_domains.add(op.domain)
+    if not has_std:
+        model.opset_import.append(onnx.helper.make_opsetid("", LATEST_OPSET))
+        existing_domains.add("")
+
+    # Auto-register all custom domains used by nodes or functions
+    used_domains = {n.domain for n in model.graph.node if n.domain and n.domain not in ("", "ai.onnx")}
+    for f in model.functions:
+        if f.domain and f.domain not in ("", "ai.onnx"):
+            used_domains.add(f.domain)
+        for fn in f.node:
+            if fn.domain and fn.domain not in ("", "ai.onnx"):
+                used_domains.add(fn.domain)
+
+    for d in sorted(used_domains):
+        if d not in existing_domains:
+            model.opset_import.append(onnx.helper.make_opsetid(d, 1))
+            existing_domains.add(d)
+
+
 @dataclass
 class CompilerContext:
     """Execution context and configuration for compiler optimization passes."""

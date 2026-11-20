@@ -38,16 +38,17 @@ class OnnxExporter:
         # 2. Mode-specific adjustments and Opset imports
         if context.mode in ("plain_custom_op", "pytorch_custom"):
             del model.functions[:]
-        elif context.mode == "modern_onnx":
-            has_main = False
-            for opset in model.opset_import:
-                if opset.domain in ("", "ai.onnx"):
-                    opset.version = LATEST_OPSET
-                    has_main = True
-            if not has_main:
-                model.opset_import.append(
-                    helper.make_opsetid("", LATEST_OPSET)
-                )
+
+        # Always export simplified models with modern latest ONNX opset
+        has_main = False
+        for opset in model.opset_import:
+            if opset.domain in ("", "ai.onnx"):
+                opset.version = LATEST_OPSET
+                has_main = True
+        if not has_main:
+            model.opset_import.append(
+                helper.make_opsetid("", LATEST_OPSET)
+            )
 
         # Align function opset imports with model opset imports for clean checker validation
         model_opsets = {op.domain: op.version for op in model.opset_import}
@@ -84,7 +85,10 @@ class OnnxExporter:
         try:
             onnx.checker.check_model(model)
         except Exception as e:
-            log.warning("onnx.checker validation note: %s", e)
+            if "No Opset registered for domain" in str(e):
+                log.debug("onnx.checker custom domain note: %s", e)
+            else:
+                log.warning("onnx.checker validation note: %s", e)
 
         # 5. Optional file output
         if output_path is not None:

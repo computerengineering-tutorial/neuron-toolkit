@@ -258,7 +258,11 @@ class StaticFolder(Pass):
                             pass
 
         folded_node_ids: set[int] = set()
-        for _ in range(20):
+        existing_inits: set[str] = {i.name for i in graph.initializer}
+        max_iterations = 50
+        iteration = 0
+        while iteration < max_iterations:
+            iteration += 1
             newly_folded = 0
             for n in foldable_nodes:
                 if id(n) in folded_node_ids:
@@ -267,6 +271,7 @@ class StaticFolder(Pass):
                     continue
 
                 try:
+                    clean_inputs = [inp for inp in n.input if inp]
                     # Try evaluating via ReferenceEvaluator
                     dtype_fn = getattr(
                         helper,
@@ -283,27 +288,38 @@ class StaticFolder(Pass):
                             dtype_fn(static_values[inp].dtype),
                             static_values[inp].shape,
                         )
-                        for inp in n.input
-                        if inp
+                        for inp in clean_inputs
                     ]
                     sub_outputs = [
                         helper.make_tensor_value_info(out, onnx.TensorProto.UNDEFINED, None)
                         for out in n.output
                         if out
                     ]
-                    sub_graph = helper.make_graph([n], "sub", sub_inputs, sub_outputs)
+                    node_inputs = list(n.input)
+                    while node_inputs and not node_inputs[-1]:
+                        node_inputs.pop()
+                    eval_node = helper.make_node(
+                        n.op_type,
+                        inputs=node_inputs,
+                        outputs=list(n.output),
+                        name="sub_eval",
+                    )
+                    eval_node.attribute.extend(n.attribute)
+                    sub_graph = helper.make_graph([eval_node], "sub", sub_inputs, sub_outputs)
                     sub_model = helper.make_model(
                         sub_graph, opset_imports=model.opset_import
                     )
                     sess = ReferenceEvaluator(sub_model)
-                    in_tensors = {inp: static_values[inp] for inp in n.input if inp}
+                    in_tensors = {inp: static_values[inp] for inp in clean_inputs}
                     res = sess.run(None, in_tensors)
                     for out_name, out_arr in zip(n.output, res):
                         if out_name:
                             static_values[out_name] = out_arr
-                            graph.initializer.append(
-                                numpy_helper.from_array(out_arr, name=out_name)
-                            )
+                            if out_name not in existing_inits:
+                                existing_inits.add(out_name)
+                                graph.initializer.append(
+                                    numpy_helper.from_array(out_arr, name=out_name)
+                                )
                     folded_node_ids.add(id(n))
                     newly_folded += 1
                 except Exception:
@@ -313,30 +329,38 @@ class StaticFolder(Pass):
                             val = static_values[n.input[0]] + static_values[n.input[1]]
                             out_name = n.output[0]
                             static_values[out_name] = val
-                            graph.initializer.append(
-                                numpy_helper.from_array(val, name=out_name)
-                            )
+                            if out_name not in existing_inits:
+                                existing_inits.add(out_name)
+                                graph.initializer.append(
+                                    numpy_helper.from_array(val, name=out_name)
+                                )
                         elif n.op_type == "Sub" and len(n.input) == 2:
                             val = static_values[n.input[0]] - static_values[n.input[1]]
                             out_name = n.output[0]
                             static_values[out_name] = val
-                            graph.initializer.append(
-                                numpy_helper.from_array(val, name=out_name)
-                            )
+                            if out_name not in existing_inits:
+                                existing_inits.add(out_name)
+                                graph.initializer.append(
+                                    numpy_helper.from_array(val, name=out_name)
+                                )
                         elif n.op_type == "Mul" and len(n.input) == 2:
                             val = static_values[n.input[0]] * static_values[n.input[1]]
                             out_name = n.output[0]
                             static_values[out_name] = val
-                            graph.initializer.append(
-                                numpy_helper.from_array(val, name=out_name)
-                            )
+                            if out_name not in existing_inits:
+                                existing_inits.add(out_name)
+                                graph.initializer.append(
+                                    numpy_helper.from_array(val, name=out_name)
+                                )
                         elif n.op_type == "Div" and len(n.input) == 2:
                             val = static_values[n.input[0]] / static_values[n.input[1]]
                             out_name = n.output[0]
                             static_values[out_name] = val
-                            graph.initializer.append(
-                                numpy_helper.from_array(val, name=out_name)
-                            )
+                            if out_name not in existing_inits:
+                                existing_inits.add(out_name)
+                                graph.initializer.append(
+                                    numpy_helper.from_array(val, name=out_name)
+                                )
                         elif n.op_type == "DynamicQuantizeLinear" and len(n.input) >= 1:
                             x = static_values[n.input[0]]
                             x_min = np.minimum(0.0, np.min(x))
@@ -350,13 +374,19 @@ class StaticFolder(Pass):
                             y = np.clip(np.round(x / scale) + zp, 0, 255).astype(np.uint8)
                             if len(n.output) > 0:
                                 static_values[n.output[0]] = y
-                                graph.initializer.append(numpy_helper.from_array(y, name=n.output[0]))
+                                if n.output[0] not in existing_inits:
+                                    existing_inits.add(n.output[0])
+                                    graph.initializer.append(numpy_helper.from_array(y, name=n.output[0]))
                             if len(n.output) > 1:
                                 static_values[n.output[1]] = scale
-                                graph.initializer.append(numpy_helper.from_array(scale, name=n.output[1]))
+                                if n.output[1] not in existing_inits:
+                                    existing_inits.add(n.output[1])
+                                    graph.initializer.append(numpy_helper.from_array(scale, name=n.output[1]))
                             if len(n.output) > 2:
                                 static_values[n.output[2]] = zp
-                                graph.initializer.append(numpy_helper.from_array(zp, name=n.output[2]))
+                                if n.output[2] not in existing_inits:
+                                    existing_inits.add(n.output[2])
+                                    graph.initializer.append(numpy_helper.from_array(zp, name=n.output[2]))
                         elif n.op_type == "DequantizeLinear" and len(n.input) >= 2:
                             x = static_values[n.input[0]]
                             scale = static_values[n.input[1]]
@@ -374,12 +404,15 @@ class StaticFolder(Pass):
                                 if hasattr(zp_arr, "ndim") and zp_arr.ndim > 0 and zp_arr.size > 1:
                                     zp_arr = zp_arr.reshape(new_shape)
                             diff = x.astype(np.float32) - zp_arr
-                            val = (diff * scale).astype(np.float32)
+                            target_dtype = scale.dtype if hasattr(scale, "dtype") else np.float32
+                            val = (diff * scale).astype(target_dtype)
                             out_name = n.output[0]
                             static_values[out_name] = val
-                            graph.initializer.append(
-                                numpy_helper.from_array(val, name=out_name)
-                            )
+                            if out_name not in existing_inits:
+                                existing_inits.add(out_name)
+                                graph.initializer.append(
+                                    numpy_helper.from_array(val, name=out_name)
+                                )
                         else:
                             continue
                         folded_node_ids.add(id(n))

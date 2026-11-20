@@ -11,8 +11,9 @@ Features:
 
 from __future__ import annotations
 
-import io
+import os
 import sys
+import tempfile
 from pathlib import Path
 
 import onnx
@@ -43,21 +44,25 @@ RULE_SPECS = [s for s in ModelRegistry.list_models() if s.expected_target_node]
 
 
 def _export_in_memory(spec: ModelSpec, opset: int = 18) -> onnx.ModelProto:
-    """Export a ModelSpec to an in-memory ONNX ModelProto without touching disk."""
+    """Export a ModelSpec to an ONNX ModelProto using a temporary file."""
     model = spec.instantiate().eval()
     dummy = spec.get_dummy_inputs()
-    buf = io.BytesIO()
-    torch.onnx.utils.export(
-        model,
-        dummy,
-        buf,
-        input_names=spec.input_names,
-        output_names=spec.output_names,
-        opset_version=opset,
-        dynamic_axes=spec.dynamic_axes,
-    )
-    buf.seek(0)
-    return onnx.load_model_from_string(buf.getvalue())
+    with tempfile.NamedTemporaryFile(suffix=".onnx", delete=False) as tmp:
+        tmp_path = tmp.name
+    try:
+        torch.onnx.utils.export(
+            model,
+            dummy,
+            tmp_path,
+            input_names=spec.input_names,
+            output_names=spec.output_names,
+            opset_version=opset,
+            dynamic_axes=spec.dynamic_axes,
+        )
+        return onnx.load(tmp_path)
+    finally:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
 
 
 # =============================================================================

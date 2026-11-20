@@ -615,6 +615,9 @@ class AttentionSynthesizer(Pass):
         nodes_to_drop: set[int] = set()
 
         inits = {i.name for i in graph.initializer}
+        init_map: dict[str, np.ndarray] = {
+            i.name: numpy_helper.to_array(i) for i in graph.initializer
+        }
         for sm in sm_nodes:
             scores_inp, v_inp = sm.input[0], sm.input[1]
             mm = node_by_output.get(scores_inp)
@@ -652,10 +655,14 @@ class AttentionSynthesizer(Pass):
                 if mm.op_type in ("Div", "Mul") and len(mm.input) >= 2:
                     parent_mm = node_by_output.get(mm.input[0])
                     if parent_mm and parent_mm.op_type == "MatMul":
-                        scale_node_after_mm = mm
-                        mm = parent_mm
-                        unwrapped = True
-                        continue
+                        scale_op_name = mm.input[1]
+                        if scale_op_name in init_map and init_map[scale_op_name].size > 1:
+                            pass
+                        else:
+                            scale_node_after_mm = mm
+                            mm = parent_mm
+                            unwrapped = True
+                            continue
 
             if not mm or mm.op_type != "MatMul":
                 continue

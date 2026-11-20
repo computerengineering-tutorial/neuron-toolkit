@@ -151,6 +151,13 @@ addopts = """
 --cov-report=term-missing
 -ra
 """
+filterwarnings = [
+    "ignore:.*legacy TorchScript-based ONNX export.*:DeprecationWarning",
+    "ignore:.*Converting a tensor to a Python.*:torch.jit.TracerWarning",
+    "ignore:.*Saving ONNX model to a BytesIO object is deprecated.*:DeprecationWarning",
+    "ignore:.*from_dynamic_axes_to_dynamic_shapes is deprecated.*:DeprecationWarning",
+    "ignore:.*'dynamic_axes' is not recommended.*:UserWarning",
+]
 
 [dependency-groups]
 dev = [

@@ -15,7 +15,7 @@ import numpy as np
 import onnx
 from onnx import helper, numpy_helper
 
-from neuron_toolkit.compiler.base import CompilerContext, Pass, LATEST_OPSET
+from neuron_toolkit.compiler.base import CompilerContext, Pass, LATEST_OPSET, ensure_model_latest_opset
 
 log = logging.getLogger("neuron_toolkit.compiler.norm_canonicalizer")
 
@@ -213,6 +213,7 @@ class NormCanonicalizer(Pass):
         domain = "custom.pytorch"
         if any(f.name == func_name and f.domain == domain for f in model.functions):
             return
+        ensure_model_latest_opset(model)
         opset_standard = helper.make_opsetid("", LATEST_OPSET)
         in_node = helper.make_node(
             "InstanceNormalization",
@@ -490,9 +491,23 @@ class NormCanonicalizer(Pass):
         domain = "custom.pytorch"
         if any(f.name == func_name and f.domain == domain for f in model.functions):
             return
+        ensure_model_latest_opset(model)
         opset_standard = helper.make_opsetid("", LATEST_OPSET)
-        r_node = helper.make_node(
-            "ReduceL2", inputs=["x"], outputs=["norm"], axes=[-1], keepdims=1
+        const_two = helper.make_node(
+            "Constant",
+            inputs=[],
+            outputs=["two"],
+            value=helper.make_tensor("two", onnx.TensorProto.FLOAT, [], [2.0]),
+        )
+        pow_node = helper.make_node("Pow", inputs=["x", "two"], outputs=["x_sq"])
+        const_axes = helper.make_node(
+            "Constant",
+            inputs=[],
+            outputs=["axes"],
+            value=helper.make_tensor("axes", onnx.TensorProto.INT64, [1], [-1]),
+        )
+        mean_node = helper.make_node(
+            "ReduceMean", inputs=["x_sq", "axes"], outputs=["mean_sq"], keepdims=1
         )
         const_eps = helper.make_node(
             "Constant",
@@ -500,19 +515,28 @@ class NormCanonicalizer(Pass):
             outputs=["eps"],
             value=helper.make_tensor("eps", onnx.TensorProto.FLOAT, [], [1e-12]),
         )
-        c_node = helper.make_node(
-            "Clip", inputs=["norm", "eps"], outputs=["clipped_norm"]
+        add_node = helper.make_node(
+            "Add", inputs=["mean_sq", "eps"], outputs=["mean_sq_eps"]
         )
-        d_node = helper.make_node(
-            "Div", inputs=["x", "clipped_norm"], outputs=["normed_x"]
-        )
+        sqrt_node = helper.make_node("Sqrt", inputs=["mean_sq_eps"], outputs=["rms"])
+        div_node = helper.make_node("Div", inputs=["x", "rms"], outputs=["normed_x"])
         m_node = helper.make_node("Mul", inputs=["normed_x", "gamma"], outputs=["y"])
         rms_func = helper.make_function(
             domain=domain,
             fname=func_name,
             inputs=["x", "gamma"],
             outputs=["y"],
-            nodes=[r_node, const_eps, c_node, d_node, m_node],
+            nodes=[
+                const_two,
+                pow_node,
+                const_axes,
+                mean_node,
+                const_eps,
+                add_node,
+                sqrt_node,
+                div_node,
+                m_node,
+            ],
             opset_imports=[opset_standard],
             doc_string="RMSNorm root mean square normalization function",
         )
@@ -667,40 +691,52 @@ class NormCanonicalizer(Pass):
                 for c in consumer_map.get(curr_out, [])
                 if c.op_type == "Mul"
             ]
-            if not mul_candidates:
-                continue
-            mul_node = mul_candidates[0]
-            scale = (
-                mul_node.input[1]
-                if mul_node.input[0] == curr_out
-                else mul_node.input[0]
-            )
-
-            add_bias_candidates = [
-                c
-                for c in consumer_map.get(mul_node.output[0], [])
-                if c.op_type == "Add"
-            ]
-            add_bias_node = add_bias_candidates[0] if add_bias_candidates else None
-            if add_bias_node:
-                bias = (
-                    add_bias_node.input[1]
-                    if add_bias_node.input[0] == mul_node.output[0]
-                    else add_bias_node.input[0]
+            mul_node = mul_candidates[0] if mul_candidates else None
+            add_bias_node = None
+            if mul_node:
+                scale = (
+                    mul_node.input[1]
+                    if mul_node.input[0] == curr_out
+                    else mul_node.input[0]
                 )
-                final_out = add_bias_node.output[0]
+                add_bias_candidates = [
+                    c
+                    for c in consumer_map.get(mul_node.output[0], [])
+                    if c.op_type == "Add"
+                ]
+                add_bias_node = add_bias_candidates[0] if add_bias_candidates else None
+                if add_bias_node:
+                    bias = (
+                        add_bias_node.input[1]
+                        if add_bias_node.input[0] == mul_node.output[0]
+                        else add_bias_node.input[0]
+                    )
+                    final_out = add_bias_node.output[0]
+                else:
+                    bias = None
+                    final_out = mul_node.output[0]
             else:
+                scale = None
                 bias = None
-                final_out = mul_node.output[0]
+                final_out = curr_out
 
             eps_name = (
                 add_node.input[1]
                 if add_node.input[0] == rm_var_node.output[0]
                 else add_node.input[0]
             )
-            eps_val = (
-                float(init_map[eps_name]) if eps_name in init_map else 1e-5
-            )
+            eps_val = 1e-5
+            if eps_name in init_map:
+                eps_val = float(init_map[eps_name])
+            else:
+                for n in graph.node:
+                    if n.op_type == "Constant" and n.output and n.output[0] == eps_name:
+                        for attr in n.attribute:
+                            if attr.name == "value":
+                                try:
+                                    eps_val = float(numpy_helper.to_array(attr.t))
+                                except Exception:
+                                    pass
 
             to_drop = [
                 rm_mean,
@@ -710,14 +746,19 @@ class NormCanonicalizer(Pass):
                 rm_var_node,
                 add_node,
                 sqrt_node,
-                mul_node,
             ] + intermediate_nodes
+            if mul_node is not None:
+                to_drop.append(mul_node)
             if add_bias_node is not None:
                 to_drop.append(add_bias_node)
 
             graph_outputs = {o.name for o in graph.output}
             to_drop_ids = {id(n) for n in to_drop}
-            exit_node = add_bias_node if add_bias_node is not None else mul_node
+            exit_node = (
+                add_bias_node
+                if add_bias_node is not None
+                else (mul_node if mul_node is not None else (reshape_node if reshape_node is not None else norm_out_node))
+            )
             for n in to_drop:
                 if n is exit_node:
                     nodes_to_remove.add(n.name or n.output[0])
@@ -734,7 +775,7 @@ class NormCanonicalizer(Pass):
                 if not has_external:
                     nodes_to_remove.add(n.name or n.output[0])
 
-            if not use_standard_ln and bias is None:
+            if not use_standard_ln and scale is not None and bias is None:
                 scale_arr = init_map.get(scale)
                 if scale_arr is not None:
                     zero_b_name = f"{scale}_zero_bias"
@@ -746,7 +787,10 @@ class NormCanonicalizer(Pass):
                         )
                     bias = zero_b_name
 
-            ln_inputs = [x, scale, bias] if bias is not None else [x, scale]
+            if scale is not None:
+                ln_inputs = [x, scale, bias] if bias is not None else [x, scale]
+            else:
+                ln_inputs = [x]
 
             if reshape_node is not None:
                 ln_out = f"layernorm_out_{count}"
@@ -921,6 +965,7 @@ class NormCanonicalizer(Pass):
         domain = "custom.pytorch"
         if any(f.name == func_name and f.domain == domain for f in model.functions):
             return
+        ensure_model_latest_opset(model)
         opset_standard = helper.make_opsetid("", LATEST_OPSET)
         rm_m = helper.make_node(
             "ReduceMean", inputs=["x"], outputs=["mean_out"], axes=[-1], keepdims=1
@@ -977,6 +1022,7 @@ class NormCanonicalizer(Pass):
     def _attach_skip_norm_function_def(self, model: onnx.ModelProto) -> None:
         """Attach formal ONNX FunctionProto definition for SkipNorm variants."""
         domain = "custom.pytorch"
+        ensure_model_latest_opset(model)
         opset_standard = helper.make_opsetid("", LATEST_OPSET)
         opset_custom = helper.make_opsetid("custom.pytorch", 1)
 

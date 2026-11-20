@@ -7,14 +7,16 @@ own specialized, non-colliding FunctionProtos and op_types.
 
 from __future__ import annotations
 
+import collections
 import hashlib
 import json
+import re
 from typing import Any
 
 import onnx
 from onnx import helper
 
-from neuron_toolkit.compiler.base import LATEST_OPSET
+from neuron_toolkit.compiler.base import LATEST_OPSET, ensure_model_latest_opset
 
 
 def compute_subgraph_fingerprint(
@@ -95,18 +97,31 @@ def compute_subgraph_fingerprint(
     return hashlib.sha256(serialized.encode("utf-8")).hexdigest()[:8]
 
 
+def _sanitize_identifier(name: str) -> str:
+    """Sanitize any arbitrary string into a strictly valid C/C++ identifier."""
+    cleaned = re.sub(r"[^a-zA-Z0-9_]", "_", name)
+    cleaned = re.sub(r"_+", "_", cleaned).strip("_")
+    if cleaned and cleaned[0].isdigit():
+        cleaned = f"Op_{cleaned}"
+    return cleaned or "Op"
+
+
 def build_monomorphized_op_type(
     family: str,
     variant_hint: str | None = None,
     fingerprint: str | None = None,
 ) -> str:
-    """Build a specialized op_type name: {family}_{variant_hint}_{fingerprint}."""
-    parts = [family]
+    """Build a specialized, strictly valid C identifier: {family}_{variant_hint}_{fingerprint}."""
+    clean_family = _sanitize_identifier(family)
+    parts = [clean_family]
     if variant_hint:
-        clean_hint = variant_hint.replace(" ", "").replace("-", "_")
-        parts.append(clean_hint)
+        clean_hint = _sanitize_identifier(variant_hint)
+        if clean_hint:
+            parts.append(clean_hint)
     if fingerprint:
-        parts.append(fingerprint)
+        clean_fp = _sanitize_identifier(fingerprint)
+        if clean_fp:
+            parts.append(clean_fp)
     return "_".join(parts)
 
 
@@ -125,6 +140,9 @@ def ensure_specialized_function_proto(
         if existing.name == fname and existing.domain == domain:
             return existing
 
+    # Always target modern latest ONNX opset for simplification
+    ensure_model_latest_opset(model)
+
     if opset_imports is None:
         opset_imports = [
             helper.make_opsetid("", LATEST_OPSET),
@@ -134,6 +152,37 @@ def ensure_specialized_function_proto(
     # Ensure custom domain is present in model opset_imports
     if domain and not any(op.domain == domain for op in model.opset_import):
         model.opset_import.append(helper.make_opsetid(domain, 1))
+
+    # Topologically sort body_nodes so producers strictly precede consumers
+    if len(body_nodes) > 1:
+        producer_idx: dict[str, int] = {}
+        for idx, n in enumerate(body_nodes):
+            for out in n.output:
+                if out:
+                    producer_idx[out] = idx
+
+        in_degrees = [0] * len(body_nodes)
+        graph_deps: dict[int, list[int]] = collections.defaultdict(list)
+        for i, n in enumerate(body_nodes):
+            for inp in n.input:
+                if inp in producer_idx:
+                    prod = producer_idx[inp]
+                    if prod != i:
+                        graph_deps[prod].append(i)
+                        in_degrees[i] += 1
+
+        queue = [i for i, deg in enumerate(in_degrees) if deg == 0]
+        sorted_nodes = []
+        while queue:
+            curr = queue.pop(0)
+            sorted_nodes.append(body_nodes[curr])
+            for dep in graph_deps[curr]:
+                in_degrees[dep] -= 1
+                if in_degrees[dep] == 0:
+                    queue.append(dep)
+
+        if len(sorted_nodes) == len(body_nodes):
+            body_nodes = sorted_nodes
 
     func = helper.make_function(
         domain=domain,

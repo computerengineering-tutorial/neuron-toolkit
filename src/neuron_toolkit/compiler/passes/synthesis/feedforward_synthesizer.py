@@ -19,7 +19,7 @@ from neuron_toolkit.compiler.architectures.fingerprint import (
     compute_subgraph_fingerprint,
     ensure_specialized_function_proto,
 )
-from neuron_toolkit.compiler.base import CompilerContext, Pass, LATEST_OPSET
+from neuron_toolkit.compiler.base import CompilerContext, Pass, LATEST_OPSET, ensure_model_latest_opset
 
 log = logging.getLogger("neuron_toolkit.compiler.feedforward_synthesizer")
 
@@ -220,7 +220,18 @@ class FeedForwardSynthesizer(Pass):
             mul_node = None
 
             if cand_node.op_type.startswith("GatedUnit"):
-                # Pre-fused GatedUnit branch
+                # Pre-fused GatedUnit branch: only match for SwiGLU if activation is SiLU or Swish
+                cand_act = None
+                for attr in cand_node.attribute:
+                    if attr.name == "activation":
+                        cand_act = attr.s.decode("utf-8") if isinstance(attr.s, bytes) else str(attr.s)
+                if cand_act is None:
+                    parts = cand_node.op_type.split("_")
+                    if len(parts) >= 2:
+                        cand_act = parts[1].lower()
+                if cand_act and cand_act.lower() not in ("silu", "swish"):
+                    # GeGLU (gelu), ReGLU (relu), etc. have different activations and must not be fused to SwiGLU
+                    continue
                 in0, in1 = cand_node.input[0], cand_node.input[1]
                 p0 = node_by_output.get(in0)
                 p1 = node_by_output.get(in1)
@@ -358,45 +369,54 @@ class FeedForwardSynthesizer(Pass):
         model.functions.extend(surviving_funcs)
 
         opset_standard = helper.make_opsetid("", LATEST_OPSET)
-        opset_custom = helper.make_opsetid("custom.pytorch", 1)
 
         if input_count == 8:
             func_inputs = ["X", "gamma", "w_gate", "b_gate", "w_up", "b_up", "w_down", "b_down"]
             body_nodes = [
-                helper.make_node("RMSNorm", inputs=["X", "gamma"], outputs=["X_norm"], domain="custom.pytorch"),
-                helper.make_node("Linear", inputs=["X_norm", "w_gate", "b_gate"], outputs=["H_gate"], domain="custom.pytorch"),
-                helper.make_node("Linear", inputs=["X_norm", "w_up", "b_up"], outputs=["H_up"], domain="custom.pytorch"),
-                helper.make_node("SiLU", inputs=["H_gate"], outputs=["H_act"], domain="custom.pytorch"),
+                helper.make_node("RMSNormalization", inputs=["X", "gamma"], outputs=["X_norm"]),
+                helper.make_node("MatMul", inputs=["X_norm", "w_gate"], outputs=["mm_gate"]),
+                helper.make_node("Add", inputs=["mm_gate", "b_gate"], outputs=["H_gate_raw"]),
+                helper.make_node("Sigmoid", inputs=["H_gate_raw"], outputs=["H_sig"]),
+                helper.make_node("Mul", inputs=["H_gate_raw", "H_sig"], outputs=["H_act"]),
+                helper.make_node("MatMul", inputs=["X_norm", "w_up"], outputs=["mm_up"]),
+                helper.make_node("Add", inputs=["mm_up", "b_up"], outputs=["H_up"]),
                 helper.make_node("Mul", inputs=["H_act", "H_up"], outputs=["H_mul"]),
-                helper.make_node("Linear", inputs=["H_mul", "w_down", "b_down"], outputs=["Y"], domain="custom.pytorch"),
+                helper.make_node("MatMul", inputs=["H_mul", "w_down"], outputs=["mm_down"]),
+                helper.make_node("Add", inputs=["mm_down", "b_down"], outputs=["Y"]),
             ]
         elif input_count == 4:
             func_inputs = ["X", "w_gate", "w_up", "w_down"]
             body_nodes = [
-                helper.make_node("Linear", inputs=["X", "w_gate"], outputs=["H_gate"], domain="custom.pytorch"),
-                helper.make_node("Linear", inputs=["X", "w_up"], outputs=["H_up"], domain="custom.pytorch"),
-                helper.make_node("SiLU", inputs=["H_gate"], outputs=["H_act"], domain="custom.pytorch"),
+                helper.make_node("MatMul", inputs=["X", "w_gate"], outputs=["H_gate_raw"]),
+                helper.make_node("Sigmoid", inputs=["H_gate_raw"], outputs=["H_sig"]),
+                helper.make_node("Mul", inputs=["H_gate_raw", "H_sig"], outputs=["H_act"]),
+                helper.make_node("MatMul", inputs=["X", "w_up"], outputs=["H_up"]),
                 helper.make_node("Mul", inputs=["H_act", "H_up"], outputs=["H_mul"]),
-                helper.make_node("Linear", inputs=["H_mul", "w_down"], outputs=["Y"], domain="custom.pytorch"),
+                helper.make_node("MatMul", inputs=["H_mul", "w_down"], outputs=["Y"]),
             ]
         elif input_count == 7:
             func_inputs = ["X", "w_gate", "b_gate", "w_up", "b_up", "w_down", "b_down"]
             body_nodes = [
-                helper.make_node("Linear", inputs=["X", "w_gate", "b_gate"], outputs=["H_gate"], domain="custom.pytorch"),
-                helper.make_node("Linear", inputs=["X", "w_up", "b_up"], outputs=["H_up"], domain="custom.pytorch"),
-                helper.make_node("SiLU", inputs=["H_gate"], outputs=["H_act"], domain="custom.pytorch"),
+                helper.make_node("MatMul", inputs=["X", "w_gate"], outputs=["mm_gate"]),
+                helper.make_node("Add", inputs=["mm_gate", "b_gate"], outputs=["H_gate_raw"]),
+                helper.make_node("Sigmoid", inputs=["H_gate_raw"], outputs=["H_sig"]),
+                helper.make_node("Mul", inputs=["H_gate_raw", "H_sig"], outputs=["H_act"]),
+                helper.make_node("MatMul", inputs=["X", "w_up"], outputs=["mm_up"]),
+                helper.make_node("Add", inputs=["mm_up", "b_up"], outputs=["H_up"]),
                 helper.make_node("Mul", inputs=["H_act", "H_up"], outputs=["H_mul"]),
-                helper.make_node("Linear", inputs=["H_mul", "w_down", "b_down"], outputs=["Y"], domain="custom.pytorch"),
+                helper.make_node("MatMul", inputs=["H_mul", "w_down"], outputs=["mm_down"]),
+                helper.make_node("Add", inputs=["mm_down", "b_down"], outputs=["Y"]),
             ]
         else:
             func_inputs = ["X", "gamma", "w_gate", "w_up", "w_down"]
             body_nodes = [
-                helper.make_node("RMSNorm", inputs=["X", "gamma"], outputs=["X_norm"], domain="custom.pytorch"),
-                helper.make_node("Linear", inputs=["X_norm", "w_gate"], outputs=["H_gate"], domain="custom.pytorch"),
-                helper.make_node("Linear", inputs=["X_norm", "w_up"], outputs=["H_up"], domain="custom.pytorch"),
-                helper.make_node("SiLU", inputs=["H_gate"], outputs=["H_act"], domain="custom.pytorch"),
+                helper.make_node("RMSNormalization", inputs=["X", "gamma"], outputs=["X_norm"]),
+                helper.make_node("MatMul", inputs=["X_norm", "w_gate"], outputs=["H_gate_raw"]),
+                helper.make_node("Sigmoid", inputs=["H_gate_raw"], outputs=["H_sig"]),
+                helper.make_node("Mul", inputs=["H_gate_raw", "H_sig"], outputs=["H_act"]),
+                helper.make_node("MatMul", inputs=["X_norm", "w_up"], outputs=["H_up"]),
                 helper.make_node("Mul", inputs=["H_act", "H_up"], outputs=["H_mul"]),
-                helper.make_node("Linear", inputs=["H_mul", "w_down"], outputs=["Y"], domain="custom.pytorch"),
+                helper.make_node("MatMul", inputs=["H_mul", "w_down"], outputs=["Y"]),
             ]
 
         func = helper.make_function(
@@ -405,7 +425,8 @@ class FeedForwardSynthesizer(Pass):
             inputs=func_inputs,
             outputs=["Y"],
             nodes=body_nodes,
-            opset_imports=[opset_standard, opset_custom],
+            opset_imports=[opset_standard],
             doc_string="Formal FeedForward SwiGLU block",
         )
         model.functions.append(func)
+        ensure_model_latest_opset(model)
