@@ -45,12 +45,23 @@ def _strip_all_node_names(model: onnx.ModelProto) -> None:
 
 
 def _export_model_to_onnx(model: nn.Module, dummy_input: torch.Tensor, **kwargs) -> onnx.ModelProto:
-    """Export a PyTorch module cleanly to ONNX without deprecated BytesIO warnings."""
+    """Export a PyTorch module cleanly to ONNX using modern torch.export / dynamo exporter."""
     with tempfile.NamedTemporaryFile(suffix=".onnx", delete=False) as tmp:
         tmp_path = tmp.name
     try:
-        kwargs.setdefault("dynamo", False)
+        kwargs.setdefault("dynamo", True)
         kwargs.setdefault("opset_version", 18)
+        if "dynamic_axes" in kwargs and kwargs.get("dynamo", True):
+            dyn_axes = kwargs.pop("dynamic_axes")
+            dim_cache = {}
+            inp_axis = dyn_axes.get("input", dyn_axes.get("x", {}))
+            if inp_axis:
+                shape_spec = {}
+                for ax_idx, ax_name in inp_axis.items():
+                    if ax_name not in dim_cache:
+                        dim_cache[ax_name] = torch.export.Dim(ax_name)
+                    shape_spec[ax_idx] = dim_cache[ax_name]
+                kwargs["dynamic_shapes"] = (shape_spec,)
         torch.onnx.export(model, dummy_input, tmp_path, **kwargs)
         return onnx.load(tmp_path)
     finally:

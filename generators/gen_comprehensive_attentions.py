@@ -28,6 +28,16 @@ import sys
 import warnings
 from pathlib import Path
 
+# Safe torchvision operator stub registration for Python 3.14 CPU environment
+try:
+    import torch
+    if hasattr(torch, "library"):
+        _tv_lib = torch.library.Library("torchvision", "DEF")
+        _tv_lib.define("nms(Tensor boxes, Tensor scores, float iou_threshold) -> Tensor")
+        _tv_lib.define("qnms(Tensor boxes, Tensor scores, float iou_threshold) -> Tensor")
+except Exception:
+    pass
+
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))

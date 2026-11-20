@@ -1487,9 +1487,35 @@ class OpRegistry:
                 sc = float(attrs["softcap"])
                 scores = sc * torch.tanh(scores / sc)
             if len(inputs) > 3 and inputs[3] is not None and inputs[3].numel() > 0:
-                scores = scores + inputs[3]
+                mask = inputs[3]
+                if mask.dtype == torch.bool:
+                    scores = torch.where(
+                        mask,
+                        scores,
+                        torch.tensor(-1e4, dtype=scores.dtype, device=scores.device),
+                    )
+                else:
+                    scores = scores + mask
             probs = torch.softmax(scores, dim=-1)
             return torch.matmul(probs, v)
+
+        @self.register("custom.pytorch", "DifferentialAttention")
+        @self.register("", "DifferentialAttention")
+        def _differential_attention(
+            inputs: list[torch.Tensor], attrs: dict[str, Any]
+        ) -> torch.Tensor:
+            scores1 = inputs[0]
+            scores2 = inputs[1]
+            v = inputs[2]
+            lam = (
+                inputs[3]
+                if len(inputs) > 3 and inputs[3] is not None
+                else float(attrs.get("lambda", 0.8))
+            )
+            sm1 = torch.softmax(scores1, dim=-1)
+            sm2 = torch.softmax(scores2, dim=-1)
+            diff = sm1 - lam * sm2
+            return torch.matmul(diff, v)
 
         @self.register("custom.pytorch", "SplitQKV")
         @self.register("", "SplitQKV")
@@ -1515,7 +1541,9 @@ class OpRegistry:
             inputs: list[torch.Tensor], attrs: dict[str, Any]
         ) -> torch.Tensor:
             x = inputs[0]
-            # x shape: (B, H, S, D)
+            # x shape: (B, H, S, D) or already merged (B, S, D)
+            if len(x.shape) == 3:
+                return x
             B, H, S, D = x.shape
             return x.transpose(1, 2).reshape(B, S, H * D)
 
@@ -2370,6 +2398,25 @@ class OpRegistry:
             }
             target_torch = type_map.get(to_type, torch.float32)
             return inputs[0].to(target_torch)
+
+        @self.register("", "TopK")
+        @self.register("ai.onnx", "TopK")
+        def _topk(
+            inputs: list[torch.Tensor], attrs: dict[str, Any]
+        ) -> tuple[torch.Tensor, torch.Tensor]:
+            x = inputs[0]
+            k = (
+                int(inputs[1].item())
+                if len(inputs) > 1 and inputs[1] is not None
+                else int(attrs.get("k", 1))
+            )
+            axis = int(attrs.get("axis", -1))
+            largest = bool(attrs.get("largest", 1))
+            sorted_ = bool(attrs.get("sorted", 1))
+            values, indices = torch.topk(
+                x, k=k, dim=axis, largest=largest, sorted=sorted_
+            )
+            return [values, indices.to(torch.int64)]
 
         @self.register("", "Identity")
         def _identity(

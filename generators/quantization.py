@@ -11,16 +11,13 @@ Features:
 from __future__ import annotations
 
 import copy
-import inspect
 import json
 import logging
 import os
 import sys
 import tempfile
-import time
-from collections.abc import Sequence
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(_REPO_ROOT / "src") not in sys.path:
@@ -30,14 +27,13 @@ if str(_REPO_ROOT) not in sys.path:
 
 import numpy as np
 import onnx
-from onnx import helper, numpy_helper
+from onnx import helper
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from neuron_toolkit.compiler.base import LATEST_OPSET, ensure_model_latest_opset
+from neuron_toolkit.compiler.base import ensure_model_latest_opset
 from neuron_toolkit.compiler.pipeline import NeuronCompiler
-from neuron_toolkit.runtime.cross_verifier import CrossVerifier
 from neuron_toolkit.runtime.runner import PyTorchRunner
 
 log = logging.getLogger("generators.quantization")
@@ -186,15 +182,25 @@ def export_quantized_model(
     with tempfile.NamedTemporaryFile(suffix=".onnx", delete=False) as tmp:
         tmp_path = tmp.name
     try:
-        torch.onnx.export(
-            model,
-            dummy_inputs_tuple,
-            tmp_path,
-            input_names=input_names,
-            output_names=output_names,
-            opset_version=opset_version,
-            dynamo=False,
-        )
+        try:
+            torch.onnx.export(
+                model,
+                dummy_inputs_tuple,
+                tmp_path,
+                input_names=input_names,
+                output_names=output_names,
+                dynamo=True,
+            )
+        except Exception:
+            torch.onnx.export(
+                model,
+                dummy_inputs_tuple,
+                tmp_path,
+                input_names=input_names,
+                output_names=output_names,
+                opset_version=opset_version,
+                dynamo=False,
+            )
         raw_onnx = onnx.load(tmp_path)
     finally:
         if os.path.exists(tmp_path):

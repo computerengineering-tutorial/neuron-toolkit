@@ -2663,9 +2663,16 @@ class MacroBlockSynthesizer(CompilerPass):
                 if v_matmuls:
                     mm_v = v_matmuls[0]
                     v_tensor = mm_v.input[1]
+                    diff_inputs = [sm1.input[0], sm2.input[0], v_tensor]
+                    if in1.op_type == "Mul":
+                        for mul_in in in1.input:
+                            p = node_by_output.get(mul_in)
+                            if not (p and p.op_type == "Softmax"):
+                                diff_inputs.append(mul_in)
+                                break
                     diff_attn = helper.make_node(
                         "DifferentialAttention",
-                        inputs=[sm1.input[0], sm2.input[0], v_tensor],
+                        inputs=diff_inputs,
                         outputs=[mm_v.output[0]],
                         name=f"{mm_v.name}_diff_attn",
                         domain="custom.pytorch",
