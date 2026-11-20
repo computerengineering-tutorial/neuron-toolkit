@@ -7,32 +7,58 @@
       {
         "id": "reshape_exp",
         "op_type": "Reshape",
-        "inputs": ["$x", "$shape_4d"],
-        "outputs": ["$x_4d"]
+        "inputs": [
+          "$x",
+          "$shape_4d"
+        ],
+        "outputs": [
+          "$x_4d"
+        ]
       },
       {
         "id": "in_node",
         "op_type": "InstanceNormalization",
-        "inputs": ["$x_4d", "$scale_in", "$bias_in"],
-        "outputs": ["$in_out"]
+        "inputs": [
+          "$x_4d",
+          "$scale_in",
+          "$bias_in"
+        ],
+        "outputs": [
+          "$in_out"
+        ]
       },
       {
         "id": "reshape_res",
         "op_type": "Reshape",
-        "inputs": ["$in_out", "$shape_3d"],
-        "outputs": ["$res_out"]
+        "inputs": [
+          "$in_out",
+          "$shape_3d"
+        ],
+        "outputs": [
+          "$res_out"
+        ]
       },
       {
         "id": "mul_node",
         "op_type": "Mul",
-        "inputs": ["$res_out", "$gamma"],
-        "outputs": ["$mul_out"]
+        "inputs": [
+          "$res_out",
+          "$gamma"
+        ],
+        "outputs": [
+          "$mul_out"
+        ]
       },
       {
         "id": "add_node",
         "op_type": "Add",
-        "inputs": ["$mul_out", "$beta"],
-        "outputs": ["$y"]
+        "inputs": [
+          "$mul_out",
+          "$beta"
+        ],
+        "outputs": [
+          "$y"
+        ]
       }
     ]
   },
@@ -40,28 +66,45 @@
     "type": "replace_op",
     "op_type": "GroupNormalization",
     "domain": "",
-    "inputs": ["$x", "$gamma", "$beta"],
-    "outputs": ["$y"],
+    "inputs": [
+      "$x",
+      "$gamma",
+      "$beta"
+    ],
+    "outputs": [
+      "$y"
+    ],
     "attributes": {
       "num_groups": 1,
-      "epsilon": 1e-5
+      "epsilon": 1e-05
     },
     "targets": {
       "modern_onnx": {
         "op_type": "GroupNormalization",
         "domain": "",
-        "min_opset": 21,
-        "inputs": ["$x", "$gamma", "$beta"]
+        "inputs": [
+          "$x",
+          "$gamma",
+          "$beta"
+        ]
       },
       "function_proto": {
         "op_type": "GroupNorm",
         "domain": "custom.pytorch",
-        "inputs": ["$x", "$gamma", "$beta"]
+        "inputs": [
+          "$x",
+          "$gamma",
+          "$beta"
+        ]
       },
       "pytorch_custom": {
         "op_type": "GroupNorm",
         "domain": "custom.pytorch",
-        "inputs": ["$x", "$gamma", "$beta"]
+        "inputs": [
+          "$x",
+          "$gamma",
+          "$beta"
+        ]
       }
     }
   }

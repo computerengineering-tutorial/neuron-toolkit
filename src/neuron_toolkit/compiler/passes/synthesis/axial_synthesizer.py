@@ -16,7 +16,7 @@ import numpy as np
 import onnx
 from onnx import helper, numpy_helper
 
-from neuron_toolkit.compiler.base import CompilerContext, Pass
+from neuron_toolkit.compiler.base import CompilerContext, Pass, LATEST_OPSET
 from neuron_toolkit.compiler.passes.canonicalization.shape_canonicalizer import (
     ShapeCanonicalizer,
 )
@@ -221,7 +221,7 @@ class AxialSynthesizer(Pass):
         domain = "custom.pytorch"
         if any(f.name == func_name and f.domain == domain for f in model.functions):
             return
-        opset_standard = helper.make_opsetid("", 14)
+        opset_standard = helper.make_opsetid("", LATEST_OPSET)
         gather_node = helper.make_node(
             "Gather", inputs=["x", "idx"], outputs=["y"], axis=1
         )
@@ -312,7 +312,7 @@ class AxialSynthesizer(Pass):
         del model.functions[:]
         model.functions.extend(surviving)
 
-        opset_standard = helper.make_opsetid("", 14)
+        opset_standard = helper.make_opsetid("", LATEST_OPSET)
         s_outputs = [f"s{i}" for i in range(num_outputs)]
         y_outputs = [f"y{i}" for i in range(num_outputs)]
         sp_node = helper.make_node("Split", inputs=["x"], outputs=s_outputs, axis=0)
@@ -517,11 +517,7 @@ class AxialSynthesizer(Pass):
         domain = "custom.pytorch"
         if any(f.name == func_name and f.domain == domain for f in model.functions):
             return
-        model_opset = 14
-        for op in model.opset_import:
-            if op.domain in ("", "ai.onnx"):
-                model_opset = op.version
-        opset_standard = helper.make_opsetid("", model_opset)
+        opset_standard = helper.make_opsetid("", LATEST_OPSET)
         id_node = helper.make_node("Identity", inputs=["x"], outputs=["y"])
         rearrange_func = helper.make_function(
             domain=domain,

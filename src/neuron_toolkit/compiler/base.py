@@ -8,6 +8,8 @@ from typing import Any
 
 import onnx
 
+LATEST_OPSET: int = onnx.defs.onnx_opset_version()
+
 
 @dataclass
 class CompilerContext:
@@ -16,9 +18,8 @@ class CompilerContext:
     mode: str = "function_proto"
     # Mode can be:
     # - 'function_proto': Attaches formal ONNX FunctionProto definitions for Netron visualization.
-    # - 'modern_onnx': Emits standard ONNX Opset 23+ ops (e.g. RMSNormalization, Gelu, GroupNormalization).
+    # - 'modern_onnx': Emits standard modern ONNX ops (e.g. RMSNormalization, Gelu, GroupNormalization).
     # - 'plain_custom_op' or 'pytorch_custom': Minimalist custom ops for PyTorch runtime.
-    opset_version: int = 23
     custom_domain: str = "custom.pytorch"
     max_fixed_point_iters: int = 5
     rule_ids: list[str] | None = None

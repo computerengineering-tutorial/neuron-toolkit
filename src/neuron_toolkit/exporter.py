@@ -901,13 +901,14 @@ def build_onnx_model_from_json(
         value_info=value_infos,
     )
 
+    latest_opset = onnx.defs.onnx_opset_version()
     # 8. Opset Imports
     opset_imports = [
-        helper.make_opsetid(opset.get("domain", ""), opset.get("version", 17))
+        helper.make_opsetid(opset.get("domain", ""), opset.get("version", latest_opset))
         for opset in metadata.get("opset_import", [])
     ]
     if not opset_imports:
-        opset_imports = [helper.make_opsetid("", 17)]
+        opset_imports = [helper.make_opsetid("", latest_opset)]
 
     # 9. Make Model
     model_kwargs: dict[str, Any] = {

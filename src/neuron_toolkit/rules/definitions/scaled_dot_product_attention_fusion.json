@@ -8,32 +8,56 @@
       {
         "id": "q_mul",
         "op_type": "Mul",
-        "inputs": ["Q", "sqrt_scale"],
-        "outputs": ["Q_scaled"]
+        "inputs": [
+          "Q",
+          "sqrt_scale"
+        ],
+        "outputs": [
+          "Q_scaled"
+        ]
       },
       {
         "id": "k_trans",
         "op_type": "Transpose",
-        "inputs": ["K"],
-        "outputs": ["K_trans"]
+        "inputs": [
+          "K"
+        ],
+        "outputs": [
+          "K_trans"
+        ]
       },
       {
         "id": "k_mul",
         "op_type": "Mul",
-        "inputs": ["K_trans", "sqrt_scale"],
-        "outputs": ["K_scaled"]
+        "inputs": [
+          "K_trans",
+          "sqrt_scale"
+        ],
+        "outputs": [
+          "K_scaled"
+        ]
       },
       {
         "id": "mm_qk",
         "op_type": "MatMul",
-        "inputs": ["Q_scaled", "K_scaled"],
-        "outputs": ["scores"]
+        "inputs": [
+          "Q_scaled",
+          "K_scaled"
+        ],
+        "outputs": [
+          "scores"
+        ]
       },
       {
         "id": "sm_matmul",
         "op_type": "SoftmaxMatMul",
-        "inputs": ["scores", "V"],
-        "outputs": ["Y"]
+        "inputs": [
+          "scores",
+          "V"
+        ],
+        "outputs": [
+          "Y"
+        ]
       }
     ],
     "constraints": [
@@ -46,29 +70,50 @@
     "type": "fuse_to_function",
     "op_type": "ScaledDotProductAttention",
     "domain": "custom.pytorch",
-    "inputs": ["Q", "K", "V"],
-    "outputs": ["Y"],
+    "inputs": [
+      "Q",
+      "K",
+      "V"
+    ],
+    "outputs": [
+      "Y"
+    ],
     "targets": {
       "modern_onnx": {
         "op_type": "Attention",
         "domain": "",
-        "min_opset": 25,
-        "inputs": ["Q", "K", "V"]
+        "inputs": [
+          "Q",
+          "K",
+          "V"
+        ]
       },
       "ort_contrib": {
         "op_type": "MultiHeadAttention",
         "domain": "com.microsoft",
-        "inputs": ["Q", "K", "V"]
+        "inputs": [
+          "Q",
+          "K",
+          "V"
+        ]
       },
       "function_proto": {
         "op_type": "ScaledDotProductAttention",
         "domain": "custom.pytorch",
-        "inputs": ["Q", "K", "V"]
+        "inputs": [
+          "Q",
+          "K",
+          "V"
+        ]
       },
       "pytorch_custom": {
         "op_type": "ScaledDotProductAttention",
         "domain": "custom.pytorch",
-        "inputs": ["Q", "K", "V"]
+        "inputs": [
+          "Q",
+          "K",
+          "V"
+        ]
       }
     }
   },
@@ -77,8 +122,14 @@
       {
         "op_type": "ScaledDotProductAttention",
         "domain": "custom.pytorch",
-        "inputs": ["Q", "K", "V"],
-        "outputs": ["Y"]
+        "inputs": [
+          "Q",
+          "K",
+          "V"
+        ],
+        "outputs": [
+          "Y"
+        ]
       }
     ]
   }

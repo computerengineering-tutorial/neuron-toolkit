@@ -16,7 +16,7 @@ import numpy as np
 import onnx
 from onnx import helper, numpy_helper
 
-from neuron_toolkit.compiler.base import CompilerContext, Pass
+from neuron_toolkit.compiler.base import CompilerContext, Pass, LATEST_OPSET
 
 log = logging.getLogger("neuron_toolkit.compiler.math_canonicalizer")
 
@@ -239,7 +239,7 @@ class MathCanonicalizer(Pass):
         domain = "custom.pytorch"
         if any(f.name == func_name and f.domain == domain for f in model.functions):
             return
-        opset_standard = helper.make_opsetid("", 14)
+        opset_standard = helper.make_opsetid("", LATEST_OPSET)
 
         lin_nodes = [
             n

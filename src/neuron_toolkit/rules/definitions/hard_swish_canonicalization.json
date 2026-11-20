@@ -7,26 +7,47 @@
       {
         "id": "add_node",
         "op_type": "Add",
-        "inputs": ["$x", "$c_3"],
-        "outputs": ["$add_out"]
+        "inputs": [
+          "$x",
+          "$c_3"
+        ],
+        "outputs": [
+          "$add_out"
+        ]
       },
       {
         "id": "clip_node",
         "op_type": "Clip",
-        "inputs": ["$add_out", "$c_0", "$c_6"],
-        "outputs": ["$clip_out"]
+        "inputs": [
+          "$add_out",
+          "$c_0",
+          "$c_6"
+        ],
+        "outputs": [
+          "$clip_out"
+        ]
       },
       {
         "id": "mul_node",
         "op_type": "Mul",
-        "inputs": ["$x", "$clip_out"],
-        "outputs": ["$mul_out"]
+        "inputs": [
+          "$x",
+          "$clip_out"
+        ],
+        "outputs": [
+          "$mul_out"
+        ]
       },
       {
         "id": "div_node",
         "op_type": "Div",
-        "inputs": ["$mul_out", "$c_6"],
-        "outputs": ["$y"]
+        "inputs": [
+          "$mul_out",
+          "$c_6"
+        ],
+        "outputs": [
+          "$y"
+        ]
       }
     ]
   },
@@ -34,24 +55,33 @@
     "type": "replace_op",
     "op_type": "HardSwish",
     "domain": "custom.pytorch",
-    "inputs": ["$x"],
-    "outputs": ["$y"],
+    "inputs": [
+      "$x"
+    ],
+    "outputs": [
+      "$y"
+    ],
     "targets": {
       "modern_onnx": {
         "op_type": "HardSwish",
         "domain": "",
-        "min_opset": 14,
-        "inputs": ["$x"]
+        "inputs": [
+          "$x"
+        ]
       },
       "function_proto": {
         "op_type": "HardSwish",
         "domain": "custom.pytorch",
-        "inputs": ["$x"]
+        "inputs": [
+          "$x"
+        ]
       },
       "pytorch_custom": {
         "op_type": "HardSwish",
         "domain": "custom.pytorch",
-        "inputs": ["$x"]
+        "inputs": [
+          "$x"
+        ]
       }
     }
   }

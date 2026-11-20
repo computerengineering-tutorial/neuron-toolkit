@@ -23,7 +23,7 @@ from neuron_toolkit.compiler.architectures.fingerprint import (
     compute_subgraph_fingerprint,
     ensure_specialized_function_proto,
 )
-from neuron_toolkit.compiler.base import CompilerContext, Pass
+from neuron_toolkit.compiler.base import CompilerContext, Pass, LATEST_OPSET
 from neuron_toolkit.compiler.passes.canonicalization.shape_canonicalizer import (
     ShapeCanonicalizer,
 )
@@ -270,7 +270,7 @@ class AttentionSynthesizer(Pass):
         domain = "custom.pytorch"
         if any(f.name == func_name and f.domain == domain for f in model.functions):
             return
-        opset_standard = helper.make_opsetid("", 14)
+        opset_standard = helper.make_opsetid("", LATEST_OPSET)
         cos_node = helper.make_node("Cos", inputs=["theta"], outputs=["cos"])
         sin_node = helper.make_node("Sin", inputs=["theta"], outputs=["sin"])
         m_cos = helper.make_node("Mul", inputs=["x", "cos"], outputs=["q_cos"])
@@ -420,7 +420,7 @@ class AttentionSynthesizer(Pass):
             f.name == fname and f.domain == "custom.pytorch" for f in model.functions
         ):
             return
-        opset_standard = helper.make_opsetid("", 14)
+        opset_standard = helper.make_opsetid("", LATEST_OPSET)
         sig_node = helper.make_node(
             act_name,
             inputs=["gate"],
@@ -463,7 +463,7 @@ class AttentionSynthesizer(Pass):
         domain = "custom.pytorch"
         if any(f.name == func_name and f.domain == domain for f in model.functions):
             return
-        opset_standard = helper.make_opsetid("", 14)
+        opset_standard = helper.make_opsetid("", LATEST_OPSET)
         t_node = helper.make_node(
             "Transpose", inputs=["gate"], outputs=["gate_t"], perm=[0, 2, 1]
         )
@@ -562,7 +562,7 @@ class AttentionSynthesizer(Pass):
         domain = "custom.pytorch"
         if any(f.name == func_name and f.domain == domain for f in model.functions):
             return
-        opset_standard = helper.make_opsetid("", 14)
+        opset_standard = helper.make_opsetid("", LATEST_OPSET)
         sm_node = helper.make_node(
             "Softmax", inputs=["scores"], outputs=["probs"], axis=-1
         )
@@ -811,7 +811,7 @@ class AttentionSynthesizer(Pass):
         domain = "custom.pytorch"
         if any(f.name == func_name and f.domain == domain for f in model.functions):
             return
-        opset_standard = helper.make_opsetid("", 14)
+        opset_standard = helper.make_opsetid("", LATEST_OPSET)
         k_trans = helper.make_node(
             "Transpose", inputs=["K"], outputs=["KT"], perm=[0, 1, 3, 2]
         )
@@ -914,7 +914,7 @@ class AttentionSynthesizer(Pass):
         domain = "custom.pytorch"
         if any(f.name == func_name and f.domain == domain for f in model.functions):
             return
-        opset_standard = helper.make_opsetid("", 14)
+        opset_standard = helper.make_opsetid("", LATEST_OPSET)
         s = helper.make_node("Split", inputs=["QKV"], outputs=["Q", "K", "V"], axis=0)
         func = helper.make_function(
             domain=domain,
@@ -1003,7 +1003,7 @@ class AttentionSynthesizer(Pass):
         domain = "custom.pytorch"
         if any(f.name == func_name and f.domain == domain for f in model.functions):
             return
-        opset_standard = helper.make_opsetid("", 14)
+        opset_standard = helper.make_opsetid("", LATEST_OPSET)
         t = helper.make_node(
             "Transpose", inputs=["X"], outputs=["Y"], perm=[0, 2, 1, 3]
         )
@@ -1260,7 +1260,7 @@ class AttentionSynthesizer(Pass):
             f.name == fname and f.domain == "custom.pytorch" for f in model.functions
         ):
             return
-        opset_standard = helper.make_opsetid("", 14)
+        opset_standard = helper.make_opsetid("", LATEST_OPSET)
         opset_custom = helper.make_opsetid("custom.pytorch", 1)
 
         norm = helper.make_node(
@@ -1507,7 +1507,7 @@ class AttentionSynthesizer(Pass):
         domain = "custom.pytorch"
         if any(f.name == func_name and f.domain == domain for f in model.functions):
             return
-        opset_standard = helper.make_opsetid("", 14)
+        opset_standard = helper.make_opsetid("", LATEST_OPSET)
         c_node = helper.make_node(
             "Constant",
             inputs=[],

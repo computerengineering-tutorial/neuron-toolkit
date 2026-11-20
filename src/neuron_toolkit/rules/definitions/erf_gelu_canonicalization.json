@@ -7,32 +7,56 @@
       {
         "id": "div_node",
         "op_type": "Div",
-        "inputs": ["$x", "$c_sqrt2"],
-        "outputs": ["$div_out"]
+        "inputs": [
+          "$x",
+          "$c_sqrt2"
+        ],
+        "outputs": [
+          "$div_out"
+        ]
       },
       {
         "id": "erf_node",
         "op_type": "Erf",
-        "inputs": ["$div_out"],
-        "outputs": ["$erf_out"]
+        "inputs": [
+          "$div_out"
+        ],
+        "outputs": [
+          "$erf_out"
+        ]
       },
       {
         "id": "add_node",
         "op_type": "Add",
-        "inputs": ["$erf_out", "$c_one"],
-        "outputs": ["$add_out"]
+        "inputs": [
+          "$erf_out",
+          "$c_one"
+        ],
+        "outputs": [
+          "$add_out"
+        ]
       },
       {
         "id": "mul1_node",
         "op_type": "Mul",
-        "inputs": ["$x", "$add_out"],
-        "outputs": ["$mul1_out"]
+        "inputs": [
+          "$x",
+          "$add_out"
+        ],
+        "outputs": [
+          "$mul1_out"
+        ]
       },
       {
         "id": "mul2_node",
         "op_type": "Mul",
-        "inputs": ["$mul1_out", "$c_half"],
-        "outputs": ["$gelu_out"]
+        "inputs": [
+          "$mul1_out",
+          "$c_half"
+        ],
+        "outputs": [
+          "$gelu_out"
+        ]
       }
     ],
     "conditions": [
@@ -60,14 +84,19 @@
     "type": "fuse_to_function",
     "op_type": "Gelu",
     "domain": "custom.pytorch",
-    "inputs": ["$x"],
-    "outputs": ["$gelu_out"],
+    "inputs": [
+      "$x"
+    ],
+    "outputs": [
+      "$gelu_out"
+    ],
     "targets": {
       "modern_onnx": {
         "op_type": "Gelu",
         "domain": "",
-        "min_opset": 20,
-        "inputs": ["$x"],
+        "inputs": [
+          "$x"
+        ],
         "attributes": {
           "approximate": "none"
         }
@@ -75,12 +104,16 @@
       "function_proto": {
         "op_type": "Gelu",
         "domain": "custom.pytorch",
-        "inputs": ["$x"]
+        "inputs": [
+          "$x"
+        ]
       },
       "pytorch_custom": {
         "op_type": "Gelu",
         "domain": "custom.pytorch",
-        "inputs": ["$x"]
+        "inputs": [
+          "$x"
+        ]
       }
     }
   }

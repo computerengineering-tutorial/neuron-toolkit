@@ -16,7 +16,7 @@ import logging
 import onnx
 from onnx import helper, numpy_helper
 
-from neuron_toolkit.compiler.base import CompilerContext, Pass
+from neuron_toolkit.compiler.base import CompilerContext, Pass, LATEST_OPSET
 
 log = logging.getLogger("neuron_toolkit.compiler.activation_canonicalizer")
 
@@ -290,7 +290,7 @@ class ActivationCanonicalizer(Pass):
         if any(f.name == func_name and f.domain == domain for f in model.functions):
             return
 
-        opset_standard = helper.make_opsetid("", 14)
+        opset_standard = helper.make_opsetid("", LATEST_OPSET)
         c_sqrt2 = helper.make_node(
             "Constant",
             inputs=[],
@@ -439,7 +439,7 @@ class ActivationCanonicalizer(Pass):
     def _attach_tanh_gelu_function_def(self, model: onnx.ModelProto) -> None:
         """Attach formal ONNX FunctionProto definition for Gelu with Tanh approximation."""
         domain = "custom.pytorch"
-        opset_standard = helper.make_opsetid("", 14)
+        opset_standard = helper.make_opsetid("", LATEST_OPSET)
         custom_domain = "custom.pytorch"
         if not any(op.domain == custom_domain for op in model.opset_import):
             model.opset_import.append(helper.make_opsetid(custom_domain, 1))
@@ -980,7 +980,7 @@ class ActivationCanonicalizer(Pass):
         domain = "custom.pytorch"
         if any(f.name == func_name and f.domain == domain for f in model.functions):
             return
-        opset_standard = helper.make_opsetid("", 14)
+        opset_standard = helper.make_opsetid("", LATEST_OPSET)
         sig = helper.make_node("Sigmoid", inputs=["x"], outputs=["sig_out"])
         mul = helper.make_node("Mul", inputs=["x", "sig_out"], outputs=["y"])
         func = helper.make_function(
@@ -1000,7 +1000,7 @@ class ActivationCanonicalizer(Pass):
         domain = "custom.pytorch"
         if any(f.name == func_name and f.domain == domain for f in model.functions):
             return
-        opset_standard = helper.make_opsetid("", 14)
+        opset_standard = helper.make_opsetid("", LATEST_OPSET)
         hsig = helper.make_node(
             "HardSigmoid", inputs=["x"], outputs=["hsig_out"], alpha=1.0 / 6.0, beta=0.5
         )
@@ -1022,7 +1022,7 @@ class ActivationCanonicalizer(Pass):
         domain = "custom.pytorch"
         if any(f.name == func_name and f.domain == domain for f in model.functions):
             return
-        opset_standard = helper.make_opsetid("", 14)
+        opset_standard = helper.make_opsetid("", LATEST_OPSET)
         zero = helper.make_node(
             "Constant",
             inputs=[],
@@ -1053,7 +1053,7 @@ class ActivationCanonicalizer(Pass):
         domain = "custom.pytorch"
         if any(f.name == func_name and f.domain == domain for f in model.functions):
             return
-        opset_standard = helper.make_opsetid("", 14)
+        opset_standard = helper.make_opsetid("", LATEST_OPSET)
         sp = helper.make_node("Softplus", inputs=["x"], outputs=["sp_out"])
         tanh = helper.make_node("Tanh", inputs=["sp_out"], outputs=["t_out"])
         mul = helper.make_node("Mul", inputs=["x", "t_out"], outputs=["y"])

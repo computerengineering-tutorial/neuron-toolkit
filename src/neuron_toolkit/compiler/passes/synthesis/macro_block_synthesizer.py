@@ -35,7 +35,7 @@ from neuron_toolkit.compiler.architectures.fingerprint import (
     compute_subgraph_fingerprint,
     ensure_specialized_function_proto,
 )
-from neuron_toolkit.compiler.base import CompilerPass
+from neuron_toolkit.compiler.base import CompilerPass, LATEST_OPSET
 from neuron_toolkit.compiler.passes.canonicalization.shape_canonicalizer import (
     ShapeCanonicalizer,
 )
@@ -401,12 +401,7 @@ class MacroBlockSynthesizer(CompilerPass):
         domain = "custom.pytorch"
         if any(f.name == func_name and f.domain == domain for f in model.functions):
             return
-        model_opset = 14
-        for op in model.opset_import:
-            if op.domain in ("", "ai.onnx"):
-                model_opset = op.version
-                break
-        opset_standard = helper.make_opsetid("", model_opset)
+        opset_standard = helper.make_opsetid("", LATEST_OPSET)
         opset_custom = helper.make_opsetid("custom.pytorch", 1)
 
         norm = helper.make_node("RMSNorm", inputs=["u"], outputs=["norm_out"], domain=domain)
@@ -549,12 +544,7 @@ class MacroBlockSynthesizer(CompilerPass):
         domain = "custom.pytorch"
         if any(f.name == func_name and f.domain == domain for f in model.functions):
             return
-        model_opset = 14
-        for op in model.opset_import:
-            if op.domain in ("", "ai.onnx"):
-                model_opset = op.version
-                break
-        opset_standard = helper.make_opsetid("", model_opset)
+        opset_standard = helper.make_opsetid("", LATEST_OPSET)
         opset_custom = helper.make_opsetid("custom.pytorch", 1)
 
         if formal_inputs and formal_inputs == ["h", "gate_in", "x"]:
@@ -686,12 +676,7 @@ class MacroBlockSynthesizer(CompilerPass):
         domain = "custom.pytorch"
         if any(f.name == func_name and f.domain == domain for f in model.functions):
             return
-        model_opset = 14
-        for op in model.opset_import:
-            if op.domain in ("", "ai.onnx"):
-                model_opset = op.version
-                break
-        opset_standard = helper.make_opsetid("", model_opset)
+        opset_standard = helper.make_opsetid("", LATEST_OPSET)
         opset_custom = helper.make_opsetid("custom.pytorch", 1)
 
         gap = helper.make_node("GlobalAveragePool", inputs=["x"], outputs=["pooled"])
@@ -808,12 +793,7 @@ class MacroBlockSynthesizer(CompilerPass):
         domain = "custom.pytorch"
         if any(f.name == func_name and f.domain == domain for f in model.functions):
             return
-        model_opset = 14
-        for op in model.opset_import:
-            if op.domain in ("", "ai.onnx"):
-                model_opset = op.version
-                break
-        opset_standard = helper.make_opsetid("", model_opset)
+        opset_standard = helper.make_opsetid("", LATEST_OPSET)
         opset_custom = helper.make_opsetid("custom.pytorch", 1)
 
         bn1 = helper.make_node("BatchNormalization", inputs=["x", "s1", "b1", "m1", "v1"], outputs=["bn1_out"])
@@ -926,12 +906,7 @@ class MacroBlockSynthesizer(CompilerPass):
         domain = "custom.pytorch"
         if any(f.name == func_name and f.domain == domain for f in model.functions):
             return
-        model_opset = 14
-        for op in model.opset_import:
-            if op.domain in ("", "ai.onnx"):
-                model_opset = op.version
-                break
-        opset_standard = helper.make_opsetid("", model_opset)
+        opset_standard = helper.make_opsetid("", LATEST_OPSET)
         opset_custom = helper.make_opsetid("custom.pytorch", 1)
 
         c1 = helper.make_node("Clip", inputs=["x"], outputs=["c1_out"])
@@ -1044,12 +1019,7 @@ class MacroBlockSynthesizer(CompilerPass):
         domain = "custom.pytorch"
         if any(f.name == func_name and f.domain == domain for f in model.functions):
             return
-        model_opset = 14
-        for op in model.opset_import:
-            if op.domain in ("", "ai.onnx"):
-                model_opset = op.version
-                break
-        opset_standard = helper.make_opsetid("", model_opset)
+        opset_standard = helper.make_opsetid("", LATEST_OPSET)
         opset_custom = helper.make_opsetid("custom.pytorch", 1)
 
         qkv = helper.make_node("Linear", inputs=["x", "w_qkv"], outputs=["qkv_out"], domain=domain)
@@ -1190,12 +1160,7 @@ class MacroBlockSynthesizer(CompilerPass):
         domain = "custom.pytorch"
         if any(f.name == func_name and f.domain == domain for f in model.functions):
             return
-        model_opset = 14
-        for op in model.opset_import:
-            if op.domain in ("", "ai.onnx"):
-                model_opset = op.version
-                break
-        opset_standard = helper.make_opsetid("", model_opset)
+        opset_standard = helper.make_opsetid("", LATEST_OPSET)
         opset_custom = helper.make_opsetid("custom.pytorch", 1)
 
         norm = helper.make_node("RMSNorm", inputs=["x"], outputs=["norm_out"], domain=domain)
@@ -1299,12 +1264,7 @@ class MacroBlockSynthesizer(CompilerPass):
         domain = "custom.pytorch"
         if any(f.name == func_name and f.domain == domain for f in model.functions):
             return
-        model_opset = 14
-        for op in model.opset_import:
-            if op.domain in ("", "ai.onnx"):
-                model_opset = op.version
-                break
-        opset_standard = helper.make_opsetid("", model_opset)
+        opset_standard = helper.make_opsetid("", LATEST_OPSET)
         opset_custom = helper.make_opsetid("custom.pytorch", 1)
 
         mha = helper.make_node("GatedMultiHeadAttention", inputs=["x"], outputs=["mha_out"], domain=domain)
@@ -2042,12 +2002,7 @@ class MacroBlockSynthesizer(CompilerPass):
         )
 
         if mode == "function_proto":
-            model_opset = 17
-            for op in model.opset_import:
-                if op.domain in ("", "ai.onnx"):
-                    model_opset = op.version
-                    break
-            opset_standard = helper.make_opsetid("", model_opset)
+            opset_standard = helper.make_opsetid("", LATEST_OPSET)
             opset_custom = helper.make_opsetid(rule.action.domain, 1)
 
             func = helper.make_function(
@@ -2743,12 +2698,7 @@ class MacroBlockSynthesizer(CompilerPass):
         if any(f.name == func_name and f.domain == domain for f in model.functions):
             return
 
-        model_opset = 14
-        for op in model.opset_import:
-            if op.domain in ("", "ai.onnx"):
-                model_opset = max(model_opset, op.version)
-                break
-        opset_standard = helper.make_opsetid("", model_opset)
+        opset_standard = helper.make_opsetid("", LATEST_OPSET)
 
         dql = helper.make_node(
             "DynamicQuantizeLinear",

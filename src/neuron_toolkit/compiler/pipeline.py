@@ -3,7 +3,7 @@
 Orchestrates:
 - Stage 1: Micro-Canonicalization (Shapes, Activations, Norms, Math)
 - Stage 2: Macro-Block Synthesis (Attention, FeedForward, RoPE, Axial)
-- Stage 3: Target Export & Code Generation (ONNX Opset 23+ / Netron FunctionProto / PyTorch)
+- Stage 3: Target Export & Code Generation (Standard Modern ONNX / Netron FunctionProto / PyTorch)
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any
 
 import onnx
 
-from neuron_toolkit.compiler.base import CompilerContext
+from neuron_toolkit.compiler.base import CompilerContext, LATEST_OPSET
 from neuron_toolkit.compiler.exporters.onnx_exporter import OnnxExporter
 from neuron_toolkit.compiler.passes.canonicalization.activation_canonicalizer import (
     ActivationCanonicalizer,
@@ -287,14 +287,12 @@ class NeuronCompiler:
         model: onnx.ModelProto | NeuronGraph,
         mode: str = "function_proto",
         rule_ids: list[str] | None = None,
-        opset_version: int = 23,
         options: dict[str, Any] | None = None,
     ) -> onnx.ModelProto:
         """Compile and optimize model with specified mode and rules."""
         pipeline = OptimizationPipeline(mode=mode)
         context = CompilerContext(
             mode=mode,
-            opset_version=opset_version,
             rule_ids=rule_ids,
             options=options or {},
         )

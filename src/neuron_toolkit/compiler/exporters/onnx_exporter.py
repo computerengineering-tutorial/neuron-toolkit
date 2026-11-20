@@ -8,7 +8,7 @@ from pathlib import Path
 import onnx
 from onnx import helper
 
-from neuron_toolkit.compiler.base import CompilerContext
+from neuron_toolkit.compiler.base import CompilerContext, LATEST_OPSET
 from neuron_toolkit.runtime.runner import toposort_graph
 
 log = logging.getLogger("neuron_toolkit.compiler.onnx_exporter")
@@ -42,11 +42,11 @@ class OnnxExporter:
             has_main = False
             for opset in model.opset_import:
                 if opset.domain in ("", "ai.onnx"):
-                    opset.version = max(opset.version, context.opset_version)
+                    opset.version = LATEST_OPSET
                     has_main = True
             if not has_main:
                 model.opset_import.append(
-                    helper.make_opsetid("", context.opset_version)
+                    helper.make_opsetid("", LATEST_OPSET)
                 )
 
         # Align function opset imports with model opset imports for clean checker validation

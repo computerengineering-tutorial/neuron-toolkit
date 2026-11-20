@@ -15,7 +15,7 @@ import numpy as np
 import onnx
 from onnx import helper, numpy_helper
 
-from neuron_toolkit.compiler.base import CompilerContext, Pass
+from neuron_toolkit.compiler.base import CompilerContext, Pass, LATEST_OPSET
 
 log = logging.getLogger("neuron_toolkit.compiler.norm_canonicalizer")
 
@@ -213,7 +213,7 @@ class NormCanonicalizer(Pass):
         domain = "custom.pytorch"
         if any(f.name == func_name and f.domain == domain for f in model.functions):
             return
-        opset_standard = helper.make_opsetid("", 14)
+        opset_standard = helper.make_opsetid("", LATEST_OPSET)
         in_node = helper.make_node(
             "InstanceNormalization",
             inputs=["x", "scale", "bias"],
@@ -490,7 +490,7 @@ class NormCanonicalizer(Pass):
         domain = "custom.pytorch"
         if any(f.name == func_name and f.domain == domain for f in model.functions):
             return
-        opset_standard = helper.make_opsetid("", 14)
+        opset_standard = helper.make_opsetid("", LATEST_OPSET)
         r_node = helper.make_node(
             "ReduceL2", inputs=["x"], outputs=["norm"], axes=[-1], keepdims=1
         )
@@ -526,13 +526,8 @@ class NormCanonicalizer(Pass):
     ) -> onnx.ModelProto:
         """Fuses ReduceMean -> Sub -> Pow(2) -> ReduceMean -> Sqrt -> Div -> Mul -> Add into LayerNormalization."""
         graph = model.graph
-        target_opset = 17
-        for op in model.opset_import:
-            if op.domain in ("", "ai.onnx"):
-                target_opset = op.version
-                break
-        use_standard_ln = (mode == "modern_onnx" or target_opset >= 17)
-        ln_domain = "" if use_standard_ln else "custom.pytorch"
+        use_standard_ln = True
+        ln_domain = ""
 
         init_map: dict[str, np.ndarray] = {
             i.name: numpy_helper.to_array(i) for i in graph.initializer
@@ -926,7 +921,7 @@ class NormCanonicalizer(Pass):
         domain = "custom.pytorch"
         if any(f.name == func_name and f.domain == domain for f in model.functions):
             return
-        opset_standard = helper.make_opsetid("", 14)
+        opset_standard = helper.make_opsetid("", LATEST_OPSET)
         rm_m = helper.make_node(
             "ReduceMean", inputs=["x"], outputs=["mean_out"], axes=[-1], keepdims=1
         )
@@ -982,7 +977,7 @@ class NormCanonicalizer(Pass):
     def _attach_skip_norm_function_def(self, model: onnx.ModelProto) -> None:
         """Attach formal ONNX FunctionProto definition for SkipNorm variants."""
         domain = "custom.pytorch"
-        opset_standard = helper.make_opsetid("", 14)
+        opset_standard = helper.make_opsetid("", LATEST_OPSET)
         opset_custom = helper.make_opsetid("custom.pytorch", 1)
 
         if not any(

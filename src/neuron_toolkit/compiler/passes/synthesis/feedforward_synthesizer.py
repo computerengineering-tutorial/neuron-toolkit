@@ -19,7 +19,7 @@ from neuron_toolkit.compiler.architectures.fingerprint import (
     compute_subgraph_fingerprint,
     ensure_specialized_function_proto,
 )
-from neuron_toolkit.compiler.base import CompilerContext, Pass
+from neuron_toolkit.compiler.base import CompilerContext, Pass, LATEST_OPSET
 
 log = logging.getLogger("neuron_toolkit.compiler.feedforward_synthesizer")
 
@@ -157,7 +157,7 @@ class FeedForwardSynthesizer(Pass):
             f.name == fname and f.domain == "custom.pytorch" for f in model.functions
         ):
             return
-        opset_standard = helper.make_opsetid("", 14)
+        opset_standard = helper.make_opsetid("", LATEST_OPSET)
         opset_custom = helper.make_opsetid("custom.pytorch", 1)
 
         norm = helper.make_node(
@@ -357,7 +357,7 @@ class FeedForwardSynthesizer(Pass):
         del model.functions[:]
         model.functions.extend(surviving_funcs)
 
-        opset_standard = helper.make_opsetid("", 14)
+        opset_standard = helper.make_opsetid("", LATEST_OPSET)
         opset_custom = helper.make_opsetid("custom.pytorch", 1)
 
         if input_count == 8:

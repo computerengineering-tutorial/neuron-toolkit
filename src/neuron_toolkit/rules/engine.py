@@ -35,7 +35,7 @@ class JSONRuleEngine:
         """Initialize engine.
 
         Args:
-            mode: 'modern_onnx' (converts to modern standard ONNX Opset 23+ ops like RMSNormalization, Gelu, GroupNormalization),
+            mode: 'modern_onnx' (converts to modern standard modern ONNX ops like RMSNormalization, Gelu, GroupNormalization),
                   'function_proto' (dual-mode with formal FunctionProto attached for Netron visual hierarchy),
                   'plain_custom_op' or 'pytorch_custom' (minimalist custom op node without function body for PyTorch runtime).
         """
