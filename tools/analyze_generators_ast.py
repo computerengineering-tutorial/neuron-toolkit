@@ -288,28 +288,3 @@ class ArchitectureASTVisitor(ast.NodeVisitor):
             "quantization_injection_strategy": strategy,
         }
 
-
-def main() -> None:
-    root = Path(__file__).resolve().parent.parent
-    gen_dir = root / "generators"
-    gen_files = sorted(gen_dir.glob("gen_*.py"))
-
-    catalog: dict[str, dict] = {}
-    for gfile in gen_files:
-        with open(gfile, "r", encoding="utf-8") as f:
-            src = f.read()
-        tree = ast.parse(src, filename=str(gfile))
-        visitor = ArchitectureASTVisitor(gfile.name)
-        visitor.visit(tree)
-        catalog.update(visitor.classes)
-
-    out_json = root / "quantization_block_analysis.json"
-    with open(out_json, "w", encoding="utf-8") as f:
-        json.dump(catalog, f, indent=2)
-
-    print(f"Successfully analyzed {len(catalog)} generator classes.")
-    print(f"Catalog saved to {out_json}")
-
-
-if __name__ == "__main__":
-    main()

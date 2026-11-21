@@ -349,17 +349,3 @@ def test_quantized_block_export_and_torch_parity(spec: ModelSpec):
         f"max_diff={stats['max_diff']}, cos={stats['cosine_sim']}"
     )
 
-
-def test_quantized_catalog_all_categories_coverage():
-    """Verify that key categories from quantization_block_analysis.json are covered."""
-    json_path = root_dir / "quantization_block_analysis.json"
-    with open(json_path, "r", encoding="utf-8") as f:
-        catalog = json.load(f)
-
-    catalog_categories = {entry["category"] for entry in catalog.values()}
-    tested_categories = {spec.category for spec in ALL_SPECS}
-
-    # Verify key architectural categories are actively tested
-    for cat in ["activation_variants", "attention_variants", "norm_variants", "transformer_advanced", "mlp_vanilla"]:
-        assert any(cat in c for c in tested_categories), f"Category {cat} is not covered in representative test specs"
-
