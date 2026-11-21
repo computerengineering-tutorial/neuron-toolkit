@@ -79,25 +79,7 @@
       "epsilon": 1e-05
     },
     "targets": {
-      "modern_onnx": {
-        "op_type": "GroupNormalization",
-        "domain": "",
-        "inputs": [
-          "$x",
-          "$gamma",
-          "$beta"
-        ]
-      },
       "function_proto": {
-        "op_type": "GroupNorm",
-        "domain": "custom.pytorch",
-        "inputs": [
-          "$x",
-          "$gamma",
-          "$beta"
-        ]
-      },
-      "pytorch_custom": {
         "op_type": "GroupNorm",
         "domain": "custom.pytorch",
         "inputs": [

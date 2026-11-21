@@ -1988,9 +1988,10 @@ class OpRegistry:
                 q, k, v = inputs[0], inputs[1], inputs[2]
                 mask = None
                 rem = inputs[3:]
-                if rem and rem[0] is not None and rem[0].dim() in (3, 4):
-                    mask = rem[0]
-                    rem = rem[1:]
+                if rem and rem[0] is not None:
+                    if rem[0].dim() in (3, 4) or (rem[0].dim() == 2 and rem[0].shape == (q.shape[-2], k.shape[-2])):
+                        mask = rem[0]
+                        rem = rem[1:]
                 out_w = rem[0] if len(rem) > 0 and rem[0] is not None and rem[0].dim() == 2 else None
                 out_b = rem[1] if len(rem) > 1 and rem[1] is not None and rem[1].numel() > 0 else None
 
@@ -2004,7 +2005,10 @@ class OpRegistry:
                 s = float(scale) if scale is not None else (1.0 / (d_head ** 0.5))
                 scores = torch.matmul(q * s, k.transpose(-1, -2))
                 if mask is not None:
-                    scores = scores + mask
+                    if mask.dtype == torch.bool:
+                        scores = torch.where(mask, scores, torch.full_like(scores, -10000.0))
+                    else:
+                        scores = scores + mask
                 probs = torch.softmax(scores, dim=-1)
                 attn_out = torch.matmul(probs, v)
 

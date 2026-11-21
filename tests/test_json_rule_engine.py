@@ -110,7 +110,7 @@ def test_erf_gelu_fusion_synthetic():
 
     assert len(model.graph.node) == 8
 
-    engine = JSONRuleEngine(mode="function_proto")
+    engine = JSONRuleEngine()
     m_opt = engine.apply_erf_gelu_fusion(model)
 
     assert len(m_opt.graph.node) == 1
@@ -169,8 +169,8 @@ def test_continuous_math_collapse_synthetic():
     assert "Add" in ops
 
 
-def test_dual_mode_export():
-    """Verify exporting in both function_proto and plain_custom_op modes."""
+def test_export_simplified_onnx_function_proto():
+    """Verify exporting simplified model with FunctionProto preserved."""
     X = helper.make_tensor_value_info("X", TensorProto.FLOAT, [1, 4])
     Y = helper.make_tensor_value_info("Y", TensorProto.FLOAT, [1, 4])
     gelu = helper.make_node(
@@ -198,10 +198,7 @@ def test_dual_mode_export():
 
     with tempfile.TemporaryDirectory() as tmpdir:
         fp_path = f"{tmpdir}/func_proto.onnx"
-        plain_path = f"{tmpdir}/plain.onnx"
 
-        m_fp = export_simplified_onnx(model, fp_path, mode="function_proto")
+        m_fp = export_simplified_onnx(model, fp_path)
         assert len(m_fp.functions) == 1
-
-        m_plain = export_simplified_onnx(model, plain_path, mode="plain_custom_op")
-        assert len(m_plain.functions) == 0
+        assert m_fp.functions[0].name == "Gelu"

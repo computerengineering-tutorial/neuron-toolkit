@@ -7,38 +7,65 @@
       {
         "id": "gap",
         "op_type": "GlobalAveragePool|ReduceMean",
-        "inputs": ["$x"],
-        "outputs": ["$gap_out"]
+        "inputs": [
+          "$x"
+        ],
+        "outputs": [
+          "$gap_out"
+        ]
       },
       {
         "id": "fc1",
         "op_type": "Conv|Linear|Gemm",
-        "inputs": ["$gap_out", "$w1"],
-        "outputs": ["$fc1_out"]
+        "inputs": [
+          "$gap_out",
+          "$w1"
+        ],
+        "outputs": [
+          "$fc1_out"
+        ]
       },
       {
         "id": "act",
         "op_type": "Relu",
-        "inputs": ["$fc1_out"],
-        "outputs": ["$act_out"]
+        "inputs": [
+          "$fc1_out"
+        ],
+        "outputs": [
+          "$act_out"
+        ]
       },
       {
         "id": "fc2",
         "op_type": "Conv|Linear|Gemm",
-        "inputs": ["$act_out", "$w2"],
-        "outputs": ["$fc2_out"]
+        "inputs": [
+          "$act_out",
+          "$w2"
+        ],
+        "outputs": [
+          "$fc2_out"
+        ]
       },
       {
         "id": "sig",
         "op_type": "Sigmoid",
-        "inputs": ["$fc2_out"],
-        "outputs": ["$scale"]
+        "inputs": [
+          "$fc2_out"
+        ],
+        "outputs": [
+          "$scale"
+        ]
       },
       {
         "id": "mul",
         "op_type": "Mul",
-        "inputs": ["$x", "$scale"],
-        "outputs": ["$final_out"]
+        "inputs": [
+          "$x",
+          "$scale"
+        ],
+        "outputs": [
+          "$final_out"
+        ]
       }
     ]
   },
@@ -46,23 +73,23 @@
     "type": "fuse_to_function",
     "op_type": "SqueezeExcitation",
     "domain": "custom.pytorch",
-    "inputs": ["$x", "$w1", "$w2"],
-    "outputs": ["$final_out"],
+    "inputs": [
+      "$x",
+      "$w1",
+      "$w2"
+    ],
+    "outputs": [
+      "$final_out"
+    ],
     "targets": {
-      "modern_onnx": {
-        "op_type": "SqueezeExcitation",
-        "domain": "custom.pytorch",
-        "inputs": ["$x", "$w1", "$w2"]
-      },
       "function_proto": {
         "op_type": "SqueezeExcitation",
         "domain": "custom.pytorch",
-        "inputs": ["$x", "$w1", "$w2"]
-      },
-      "pytorch_custom": {
-        "op_type": "SqueezeExcitation",
-        "domain": "custom.pytorch",
-        "inputs": ["$x", "$w1", "$w2"]
+        "inputs": [
+          "$x",
+          "$w1",
+          "$w2"
+        ]
       }
     }
   }

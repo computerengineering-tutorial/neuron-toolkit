@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
-"""AST Analysis & Quantization Architecture Catalog Generator.
+"""AST Analysis & Quantization Architecture Catalog Inspector.
 
-Scans all generator classes across generators/ using Python AST and produces
-quantization_block_analysis.json mapping each class to its quantization
-schemes, target ONNX nodes, and expected macro block fusions.
+Scans all generator classes across generators/ using Python AST to analyze
+quantization schemes, target ONNX nodes, and expected macro block fusions on the fly.
 """
 
 from __future__ import annotations

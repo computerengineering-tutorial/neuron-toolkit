@@ -9,7 +9,6 @@ Covers:
 5. Affine-less LayerNorm Fusion (elementwise_affine=False).
 6. Constant Node Epsilon Preservation in Norm Canonicalization.
 7. Fixed-Point Static Folding & Initializer Deduplication.
-8. Validation of AST-generated quantization catalog JSON.
 """
 
 from __future__ import annotations

@@ -8,7 +8,9 @@
         "id": "body_exit",
         "op_type": "*",
         "inputs": [],
-        "outputs": ["$x"]
+        "outputs": [
+          "$x"
+        ]
       }
     ]
   },
@@ -16,23 +18,19 @@
     "type": "fuse_to_function",
     "op_type": "MultiTaskDecoderHead",
     "domain": "custom.pytorch",
-    "inputs": ["$x"],
-    "outputs": ["$outputs"],
+    "inputs": [
+      "$x"
+    ],
+    "outputs": [
+      "$outputs"
+    ],
     "targets": {
-      "modern_onnx": {
-        "op_type": "MultiTaskDecoderHead",
-        "domain": "custom.pytorch",
-        "inputs": ["$x"]
-      },
       "function_proto": {
         "op_type": "MultiTaskDecoderHead",
         "domain": "custom.pytorch",
-        "inputs": ["$x"]
-      },
-      "pytorch_custom": {
-        "op_type": "MultiTaskDecoderHead",
-        "domain": "custom.pytorch",
-        "inputs": ["$x"]
+        "inputs": [
+          "$x"
+        ]
       }
     }
   }

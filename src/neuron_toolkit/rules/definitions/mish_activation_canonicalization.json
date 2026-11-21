@@ -48,21 +48,7 @@
       "$y"
     ],
     "targets": {
-      "modern_onnx": {
-        "op_type": "Mish",
-        "domain": "",
-        "inputs": [
-          "$x"
-        ]
-      },
       "function_proto": {
-        "op_type": "Mish",
-        "domain": "custom.pytorch",
-        "inputs": [
-          "$x"
-        ]
-      },
-      "pytorch_custom": {
         "op_type": "Mish",
         "domain": "custom.pytorch",
         "inputs": [

@@ -27,10 +27,10 @@ class PyTorchExporter:
     ) -> PyTorchRunner:
         """Finalize model for PyTorch runtime and return a configured PyTorchRunner."""
         if context is None:
-            context = CompilerContext(mode="pytorch_custom")
+            context = CompilerContext()
 
-        # Prepare model in plain custom op mode for runtime runner
-        onnx_exporter = OnnxExporter(mode="pytorch_custom")
+        # Prepare clean model with FunctionProto attachments preserved
+        onnx_exporter = OnnxExporter()
         clean_model = onnx_exporter.export(model, context)
 
         runner = PyTorchRunner(clean_model, registry=self.registry)

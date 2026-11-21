@@ -52,7 +52,7 @@ def test_vuln_47_mixtral_sparse_moe_unfused_dispatch():
     x = torch.randn(1, 16, 64)
     proto = export_model_to_onnx(model, x, ["x"], ["out"], opset_version=17)
 
-    pipeline = OptimizationPipeline(mode="function_proto")
+    pipeline = OptimizationPipeline()
     opt_m = pipeline.run(proto)
 
     moe_ops = [n for n in opt_m.graph.node if n.op_type in ("MoEBlock", "SparseMoeBlock")]
@@ -75,7 +75,7 @@ def test_vuln_48_deepseek_mla_latent_attention_unfused():
     x = torch.randn(1, 16, 64)
     proto = export_model_to_onnx(model, x, ["x"], ["out"], opset_version=17)
 
-    pipeline = OptimizationPipeline(mode="function_proto")
+    pipeline = OptimizationPipeline()
     opt_m = pipeline.run(proto)
 
     # Contract: Whole MLA layer should collapse into a single MultiHeadLatentAttention macro-block
@@ -101,7 +101,7 @@ def test_vuln_49_phi3_partial_rope_ignored_by_compiler():
     sin = torch.randn(1, 1, 16, rot_dim)
     proto = export_model_to_onnx(model, (x, cos, sin), ["x", "cos", "sin"], ["out"], opset_version=17)
 
-    pipeline = OptimizationPipeline(mode="function_proto")
+    pipeline = OptimizationPipeline()
     opt_m = pipeline.run(proto)
 
     rope_ops = [n for n in opt_m.graph.node if "Rotary" in n.op_type or "RoPE" in n.op_type]
@@ -124,7 +124,7 @@ def test_vuln_50_diff_transformer_dual_softmax_blocks_sdpa():
     x = torch.randn(1, 16, 64)
     proto = export_model_to_onnx(model, x, ["x"], ["out"], opset_version=17)
 
-    pipeline = OptimizationPipeline(mode="function_proto")
+    pipeline = OptimizationPipeline()
     opt_m = pipeline.run(proto)
 
     diff_ops = [n for n in opt_m.graph.node if "Diff" in n.op_type or "Attention" in n.op_type]
@@ -148,7 +148,7 @@ def test_vuln_51_cross_attention_encoder_decoder_unfused_projections():
     x_enc = torch.randn(1, 24, 64)
     proto = export_model_to_onnx(model, (x_dec, x_enc), ["x_dec", "x_enc"], ["out"], opset_version=17)
 
-    pipeline = OptimizationPipeline(mode="function_proto")
+    pipeline = OptimizationPipeline()
     opt_m = pipeline.run(proto)
 
     cross_ops = [n for n in opt_m.graph.node if n.op_type in ("CrossAttention", "MultiHeadCrossAttention")]
@@ -171,7 +171,7 @@ def test_vuln_52_mamba_selective_ssm_unfolded_scan_bloat():
     x = torch.randn(1, 8, 32)
     proto = export_model_to_onnx(model, x, ["x"], ["out"], opset_version=17)
 
-    pipeline = OptimizationPipeline(mode="function_proto")
+    pipeline = OptimizationPipeline()
     opt_m = pipeline.run(proto)
 
     mamba_ops = [n for n in opt_m.graph.node if "Mamba" in n.op_type or "SSM" in n.op_type]
@@ -194,7 +194,7 @@ def test_vuln_53_swin_shifted_window_roll_scattered_nodes():
     x = torch.randn(1, 8, 8, 32)
     proto = export_model_to_onnx(model, x, ["x"], ["out"], opset_version=17)
 
-    pipeline = OptimizationPipeline(mode="function_proto")
+    pipeline = OptimizationPipeline()
     opt_m = pipeline.run(proto)
 
     swin_ops = [n for n in opt_m.graph.node if "ShiftedWindow" in n.op_type or "Swin" in n.op_type]
@@ -217,7 +217,7 @@ def test_vuln_54_vit_cls_token_concat_pos_embed_unfused():
     img = torch.randn(1, 3, 16, 16)
     proto = export_model_to_onnx(model, img, ["img"], ["out"], opset_version=17)
 
-    pipeline = OptimizationPipeline(mode="function_proto")
+    pipeline = OptimizationPipeline()
     opt_m = pipeline.run(proto)
 
     vit_ops = [n for n in opt_m.graph.node if "ViT" in n.op_type or "PatchEmbedding" in n.op_type]

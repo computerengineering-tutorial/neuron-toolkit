@@ -7,14 +7,24 @@
       {
         "id": "matmul_node",
         "op_type": "MatMul",
-        "inputs": ["$x", "$w"],
-        "outputs": ["$mm_out"]
+        "inputs": [
+          "$x",
+          "$w"
+        ],
+        "outputs": [
+          "$mm_out"
+        ]
       },
       {
         "id": "add_node",
         "op_type": "Add",
-        "inputs": ["$mm_out", "$b"],
-        "outputs": ["$y"]
+        "inputs": [
+          "$mm_out",
+          "$b"
+        ],
+        "outputs": [
+          "$y"
+        ]
       }
     ],
     "conditions": [
@@ -32,23 +42,23 @@
     "type": "fuse_to_function",
     "op_type": "Linear",
     "domain": "custom.pytorch",
-    "inputs": ["$x", "$w", "$b"],
-    "outputs": ["$y"],
+    "inputs": [
+      "$x",
+      "$w",
+      "$b"
+    ],
+    "outputs": [
+      "$y"
+    ],
     "targets": {
-      "modern_onnx": {
-        "op_type": "Linear",
-        "domain": "custom.pytorch",
-        "inputs": ["$x", "$w", "$b"]
-      },
       "function_proto": {
         "op_type": "Linear",
         "domain": "custom.pytorch",
-        "inputs": ["$x", "$w", "$b"]
-      },
-      "pytorch_custom": {
-        "op_type": "Linear",
-        "domain": "custom.pytorch",
-        "inputs": ["$x", "$w", "$b"]
+        "inputs": [
+          "$x",
+          "$w",
+          "$b"
+        ]
       }
     }
   }

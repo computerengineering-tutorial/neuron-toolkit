@@ -126,7 +126,7 @@ class FeedForwardSynthesizer(Pass):
                 nodes_to_drop.add(norm.name)
             ff_count += 1
 
-            if mode in ("function_proto", "modern_onnx"):
+            if mode == "function_proto":
                 self._attach_specialized_feedforward_function(
                     model=model,
                     fname=specialized_op,

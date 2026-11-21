@@ -216,7 +216,7 @@ def export_model(
             from neuron_toolkit.runtime.cross_verifier import CrossVerifier
 
             m_loaded = onnx.load(str(canonical_path))
-            opt_m = NeuronCompiler.compile(m_loaded, mode="function_proto")
+            opt_m = NeuronCompiler.compile(m_loaded)
             verifier = CrossVerifier(m_loaded, opt_m, rtol=rtol, atol=atol)
             report = verifier.verify()
             if not report.all_passed:

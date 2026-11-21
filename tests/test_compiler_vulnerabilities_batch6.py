@@ -299,8 +299,8 @@ def test_dynamic_symbolic_shape_concat_in_head_splitting():
         dynamic_axes={"input": {0: "batch", 1: "seq"}, "output": {0: "batch", 1: "seq"}},
     )
 
-    pipeline = OptimizationPipeline(mode="function_proto")
-    context = CompilerContext(mode="function_proto", options={"enable_macro_blocks": True})
+    pipeline = OptimizationPipeline()
+    context = CompilerContext()
     optimized = pipeline.run(onx, context=context)
 
     # Must pass ONNX checker with dynamic symbolic shapes
@@ -539,8 +539,8 @@ def test_nested_blocks_within_blocks_hierarchical_preservation():
     x = torch.randn(2, 10, 32)
     onx = _export_model_to_onnx(m, x, input_names=["x"], output_names=["out"])
 
-    pipeline = OptimizationPipeline(mode="function_proto")
-    context = CompilerContext(mode="function_proto", options={"enable_macro_blocks": True})
+    pipeline = OptimizationPipeline()
+    context = CompilerContext()
     optimized = pipeline.run(onx, context=context)
 
     # Clean verification of nested blocks

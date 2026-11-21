@@ -119,27 +119,9 @@
       "epsilon": 1e-05
     },
     "targets": {
-      "modern_onnx": {
-        "op_type": "LayerNormalization",
-        "domain": "",
-        "inputs": [
-          "$x",
-          "$gamma",
-          "$beta"
-        ]
-      },
       "function_proto": {
         "op_type": "LayerNormalization",
         "domain": "",
-        "inputs": [
-          "$x",
-          "$gamma",
-          "$beta"
-        ]
-      },
-      "pytorch_custom": {
-        "op_type": "LayerNormalization",
-        "domain": "custom.pytorch",
         "inputs": [
           "$x",
           "$gamma",

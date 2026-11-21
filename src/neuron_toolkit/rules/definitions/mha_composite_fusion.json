@@ -7,26 +7,44 @@
       {
         "id": "qkv",
         "op_type": "Linear|Gemm|MatMul",
-        "inputs": ["$x", "$w_qkv"],
-        "outputs": ["$qkv_out"]
+        "inputs": [
+          "$x",
+          "$w_qkv"
+        ],
+        "outputs": [
+          "$qkv_out"
+        ]
       },
       {
         "id": "sdpa",
         "op_type": "SDPA|ScaledDotProductAttention",
-        "inputs": ["$qkv_out"],
-        "outputs": ["$sdpa_out"]
+        "inputs": [
+          "$qkv_out"
+        ],
+        "outputs": [
+          "$sdpa_out"
+        ]
       },
       {
         "id": "merge",
         "op_type": "MergeHeads",
-        "inputs": ["$sdpa_out"],
-        "outputs": ["$merged_out"]
+        "inputs": [
+          "$sdpa_out"
+        ],
+        "outputs": [
+          "$merged_out"
+        ]
       },
       {
         "id": "out_proj",
         "op_type": "Linear|Gemm|MatMul",
-        "inputs": ["$merged_out", "$w_out"],
-        "outputs": ["$final_out"]
+        "inputs": [
+          "$merged_out",
+          "$w_out"
+        ],
+        "outputs": [
+          "$final_out"
+        ]
       }
     ]
   },
@@ -34,23 +52,23 @@
     "type": "fuse_to_function",
     "op_type": "MultiHeadAttention",
     "domain": "custom.pytorch",
-    "inputs": ["$x", "$w_qkv", "$w_out"],
-    "outputs": ["$final_out"],
+    "inputs": [
+      "$x",
+      "$w_qkv",
+      "$w_out"
+    ],
+    "outputs": [
+      "$final_out"
+    ],
     "targets": {
-      "modern_onnx": {
-        "op_type": "MultiHeadAttention",
-        "domain": "custom.pytorch",
-        "inputs": ["$x", "$w_qkv", "$w_out"]
-      },
       "function_proto": {
         "op_type": "MultiHeadAttention",
         "domain": "custom.pytorch",
-        "inputs": ["$x", "$w_qkv", "$w_out"]
-      },
-      "pytorch_custom": {
-        "op_type": "MultiHeadAttention",
-        "domain": "custom.pytorch",
-        "inputs": ["$x", "$w_qkv", "$w_out"]
+        "inputs": [
+          "$x",
+          "$w_qkv",
+          "$w_out"
+        ]
       }
     }
   }

@@ -7,26 +7,47 @@
       {
         "id": "norm_node",
         "op_type": "RMSNorm",
-        "inputs": ["$x", "$norm_w"],
-        "outputs": ["$norm_out"]
+        "inputs": [
+          "$x",
+          "$norm_w"
+        ],
+        "outputs": [
+          "$norm_out"
+        ]
       },
       {
         "id": "fc1_node",
         "op_type": "Linear",
-        "inputs": ["$norm_out", "$fc1_w", "$fc1_b"],
-        "outputs": ["$fc1_out"]
+        "inputs": [
+          "$norm_out",
+          "$fc1_w",
+          "$fc1_b"
+        ],
+        "outputs": [
+          "$fc1_out"
+        ]
       },
       {
         "id": "gelu_node",
         "op_type": "Gelu",
-        "inputs": ["$fc1_out"],
-        "outputs": ["$act_out"]
+        "inputs": [
+          "$fc1_out"
+        ],
+        "outputs": [
+          "$act_out"
+        ]
       },
       {
         "id": "fc2_node",
         "op_type": "Linear",
-        "inputs": ["$act_out", "$fc2_w", "$fc2_b"],
-        "outputs": ["$final_out"]
+        "inputs": [
+          "$act_out",
+          "$fc2_w",
+          "$fc2_b"
+        ],
+        "outputs": [
+          "$final_out"
+        ]
       }
     ]
   },
@@ -34,26 +55,32 @@
     "type": "fuse_to_function",
     "op_type": "FeedForward",
     "domain": "custom.pytorch",
-    "inputs": ["$x", "$norm_w", "$fc1_w", "$fc1_b", "$fc2_w", "$fc2_b"],
-    "outputs": ["$final_out"],
+    "inputs": [
+      "$x",
+      "$norm_w",
+      "$fc1_w",
+      "$fc1_b",
+      "$fc2_w",
+      "$fc2_b"
+    ],
+    "outputs": [
+      "$final_out"
+    ],
     "attributes": {
       "activation": "gelu"
     },
     "targets": {
-      "modern_onnx": {
-        "op_type": "FeedForward",
-        "domain": "custom.pytorch",
-        "inputs": ["$x", "$norm_w", "$fc1_w", "$fc1_b", "$fc2_w", "$fc2_b"]
-      },
       "function_proto": {
         "op_type": "FeedForward",
         "domain": "custom.pytorch",
-        "inputs": ["$x", "$norm_w", "$fc1_w", "$fc1_b", "$fc2_w", "$fc2_b"]
-      },
-      "pytorch_custom": {
-        "op_type": "FeedForward",
-        "domain": "custom.pytorch",
-        "inputs": ["$x", "$norm_w", "$fc1_w", "$fc1_b", "$fc2_w", "$fc2_b"]
+        "inputs": [
+          "$x",
+          "$norm_w",
+          "$fc1_w",
+          "$fc1_b",
+          "$fc2_w",
+          "$fc2_b"
+        ]
       }
     }
   }

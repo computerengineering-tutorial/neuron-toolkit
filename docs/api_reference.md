@@ -63,7 +63,8 @@ Reconstructs a `NeuronGraph` from a JSON topology file or string, optionally ini
 - **`save_safetensors(path: str, metadata: dict[str, str] | None = None) -> None`**: Saves model parameters into a `.safetensors` file.
 - **`load_safetensors(path: str, strict: bool = False) -> dict[str, list[str]]`**: Loads weights from a `.safetensors` file and replaces model initializers in-place.
 - **`replace_weights(weights_dict: Mapping[str, Any], strict: bool = False) -> dict[str, list[str]]`**: Replaces weights in-place from a dictionary.
-- **`apply_json_rules(rules: list[str] | None = None, mode: str = "function_proto") -> NeuronGraph`**: Applies declarative JSON rewrite rules (Cast folding, GELU, RMSNorm, SDPA, SwiGLU).
+- **`apply_json_rules(rules: list[str] | None = None) -> NeuronGraph`**: Applies declarative JSON rewrite rules (Cast folding, GELU, RMSNorm, SDPA, SwiGLU).
+- **`compile(rule_ids: list[str] | None = None, options: dict[str, Any] | None = None) -> NeuronGraph`**: Compiles and optimizes model graph using the unified modern optimization pipeline.
 - **`run_pytorch(inputs: dict[str, Any], device: str = "cpu") -> dict[str, Any]`**: Executes the graph natively using the standalone PyTorch execution engine.
 - **`cross_verify(simplified_graph: NeuronGraph | object | str, inputs: dict[str, Any] | None = None, rtol: float = 1e-4, atol: float = 1e-4) -> CrossVerificationReport`**: Cross-verifies numerical output parity between this model on ONNX Runtime and a simplified/rewritten model on PyTorchRunner.
 - **`compare_outputs(start_points, end_points, pytorch_module, inputs_dict, rtol=1e-5, atol=1e-8) -> dict[str, Any]`**: Executes sliced subgraph and reference PyTorch module on inputs, comparing numerical outputs (MAE, MSE, Cosine Similarity).
@@ -345,14 +346,14 @@ High-level 3-stage optimization pipeline and compilation layer for ONNX and unif
 
 Class-based front-end compiler entry point.
 
-- **`compile(model: onnx.ModelProto | NeuronGraph, mode: str = 'function_proto', rule_ids: list[str] | None = None, opset_version: int = 23, options: dict[str, Any] | None = None) -> onnx.ModelProto`**:
+- **`compile(model: onnx.ModelProto | NeuronGraph, rule_ids: list[str] | None = None, options: dict[str, Any] | None = None) -> onnx.ModelProto`**:
   Executes the full 3-stage optimization pipeline on the model and exports an optimized ONNX ModelProto.
 
 ### `OptimizationPipeline`
 
 Enterprise-grade 3-stage optimization pipeline driver orchestrating canonicalization, synthesis, and export.
 
-- **`__init__(mode: str = 'function_proto') -> None`**: Initializes pipeline with target representation mode (`'function_proto'` or `'plain'`).
+- **`__init__() -> None`**: Initializes pipeline with unified modern representation.
 - **`run(target: onnx.ModelProto | NeuronGraph, context: CompilerContext | None = None) -> onnx.ModelProto`**:
   Runs Stage 1 (Micro-Canonicalization), Stage 2 (Macro-Block Synthesis), and Stage 3 (Target Export).
 
@@ -415,10 +416,10 @@ Declarative JSON pattern rules and graph rewriting engine.
 
 Facade engine that loads declarative JSON rewrite rules and transforms ONNX models.
 
-- **`__init__(mode: str = 'function_proto') -> None`**
+- **`__init__() -> None`**
 - **`load_rules_from_dir(directory: str | Path | None = None) -> list[JSONRule]`**: Loads all declarative JSON rules from directory (defaults to built-in `definitions/`).
 - **`load_rule_from_file(path: str | Path) -> JSONRule`**: Loads and registers a single JSON rule file.
-- **`apply(target: onnx.ModelProto | NeuronGraph, rule_ids: list[str] | None = None) -> onnx.ModelProto`**: Transforms the model applying all loaded or specified rules.
+- **`apply(target: onnx.ModelProto | NeuronGraph, rule_ids: list[str] | None = None, options: dict[str, Any] | None = None) -> onnx.ModelProto`**: Transforms the model applying all loaded or specified rules.
 
 ### Schema Entities (`neuron_toolkit.rules.schema`)
 
@@ -429,7 +430,7 @@ Facade engine that loads declarative JSON rewrite rules and transforms ONNX mode
 
 ### Exporter Function
 
-- **`export_simplified_onnx(model_or_graph: onnx.ModelProto | NeuronGraph, output_path: str, mode: str = 'function_proto', metadata: dict[str, Any] | None = None) -> onnx.ModelProto`**: Exports transformed model in dual-mode representation with attached FunctionProtos.
+- **`export_simplified_onnx(model_or_graph: onnx.ModelProto | NeuronGraph, output_path: str, metadata: dict[str, Any] | None = None) -> onnx.ModelProto`**: Exports transformed model in unified representation with attached FunctionProtos.
 
 ---
 

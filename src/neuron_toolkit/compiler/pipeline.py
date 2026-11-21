@@ -53,8 +53,8 @@ log = logging.getLogger("neuron_toolkit.compiler.pipeline")
 class OptimizationPipeline:
     """Enterprise-grade 3-stage optimization pipeline driver."""
 
-    def __init__(self, mode: str = "function_proto") -> None:
-        self.mode = mode
+    def __init__(self) -> None:
+        self.mode = "function_proto"
         self.static_pass = StaticFolder()
         self.shape_pass = ShapeCanonicalizer()
         self.act_pass = ActivationCanonicalizer()
@@ -64,7 +64,7 @@ class OptimizationPipeline:
         self.ffn_pass = FeedForwardSynthesizer()
         self.axial_pass = AxialSynthesizer()
         self.macro_pass = MacroBlockSynthesizer()
-        self.exporter = OnnxExporter(mode=mode)
+        self.exporter = OnnxExporter()
 
     def run(
         self,
@@ -81,7 +81,7 @@ class OptimizationPipeline:
             raise TypeError(msg)
 
         if context is None:
-            context = CompilerContext(mode=self.mode)
+            context = CompilerContext()
 
         ensure_model_latest_opset(model)
 
@@ -232,9 +232,7 @@ class OptimizationPipeline:
                     model, mode=context.mode
                 )
 
-            if context.should_run("macro_blocks") and context.options.get(
-                "enable_macro_blocks", True
-            ):
+            if context.should_run("macro_blocks"):
                 model = self.macro_pass.run(model, mode=context.mode)
 
             if context.should_run("skip_norm"):
@@ -288,14 +286,12 @@ class NeuronCompiler:
     def compile(
         cls,
         model: onnx.ModelProto | NeuronGraph,
-        mode: str = "function_proto",
         rule_ids: list[str] | None = None,
         options: dict[str, Any] | None = None,
     ) -> onnx.ModelProto:
-        """Compile and optimize model with specified mode and rules."""
-        pipeline = OptimizationPipeline(mode=mode)
+        """Compile and optimize model using the unified modern optimization pipeline."""
+        pipeline = OptimizationPipeline()
         context = CompilerContext(
-            mode=mode,
             rule_ids=rule_ids,
             options=options or {},
         )

@@ -150,7 +150,6 @@ from neuron_toolkit.rules import export_simplified_onnx
 export_simplified_onnx(
     model_or_graph=graph,
     output_path="model_netron_expandable.onnx",
-    mode="function_proto",
     metadata={"optimizer": "NeuronCompiler", "version": "2.0"}
 )
 ```

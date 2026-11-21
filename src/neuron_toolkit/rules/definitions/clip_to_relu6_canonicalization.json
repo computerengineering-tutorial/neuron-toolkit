@@ -7,8 +7,14 @@
       {
         "id": "clip_node",
         "op_type": "Clip",
-        "inputs": ["$x", "$c_0", "$c_6"],
-        "outputs": ["$y"],
+        "inputs": [
+          "$x",
+          "$c_0",
+          "$c_6"
+        ],
+        "outputs": [
+          "$y"
+        ],
         "attributes": {
           "min": 0.0,
           "max": 6.0
@@ -20,23 +26,19 @@
     "type": "replace_op",
     "op_type": "Relu6",
     "domain": "custom.pytorch",
-    "inputs": ["$x"],
-    "outputs": ["$y"],
+    "inputs": [
+      "$x"
+    ],
+    "outputs": [
+      "$y"
+    ],
     "targets": {
-      "modern_onnx": {
-        "op_type": "Relu6",
-        "domain": "custom.pytorch",
-        "inputs": ["$x"]
-      },
       "function_proto": {
         "op_type": "Relu6",
         "domain": "custom.pytorch",
-        "inputs": ["$x"]
-      },
-      "pytorch_custom": {
-        "op_type": "Relu6",
-        "domain": "custom.pytorch",
-        "inputs": ["$x"]
+        "inputs": [
+          "$x"
+        ]
       }
     }
   }

@@ -18,16 +18,13 @@ log = logging.getLogger("neuron_toolkit.rules.exporter")
 def export_simplified_onnx(
     model_or_graph: onnx.ModelProto | NeuronGraph,
     output_path: str,
-    mode: str = "function_proto",
     metadata: dict[str, Any] | None = None,
 ) -> onnx.ModelProto:
-    """Export the simplified model in Dual-Mode (FunctionProto or Plain Custom Op).
+    """Export the simplified model with FunctionProto Netron expandability.
 
     Args:
         model_or_graph: ONNX ModelProto or NeuronGraph instance.
         output_path: Path to save the `.onnx` file.
-        mode: 'function_proto' (recommended: expandable in Netron) or
-              'plain_custom_op' (minimalist visual representation).
         metadata: Optional dictionary of key-value pairs to store in model metadata.
 
     Returns:
@@ -45,19 +42,18 @@ def export_simplified_onnx(
         )
         raise TypeError(msg)
 
-    if mode == "plain_custom_op":
-        # Remove functions to present minimal flat custom op nodes in Netron
-        del model.functions[:]
-    elif mode == "function_proto":
-        # Ensure custom opset domain exists in model opset_imports
-        custom_domain = "custom.pytorch"
-        if not any(op.domain == custom_domain for op in model.opset_import):
-            model.opset_import.append(helper.make_opsetid(custom_domain, 1))
+    # Ensure custom opset domain exists in model opset_imports if used
+    custom_domain = "custom.pytorch"
+    if not any(op.domain == custom_domain for op in model.opset_import):
+        model.opset_import.append(helper.make_opsetid(custom_domain, 1))
+
+    from neuron_toolkit.compiler.base import ensure_model_latest_opset
+    ensure_model_latest_opset(model)
 
     # Attach metadata
     meta = {
         "Toolkit": "neuron-toolkit",
-        "Export_Mode": mode,
+        "Export_Mode": "function_proto",
         "Total_Nodes": str(len(model.graph.node)),
     }
     if metadata:
@@ -70,8 +66,7 @@ def export_simplified_onnx(
     # Save to disk
     onnx.save(model, output_path)
     log.info(
-        "Successfully exported %s model with %d nodes to %s",
-        mode,
+        "Successfully exported function_proto model with %d nodes to %s",
         len(model.graph.node),
         output_path,
     )

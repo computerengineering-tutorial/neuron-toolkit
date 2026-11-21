@@ -79,7 +79,7 @@ from neuron_toolkit.compiler import NeuronCompiler
 
 # Compile model into dual-mode Netron FunctionProto representation:
 model = onnx.load("llama_raw.onnx")
-compiled_model = NeuronCompiler.compile(model, mode="function_proto", opset_version=23)
+compiled_model = NeuronCompiler.compile(model)
 onnx.save(compiled_model, "llama_optimized.onnx")
 ```
 

@@ -7,20 +7,35 @@
       {
         "id": "g1",
         "op_type": "Gather",
-        "inputs": ["$w1", "$indices1"],
-        "outputs": ["$e1"]
+        "inputs": [
+          "$w1",
+          "$indices1"
+        ],
+        "outputs": [
+          "$e1"
+        ]
       },
       {
         "id": "g2",
         "op_type": "Gather",
-        "inputs": ["$w2", "$indices2"],
-        "outputs": ["$e2"]
+        "inputs": [
+          "$w2",
+          "$indices2"
+        ],
+        "outputs": [
+          "$e2"
+        ]
       },
       {
         "id": "add",
         "op_type": "Add",
-        "inputs": ["$e1", "$e2"],
-        "outputs": ["$final_out"]
+        "inputs": [
+          "$e1",
+          "$e2"
+        ],
+        "outputs": [
+          "$final_out"
+        ]
       }
     ]
   },
@@ -28,23 +43,19 @@
     "type": "fuse_to_function",
     "op_type": "MultiFieldEmbedding",
     "domain": "custom.pytorch",
-    "inputs": ["$indices"],
-    "outputs": ["$final_out"],
+    "inputs": [
+      "$indices"
+    ],
+    "outputs": [
+      "$final_out"
+    ],
     "targets": {
-      "modern_onnx": {
-        "op_type": "MultiFieldEmbedding",
-        "domain": "custom.pytorch",
-        "inputs": ["$indices"]
-      },
       "function_proto": {
         "op_type": "MultiFieldEmbedding",
         "domain": "custom.pytorch",
-        "inputs": ["$indices"]
-      },
-      "pytorch_custom": {
-        "op_type": "MultiFieldEmbedding",
-        "domain": "custom.pytorch",
-        "inputs": ["$indices"]
+        "inputs": [
+          "$indices"
+        ]
       }
     }
   }

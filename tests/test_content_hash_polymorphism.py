@@ -127,7 +127,7 @@ def test_content_hashed_feedforward_polymorphism():
     dummy_input = torch.randn(2, 8, 64)
     raw_onnx = _export_to_onnx(py_model, dummy_input)
 
-    opt_onnx = NeuronCompiler.compile(raw_onnx, mode="function_proto")
+    opt_onnx = NeuronCompiler.compile(raw_onnx)
 
     # 1. Inspect synthesized nodes
     ff_nodes = [n for n in opt_onnx.graph.node if n.op_type.startswith("FeedForward_")]
@@ -185,7 +185,7 @@ def test_content_hashed_gated_unit_polymorphism():
     dummy_input = torch.randn(2, 16, 64)
     raw_onnx = _export_to_onnx(py_model, dummy_input)
 
-    opt_onnx = NeuronCompiler.compile(raw_onnx, mode="function_proto")
+    opt_onnx = NeuronCompiler.compile(raw_onnx)
 
     gated_nodes = [n for n in opt_onnx.graph.node if n.op_type.startswith("GatedUnit_")]
     assert len(gated_nodes) == 2, f"Expected 2 GatedUnit nodes, got {len(gated_nodes)}"
@@ -217,9 +217,7 @@ def test_content_hashed_deep_mlp_polymorphism():
     dummy_input = torch.randn(2, 8, 64)
     raw_onnx = _export_to_onnx(py_model, dummy_input)
 
-    opt_onnx = NeuronCompiler.compile(
-        raw_onnx, mode="function_proto", options={"enable_macro_blocks": True}
-    )
+    opt_onnx = NeuronCompiler.compile(raw_onnx)
 
     mlp_nodes = [n for n in opt_onnx.graph.node if n.op_type.startswith("DeepMLP_")]
     assert len(mlp_nodes) == 2, f"Expected 2 DeepMLP nodes, got {len(mlp_nodes)}"

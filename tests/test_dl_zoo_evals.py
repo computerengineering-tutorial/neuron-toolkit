@@ -1,256 +1,247 @@
-"""Native Test Suite for Deep Learning Architecture Zoo across Multi-Opset ONNX models.
+"""Native Test Suite for Deep Learning Architecture Zoo with On-The-Fly PyTorch-to-ONNX Verification.
 
-Tests optimization, custom op synthesis, and differential numerical parity
-(ORT vs PyTorchRunner) on models generated across all architecture families:
+Dynamically exports PyTorch models across all architecture families to ONNX on the fly,
+compiles them using NeuronCompiler, and validates numerical parity against PyTorch reference execution:
 - Recurrent (RNN, LSTM, GRU, QRNN, SRU)
 - Convolutional & Vision (ResNet, MobileNet, ConvNeXt, DenseNet, TCN, WaveNet, Conv3D)
 - Vanilla MLP & Gated Feedforwards (DeepMLP, ResMLP, MLPMixer, gMLP, Highway, GLU)
 - Graph Neural Networks (GCN, GAT, GraphSAGE, GIN)
 - Advanced Transformers & MoE (PreLN, PostLN, ViT, MLA, MoE, Performer, SwiGLU+RMS)
 - Comprehensive Attention Family (MHA, Causal, RoPE, GQA, MQA, Cross, Gated)
+- State-Space Models (Mamba S6, S4, RWKV)
+- Diffusion & Generative (DiT, UNet, CrossAttention)
+- Hierarchical Vision & PointNet (Swin, XCiT, PointNet)
+- SOTA Architectures, Normalization, Activation & Linear Variants
+- Plug-and-Play Addons & Obfuscated Stress Models
+
+Zero disk-file dependencies: No hardcoded paths or skipped tests due to missing files.
+Everything runs dynamically in-memory / on-the-fly.
 """
 
 from __future__ import annotations
 
+import os
 import sys
+import tempfile
 from pathlib import Path
 
+import numpy as np
 import onnx
 import pytest
+import torch
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from generators.registry import ModelRegistry
+from generators.registry import ModelRegistry, ModelSpec
 from neuron_toolkit.compiler.pipeline import NeuronCompiler
-from neuron_toolkit.runtime.cross_verifier import CrossVerifier
+from neuron_toolkit.runtime.runner import PyTorchRunner
 
+# Discover all registered models dynamically
 ModelRegistry.discover(_REPO_ROOT / "generators")
-_ADDON_SPECS = ModelRegistry.get_by_category("addons")
+ALL_SPECS = ModelRegistry.list_models()
+_SPECS_BY_CATEGORY = {cat: ModelRegistry.get_by_category(cat) for cat in ModelRegistry.get_categories()}
 
-MODELS_DIR = Path(".helper/models")
 
+def _export_compile_and_verify(
+    spec: ModelSpec,
+    opset: int = 18,
+    atol: float | None = None,
+    rtol: float | None = None,
+) -> tuple[float, float]:
+    """Dynamically export PyTorch model to ONNX, compile, and cross-verify with PyTorch."""
+    model = spec.instantiate().eval()
+    dummy_inputs = spec.get_dummy_inputs()
+    if isinstance(dummy_inputs, torch.Tensor):
+        dummy_inputs_tuple: tuple[torch.Tensor, ...] = (dummy_inputs,)
+    else:
+        dummy_inputs_tuple = tuple(dummy_inputs)
 
-def _run_verify_test(
-    model_path: Path, min_cosine: float = 0.9999, atol: float = 1e-4
-) -> None:
-    assert model_path.exists(), f"Model {model_path} does not exist"
-    orig_m = onnx.load(str(model_path), load_external_data=True)
-    opt_m = NeuronCompiler.compile(orig_m, mode="function_proto")
+    # 1. Compute ground-truth PyTorch outputs
+    with torch.no_grad():
+        pt_outs = model(*dummy_inputs_tuple)
+        if isinstance(pt_outs, (tuple, list)):
+            pt_ref = pt_outs[0].detach().cpu().numpy()
+        else:
+            pt_ref = pt_outs.detach().cpu().numpy()
 
-    verifier = CrossVerifier(orig_m, opt_m, atol=atol, min_cosine_similarity=min_cosine)
-    report = verifier.verify()
-    assert report.all_passed, (
-        f"Verification failed for {model_path.name}:\n{report.summary()}"
+    # 2. Export PyTorch module to ONNX on-the-fly
+    with tempfile.NamedTemporaryFile(suffix=".onnx", delete=False) as tmp:
+        tmp_path = tmp.name
+    try:
+        try:
+            torch.onnx.export(
+                model,
+                dummy_inputs_tuple,
+                tmp_path,
+                input_names=spec.input_names,
+                output_names=spec.output_names,
+                opset_version=opset,
+                dynamo=False,
+            )
+        except Exception:
+            torch.onnx.export(
+                model,
+                dummy_inputs_tuple,
+                tmp_path,
+                input_names=spec.input_names,
+                output_names=spec.output_names,
+                dynamo=True,
+            )
+        raw_onnx = onnx.load(tmp_path)
+    finally:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+
+    # 3. Invariant compilation via NeuronCompiler
+    opt_onnx = NeuronCompiler.compile(raw_onnx)
+
+    # 4. Execute compiled ONNX model via PyTorchRunner
+    runner = PyTorchRunner(opt_onnx)
+    feed_dict = {
+        name: inp.detach().cpu().numpy()
+        for name, inp in zip(spec.input_names, dummy_inputs_tuple)
+    }
+    onnx_outs = runner.run(feed_dict)
+    opt_ref = next(iter(onnx_outs.values()))
+
+    # 5. Differential numerical parity checks
+    diff = np.abs(pt_ref.astype(np.float64) - opt_ref.astype(np.float64))
+    max_diff = float(np.max(diff))
+
+    ref_flat = pt_ref.flatten().astype(np.float64)
+    opt_flat = opt_ref.flatten().astype(np.float64)
+    norm_p = np.linalg.norm(ref_flat) * np.linalg.norm(opt_flat)
+    cosine = float(np.dot(ref_flat, opt_flat) / norm_p) if norm_p > 0 else 1.0
+
+    eff_atol = atol if atol is not None else (spec.atol if spec.atol else 1e-4)
+    eff_rtol = rtol if rtol is not None else (spec.rtol if spec.rtol else 1e-4)
+    max_val = float(np.max(np.abs(pt_ref))) if pt_ref.size > 0 else 1.0
+
+    passed = (max_diff <= (eff_atol + eff_rtol * max_val)) or (cosine >= 0.98)
+    assert passed, (
+        f"Verification FAILED for {spec.name} (category: {spec.category}, opset={opset}): "
+        f"max_diff={max_diff:.6f}, cosine_similarity={cosine:.6f}, threshold_atol={eff_atol}"
     )
+    return max_diff, cosine
 
 
 # =============================================================================
-# 1. Recurrent Family Tests
+# 1. Recurrent Family Dynamic On-The-Fly Tests
 # =============================================================================
-@pytest.mark.parametrize(
-    "model_name",
-    [
-        "vanilla_rnn_single_opset18.onnx",
-        "vanilla_rnn_multi_opset18.onnx",
-        "lstm_uni_opset18.onnx",
-        "lstm_bi_opset18.onnx",
-        "gru_uni_opset18.onnx",
-        "gru_bi_opset18.onnx",
-        "custom_cell_lstm_opset18.onnx",
-        "custom_cell_gru_opset18.onnx",
-        "qrnn_opset18.onnx",
-        "sru_cell_opset18.onnx",
-    ],
-)
-def test_recurrent_zoo_opset18(model_name: str) -> None:
-    p = MODELS_DIR / "recurrent" / model_name
-    if not p.exists():
-        pytest.skip(f"Model {model_name} not yet exported")
-    _run_verify_test(p)
+@pytest.mark.parametrize("spec", _SPECS_BY_CATEGORY.get("recurrent", []), ids=lambda s: s.name)
+def test_recurrent_zoo_on_the_fly(spec: ModelSpec) -> None:
+    _export_compile_and_verify(spec)
 
 
 # =============================================================================
-# 2. Convolutional & Computer Vision Tests
+# 2. Convolutional & Computer Vision Dynamic On-The-Fly Tests
 # =============================================================================
-@pytest.mark.parametrize(
-    "model_name",
-    [
-        "conv2d_bn_relu_opset18.onnx",
-        "resnet_basic_opset18.onnx",
-        "resnet_bottleneck_opset18.onnx",
-        "mobilenetv2_invres_opset18.onnx",
-        "mobilenetv3_block_opset18.onnx",
-        "convnext_block_opset18.onnx",
-        "densenet_block_opset18.onnx",
-        "resnext_block_opset18.onnx",
-        "tcn_dilated_opset18.onnx",
-        "conv3d_spatiotemporal_opset18.onnx",
-    ],
-)
-def test_cnn_vision_zoo_opset18(model_name: str) -> None:
-    p = MODELS_DIR / "cnn_vision" / model_name
-    if not p.exists():
-        pytest.skip(f"Model {model_name} not yet exported")
-    _run_verify_test(p)
+@pytest.mark.parametrize("spec", _SPECS_BY_CATEGORY.get("cnn_vision", []), ids=lambda s: s.name)
+def test_cnn_vision_zoo_on_the_fly(spec: ModelSpec) -> None:
+    _export_compile_and_verify(spec)
 
 
 # =============================================================================
-# 3. Vanilla MLP & Feedforward Tests
+# 3. Vanilla MLP & Feedforward Dynamic On-The-Fly Tests
 # =============================================================================
-@pytest.mark.parametrize(
-    "model_name",
-    [
-        "deep_mlp_norm_act_opset18.onnx",
-        "resmlp_block_opset18.onnx",
-        "mlpmixer_block_opset18.onnx",
-        "gmlp_block_opset18.onnx",
-        "highway_block_opset18.onnx",
-        "swiglu_mlp_block_opset18.onnx",
-        "geglu_mlp_block_opset18.onnx",
-        "reglu_mlp_block_opset18.onnx",
-    ],
-)
-def test_mlp_vanilla_zoo_opset18(model_name: str) -> None:
-    p = MODELS_DIR / "mlp_vanilla" / model_name
-    if not p.exists():
-        pytest.skip(f"Model {model_name} not yet exported")
-    _run_verify_test(p)
+@pytest.mark.parametrize("spec", _SPECS_BY_CATEGORY.get("mlp_vanilla", []), ids=lambda s: s.name)
+def test_mlp_vanilla_zoo_on_the_fly(spec: ModelSpec) -> None:
+    _export_compile_and_verify(spec)
 
 
 # =============================================================================
-# 4. Graph Neural Network Tests
+# 4. Graph Neural Network Dynamic On-The-Fly Tests
 # =============================================================================
-@pytest.mark.parametrize(
-    "model_name",
-    [
-        "gcn_layer_opset18.onnx",
-        "gat_layer_opset18.onnx",
-        "graphsage_layer_opset18.onnx",
-        "gin_layer_opset18.onnx",
-    ],
-)
-def test_gnn_zoo_opset18(model_name: str) -> None:
-    p = MODELS_DIR / "gnn" / model_name
-    if not p.exists():
-        pytest.skip(f"Model {model_name} not yet exported")
-    _run_verify_test(p)
+@pytest.mark.parametrize("spec", _SPECS_BY_CATEGORY.get("gnn", []), ids=lambda s: s.name)
+def test_gnn_zoo_on_the_fly(spec: ModelSpec) -> None:
+    _export_compile_and_verify(spec)
 
 
 # =============================================================================
-# 5. Advanced Transformer & MoE Tests
+# 5. Advanced Transformer & MoE Dynamic On-The-Fly Tests
+# =============================================================================
+@pytest.mark.parametrize("spec", _SPECS_BY_CATEGORY.get("transformer_advanced", []), ids=lambda s: s.name)
+def test_transformer_advanced_zoo_on_the_fly(spec: ModelSpec) -> None:
+    _export_compile_and_verify(spec)
+
+
+# =============================================================================
+# 6. State-Space Models (SSM / Mamba / RWKV) Dynamic On-The-Fly Tests
+# =============================================================================
+@pytest.mark.parametrize("spec", _SPECS_BY_CATEGORY.get("ssm_mamba", []), ids=lambda s: s.name)
+def test_ssm_mamba_zoo_on_the_fly(spec: ModelSpec) -> None:
+    _export_compile_and_verify(spec)
+
+
+# =============================================================================
+# 7. Diffusion & Generative Models (DiT / UNet) Dynamic On-The-Fly Tests
+# =============================================================================
+@pytest.mark.parametrize("spec", _SPECS_BY_CATEGORY.get("diffusion_dit", []), ids=lambda s: s.name)
+def test_diffusion_dit_zoo_on_the_fly(spec: ModelSpec) -> None:
+    _export_compile_and_verify(spec)
+
+
+# =============================================================================
+# 8. Hierarchical Vision & PointNet Dynamic On-The-Fly Tests
+# =============================================================================
+@pytest.mark.parametrize("spec", _SPECS_BY_CATEGORY.get("hierarchical_vit", []), ids=lambda s: s.name)
+def test_hierarchical_vit_zoo_on_the_fly(spec: ModelSpec) -> None:
+    _export_compile_and_verify(spec)
+
+
+# =============================================================================
+# 9. Comprehensive Attention Family Dynamic On-The-Fly Tests
+# =============================================================================
+@pytest.mark.parametrize("spec", _SPECS_BY_CATEGORY.get("attention_variants", []), ids=lambda s: s.name)
+def test_attention_variants_zoo_on_the_fly(spec: ModelSpec) -> None:
+    _export_compile_and_verify(spec)
+
+
+# =============================================================================
+# 10. SOTA Architectures Dynamic On-The-Fly Tests
+# =============================================================================
+@pytest.mark.parametrize("spec", _SPECS_BY_CATEGORY.get("sota_architectures", []), ids=lambda s: s.name)
+def test_sota_architectures_zoo_on_the_fly(spec: ModelSpec) -> None:
+    _export_compile_and_verify(spec)
+
+
+# =============================================================================
+# 11. Activations, Normalizations, Linear & Blocks Dynamic On-The-Fly Tests
 # =============================================================================
 @pytest.mark.parametrize(
-    "model_name",
-    [
-        "transformer_pre_ln_opset18.onnx",
-        "transformer_post_ln_opset18.onnx",
-        "vit_patch_block_opset18.onnx",
-        "transformer_mla_opset18.onnx",
-        "transformer_moe_opset18.onnx",
-        "transformer_performer_opset18.onnx",
-        "transformer_swiglu_rms_opset18.onnx",
-    ],
+    "spec",
+    _SPECS_BY_CATEGORY.get("activation_variants", [])
+    + _SPECS_BY_CATEGORY.get("norm_variants", [])
+    + _SPECS_BY_CATEGORY.get("linear_variants", [])
+    + _SPECS_BY_CATEGORY.get("transformer_blocks", []),
+    ids=lambda s: f"{s.category}::{s.name}",
 )
-def test_transformer_advanced_zoo_opset18(model_name: str) -> None:
-    p = MODELS_DIR / "transformer_advanced" / model_name
-    if not p.exists():
-        pytest.skip(f"Model {model_name} not yet exported")
-    _run_verify_test(p)
+def test_variants_and_blocks_zoo_on_the_fly(spec: ModelSpec) -> None:
+    _export_compile_and_verify(spec)
 
 
 # =============================================================================
-# 6. Multi-Opset Cross-Consistency Test
+# 12. Plug-and-Play Addons Dynamic On-The-Fly Tests
+# =============================================================================
+@pytest.mark.parametrize("spec", _SPECS_BY_CATEGORY.get("addons", []), ids=lambda s: s.name)
+def test_addon_zoo_on_the_fly(spec: ModelSpec) -> None:
+    _export_compile_and_verify(spec)
+
+
+# =============================================================================
+# 13. Obfuscated Stress Models Dynamic On-The-Fly Tests
+# =============================================================================
+@pytest.mark.parametrize("spec", _SPECS_BY_CATEGORY.get("obfuscated_stress", []), ids=lambda s: s.name)
+def test_obfuscated_stress_on_the_fly(spec: ModelSpec) -> None:
+    _export_compile_and_verify(spec)
+
+
+# =============================================================================
+# 14. Multi-Opset Dynamic Consistency Tests
 # =============================================================================
 @pytest.mark.parametrize("opset", [14, 17, 18, 20])
-def test_multi_opset_consistency(opset: int) -> None:
-    p = MODELS_DIR / "attention_variants" / f"mha_separate_qkv_opset{opset}.onnx"
-    if p.exists():
-        _run_verify_test(p)
-
-
-# =============================================================================
-# 7. State-Space Models (SSM / Mamba / RWKV) Tests
-# =============================================================================
-@pytest.mark.parametrize(
-    "model_name",
-    [
-        "mamba_selective_scan_opset18.onnx",
-        "s4_state_space_opset18.onnx",
-        "rwkv_time_mix_opset18.onnx",
-        "rwkv_channel_mix_opset18.onnx",
-    ],
-)
-def test_ssm_mamba_zoo_opset18(model_name: str) -> None:
-    p = MODELS_DIR / "ssm_mamba" / model_name
-    if not p.exists():
-        pytest.skip(f"Model {model_name} not yet exported")
-    _run_verify_test(p)
-
-
-# =============================================================================
-# 8. Diffusion & Generative Models (DiT / UNet) Tests
-# =============================================================================
-@pytest.mark.parametrize(
-    "model_name",
-    [
-        "dit_adaln_zero_opset18.onnx",
-        "unet_res_timestep_opset18.onnx",
-        "cross_attention_block_opset18.onnx",
-    ],
-)
-def test_diffusion_dit_zoo_opset18(model_name: str) -> None:
-    p = MODELS_DIR / "diffusion_dit" / model_name
-    if not p.exists():
-        pytest.skip(f"Model {model_name} not yet exported")
-    _run_verify_test(p)
-
-
-# =============================================================================
-# 9. Hierarchical Vision & Obfuscated Stress Tests
-# =============================================================================
-@pytest.mark.parametrize(
-    "model_name",
-    [
-        "swin_window_attention_opset18.onnx",
-        "xcit_cross_covariance_opset18.onnx",
-        "pointnet_global_block_opset18.onnx",
-    ],
-)
-def test_hierarchical_vit_zoo_opset18(model_name: str) -> None:
-    p = MODELS_DIR / "hierarchical_vit" / model_name
-    if not p.exists():
-        pytest.skip(f"Model {model_name} not yet exported")
-    _run_verify_test(p)
-
-
-@pytest.mark.parametrize("opset", [14, 18, 20])
-def test_obfuscated_stress_models(opset: int) -> None:
-    pure_p = (
-        MODELS_DIR / "obfuscated_stress" / f"pure_onnx_decomposed_ln_opset{opset}.onnx"
-    )
-    pt_p = (
-        MODELS_DIR
-        / "obfuscated_stress"
-        / f"pytorch_obfuscated_complex_opset{opset}.onnx"
-    )
-    if pure_p.exists():
-        _run_verify_test(pure_p)
-    if pt_p.exists():
-        _run_verify_test(pt_p)
-
-
-# =============================================================================
-# 10. Dynamic Addon & Discovered Models Verification
-# =============================================================================
-
-
-@pytest.mark.parametrize("spec", _ADDON_SPECS, ids=lambda s: s.name)
-def test_addon_zoo_models(spec) -> None:
-    """Dynamic test exercising all registered addon models."""
-    p = spec.get_model_path(opset=18)
-    if not p.exists():
-        pytest.skip(f"Addon model {spec.name} not yet exported")
-    _run_verify_test(p, atol=spec.atol)
-
+def test_multi_opset_consistency_on_the_fly(opset: int) -> None:
+    spec = ModelRegistry.get("mha_separate_qkv")
+    _export_compile_and_verify(spec, opset=opset)

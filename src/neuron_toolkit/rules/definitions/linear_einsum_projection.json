@@ -7,8 +7,13 @@
       {
         "id": "einsum_node",
         "op_type": "Einsum",
-        "inputs": ["$x", "$w"],
-        "outputs": ["$y"],
+        "inputs": [
+          "$x",
+          "$w"
+        ],
+        "outputs": [
+          "$y"
+        ],
         "attributes": {
           "equation": "...d,df->...f"
         }
@@ -25,23 +30,21 @@
     "type": "replace_op",
     "op_type": "Linear",
     "domain": "custom.pytorch",
-    "inputs": ["$x", "$w"],
-    "outputs": ["$y"],
+    "inputs": [
+      "$x",
+      "$w"
+    ],
+    "outputs": [
+      "$y"
+    ],
     "targets": {
-      "modern_onnx": {
-        "op_type": "Linear",
-        "domain": "custom.pytorch",
-        "inputs": ["$x", "$w"]
-      },
       "function_proto": {
         "op_type": "Linear",
         "domain": "custom.pytorch",
-        "inputs": ["$x", "$w"]
-      },
-      "pytorch_custom": {
-        "op_type": "Linear",
-        "domain": "custom.pytorch",
-        "inputs": ["$x", "$w"]
+        "inputs": [
+          "$x",
+          "$w"
+        ]
       }
     }
   }

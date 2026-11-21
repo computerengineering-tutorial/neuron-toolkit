@@ -7,50 +7,88 @@
       {
         "id": "lin_h",
         "op_type": "Linear|Gemm|MatMul",
-        "inputs": ["$x", "$w_h"],
-        "outputs": ["$h_proj"]
+        "inputs": [
+          "$x",
+          "$w_h"
+        ],
+        "outputs": [
+          "$h_proj"
+        ]
       },
       {
         "id": "act_h",
         "op_type": "Relu|Gelu|Tanh",
-        "inputs": ["$h_proj"],
-        "outputs": ["$h_out"]
+        "inputs": [
+          "$h_proj"
+        ],
+        "outputs": [
+          "$h_out"
+        ]
       },
       {
         "id": "lin_t",
         "op_type": "Linear|Gemm|MatMul",
-        "inputs": ["$x", "$w_t"],
-        "outputs": ["$t_proj"]
+        "inputs": [
+          "$x",
+          "$w_t"
+        ],
+        "outputs": [
+          "$t_proj"
+        ]
       },
       {
         "id": "sig_t",
         "op_type": "Sigmoid",
-        "inputs": ["$t_proj"],
-        "outputs": ["$t_out"]
+        "inputs": [
+          "$t_proj"
+        ],
+        "outputs": [
+          "$t_out"
+        ]
       },
       {
         "id": "mul_h",
         "op_type": "Mul",
-        "inputs": ["$h_out", "$t_out"],
-        "outputs": ["$term1"]
+        "inputs": [
+          "$h_out",
+          "$t_out"
+        ],
+        "outputs": [
+          "$term1"
+        ]
       },
       {
         "id": "sub_t",
         "op_type": "Sub",
-        "inputs": ["$const_one", "$t_out"],
-        "outputs": ["$one_minus_t"]
+        "inputs": [
+          "$const_one",
+          "$t_out"
+        ],
+        "outputs": [
+          "$one_minus_t"
+        ]
       },
       {
         "id": "mul_x",
         "op_type": "Mul",
-        "inputs": ["$x", "$one_minus_t"],
-        "outputs": ["$term2"]
+        "inputs": [
+          "$x",
+          "$one_minus_t"
+        ],
+        "outputs": [
+          "$term2"
+        ]
       },
       {
         "id": "add_out",
         "op_type": "Add",
-        "inputs": ["$term1", "$term2"],
-        "outputs": ["$final_out"]
+        "inputs": [
+          "$term1",
+          "$term2"
+        ],
+        "outputs": [
+          "$final_out"
+        ]
       }
     ]
   },
@@ -58,23 +96,23 @@
     "type": "fuse_to_function",
     "op_type": "HighwayBlock",
     "domain": "custom.pytorch",
-    "inputs": ["$x", "$w_h", "$w_t"],
-    "outputs": ["$final_out"],
+    "inputs": [
+      "$x",
+      "$w_h",
+      "$w_t"
+    ],
+    "outputs": [
+      "$final_out"
+    ],
     "targets": {
-      "modern_onnx": {
-        "op_type": "HighwayBlock",
-        "domain": "custom.pytorch",
-        "inputs": ["$x", "$w_h", "$w_t"]
-      },
       "function_proto": {
         "op_type": "HighwayBlock",
         "domain": "custom.pytorch",
-        "inputs": ["$x", "$w_h", "$w_t"]
-      },
-      "pytorch_custom": {
-        "op_type": "HighwayBlock",
-        "domain": "custom.pytorch",
-        "inputs": ["$x", "$w_h", "$w_t"]
+        "inputs": [
+          "$x",
+          "$w_h",
+          "$w_t"
+        ]
       }
     }
   }

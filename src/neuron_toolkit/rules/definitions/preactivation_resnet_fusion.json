@@ -7,44 +7,75 @@
       {
         "id": "bn1",
         "op_type": "BatchNormalization",
-        "inputs": ["$x"],
-        "outputs": ["$bn1_out"]
+        "inputs": [
+          "$x"
+        ],
+        "outputs": [
+          "$bn1_out"
+        ]
       },
       {
         "id": "conv1",
         "op_type": "Conv",
-        "inputs": ["$bn1_out", "$w1"],
-        "outputs": ["$c1_out"]
+        "inputs": [
+          "$bn1_out",
+          "$w1"
+        ],
+        "outputs": [
+          "$c1_out"
+        ]
       },
       {
         "id": "relu1",
         "op_type": "Relu",
-        "inputs": ["$c1_out"],
-        "outputs": ["$r1_out"]
+        "inputs": [
+          "$c1_out"
+        ],
+        "outputs": [
+          "$r1_out"
+        ]
       },
       {
         "id": "bn2",
         "op_type": "BatchNormalization",
-        "inputs": ["$r1_out"],
-        "outputs": ["$bn2_out"]
+        "inputs": [
+          "$r1_out"
+        ],
+        "outputs": [
+          "$bn2_out"
+        ]
       },
       {
         "id": "conv2",
         "op_type": "Conv",
-        "inputs": ["$bn2_out", "$w2"],
-        "outputs": ["$c2_out"]
+        "inputs": [
+          "$bn2_out",
+          "$w2"
+        ],
+        "outputs": [
+          "$c2_out"
+        ]
       },
       {
         "id": "add",
         "op_type": "Add",
-        "inputs": ["$c2_out", "$x"],
-        "outputs": ["$add_out"]
+        "inputs": [
+          "$c2_out",
+          "$x"
+        ],
+        "outputs": [
+          "$add_out"
+        ]
       },
       {
         "id": "relu2",
         "op_type": "Relu",
-        "inputs": ["$add_out"],
-        "outputs": ["$final_out"]
+        "inputs": [
+          "$add_out"
+        ],
+        "outputs": [
+          "$final_out"
+        ]
       }
     ]
   },
@@ -52,23 +83,23 @@
     "type": "fuse_to_function",
     "op_type": "ResidualBlock",
     "domain": "custom.pytorch",
-    "inputs": ["$x", "$w1", "$w2"],
-    "outputs": ["$final_out"],
+    "inputs": [
+      "$x",
+      "$w1",
+      "$w2"
+    ],
+    "outputs": [
+      "$final_out"
+    ],
     "targets": {
-      "modern_onnx": {
-        "op_type": "ResidualBlock",
-        "domain": "custom.pytorch",
-        "inputs": ["$x", "$w1", "$w2"]
-      },
       "function_proto": {
         "op_type": "ResidualBlock",
         "domain": "custom.pytorch",
-        "inputs": ["$x", "$w1", "$w2"]
-      },
-      "pytorch_custom": {
-        "op_type": "ResidualBlock",
-        "domain": "custom.pytorch",
-        "inputs": ["$x", "$w1", "$w2"]
+        "inputs": [
+          "$x",
+          "$w1",
+          "$w2"
+        ]
       }
     }
   }

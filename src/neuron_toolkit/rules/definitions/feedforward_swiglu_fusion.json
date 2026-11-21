@@ -7,38 +7,67 @@
       {
         "id": "norm_node",
         "op_type": "RMSNorm",
-        "inputs": ["$x", "$gamma"],
-        "outputs": ["$x_norm"]
+        "inputs": [
+          "$x",
+          "$gamma"
+        ],
+        "outputs": [
+          "$x_norm"
+        ]
       },
       {
         "id": "gate_node",
         "op_type": "Linear",
-        "inputs": ["$x_norm", "$w_gate"],
-        "outputs": ["$h_gate"]
+        "inputs": [
+          "$x_norm",
+          "$w_gate"
+        ],
+        "outputs": [
+          "$h_gate"
+        ]
       },
       {
         "id": "up_node",
         "op_type": "Linear",
-        "inputs": ["$x_norm", "$w_up"],
-        "outputs": ["$h_up"]
+        "inputs": [
+          "$x_norm",
+          "$w_up"
+        ],
+        "outputs": [
+          "$h_up"
+        ]
       },
       {
         "id": "silu_node",
         "op_type": "SiLU",
-        "inputs": ["$h_gate"],
-        "outputs": ["$h_act"]
+        "inputs": [
+          "$h_gate"
+        ],
+        "outputs": [
+          "$h_act"
+        ]
       },
       {
         "id": "mul_node",
         "op_type": "Mul",
-        "inputs": ["$h_act", "$h_up"],
-        "outputs": ["$h_mul"]
+        "inputs": [
+          "$h_act",
+          "$h_up"
+        ],
+        "outputs": [
+          "$h_mul"
+        ]
       },
       {
         "id": "down_node",
         "op_type": "Linear",
-        "inputs": ["$h_mul", "$w_down"],
-        "outputs": ["$y"]
+        "inputs": [
+          "$h_mul",
+          "$w_down"
+        ],
+        "outputs": [
+          "$y"
+        ]
       }
     ]
   },
@@ -46,23 +75,27 @@
     "type": "fuse_to_function",
     "op_type": "FeedForwardSwiGLU",
     "domain": "custom.pytorch",
-    "inputs": ["$x", "$gamma", "$w_gate", "$w_up", "$w_down"],
-    "outputs": ["$y"],
+    "inputs": [
+      "$x",
+      "$gamma",
+      "$w_gate",
+      "$w_up",
+      "$w_down"
+    ],
+    "outputs": [
+      "$y"
+    ],
     "targets": {
-      "modern_onnx": {
-        "op_type": "FeedForwardSwiGLU",
-        "domain": "custom.pytorch",
-        "inputs": ["$x", "$gamma", "$w_gate", "$w_up", "$w_down"]
-      },
       "function_proto": {
         "op_type": "FeedForwardSwiGLU",
         "domain": "custom.pytorch",
-        "inputs": ["$x", "$gamma", "$w_gate", "$w_up", "$w_down"]
-      },
-      "pytorch_custom": {
-        "op_type": "FeedForwardSwiGLU",
-        "domain": "custom.pytorch",
-        "inputs": ["$x", "$gamma", "$w_gate", "$w_up", "$w_down"]
+        "inputs": [
+          "$x",
+          "$gamma",
+          "$w_gate",
+          "$w_up",
+          "$w_down"
+        ]
       }
     }
   }

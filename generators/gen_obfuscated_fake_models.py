@@ -234,7 +234,7 @@ def verify_obfuscated_stress_zoo() -> dict[str, Any]:
         try:
             m = build_pure_onnx_decomposed_ln(opset=opset, d_model=32, seq_len=8)
             orig_nodes = len(m.graph.node)
-            opt_m = NeuronCompiler.compile(m, mode="function_proto")
+            opt_m = NeuronCompiler.compile(m)
             opt_nodes = len(opt_m.graph.node)
             reduction = ((orig_nodes - opt_nodes) / orig_nodes) * 100.0 if orig_nodes > 0 else 0.0
 
@@ -274,7 +274,7 @@ def verify_obfuscated_stress_zoo() -> dict[str, Any]:
             m = onnx.load(str(tmp_onnx))
             tmp_onnx.unlink(missing_ok=True)
             orig_nodes = len(m.graph.node)
-            opt_m = NeuronCompiler.compile(m, mode="function_proto")
+            opt_m = NeuronCompiler.compile(m)
             opt_nodes = len(opt_m.graph.node)
             reduction = ((orig_nodes - opt_nodes) / orig_nodes) * 100.0 if orig_nodes > 0 else 0.0
 

@@ -487,14 +487,24 @@ class NeuronGraph:
     def apply_json_rules(
         self,
         rules: list[str] | None = None,
-        mode: str = "function_proto",
     ) -> NeuronGraph:
         """Apply declarative JSON pattern rules (Cast folding, GELU fusion, Math collapse)."""
         from neuron_toolkit.rules.engine import JSONRuleEngine
 
-        engine = JSONRuleEngine(mode=mode)
+        engine = JSONRuleEngine()
         engine.load_rules_from_dir()
         opt_proto = engine.apply(self, rule_ids=rules)
+        return NeuronGraph(opt_proto)
+
+    def compile(
+        self,
+        rule_ids: list[str] | None = None,
+        options: dict[str, Any] | None = None,
+    ) -> NeuronGraph:
+        """Compile and optimize model graph using the unified modern optimization pipeline."""
+        from neuron_toolkit.compiler.pipeline import NeuronCompiler
+
+        opt_proto = NeuronCompiler.compile(self, rule_ids=rule_ids, options=options)
         return NeuronGraph(opt_proto)
 
     def run_pytorch(

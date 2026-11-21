@@ -43,8 +43,8 @@ def test_fixed_point_convergence_stabilization():
     )
     model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 14)])
 
-    pipeline = OptimizationPipeline(mode="plain")
-    context = CompilerContext(mode="plain", options={"max_fixed_point_iters": 5})
+    pipeline = OptimizationPipeline()
+    context = CompilerContext(options={"max_fixed_point_iters": 5})
 
     compiled = pipeline.run(model, context)
 
@@ -64,6 +64,6 @@ def test_neuron_compiler_fixed_point_api():
     graph = helper.make_graph([id_node], "test_compiler_api", [x], [y])
     model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 14)])
 
-    optimized = NeuronCompiler.compile(model, mode="plain")
+    optimized = NeuronCompiler.compile(model)
     assert optimized is not None
     assert len(optimized.graph.node) == 0 or optimized.graph.node[0].op_type == "Identity"

@@ -7,14 +7,24 @@
       {
         "id": "c0",
         "op_type": "Cast",
-        "inputs": ["$pad_mask"],
-        "outputs": ["$cast_out"]
+        "inputs": [
+          "$pad_mask"
+        ],
+        "outputs": [
+          "$cast_out"
+        ]
       },
       {
         "id": "w0",
         "op_type": "Where",
-        "inputs": ["$cast_out", "$const_inf", "$const_zero"],
-        "outputs": ["$attn_mask"]
+        "inputs": [
+          "$cast_out",
+          "$const_inf",
+          "$const_zero"
+        ],
+        "outputs": [
+          "$attn_mask"
+        ]
       }
     ]
   },
@@ -22,23 +32,19 @@
     "type": "fuse_to_function",
     "op_type": "AttentionKeyPaddingMask",
     "domain": "custom.pytorch",
-    "inputs": ["$pad_mask"],
-    "outputs": ["$attn_mask"],
+    "inputs": [
+      "$pad_mask"
+    ],
+    "outputs": [
+      "$attn_mask"
+    ],
     "targets": {
-      "modern_onnx": {
-        "op_type": "AttentionKeyPaddingMask",
-        "domain": "custom.pytorch",
-        "inputs": ["$pad_mask"]
-      },
       "function_proto": {
         "op_type": "AttentionKeyPaddingMask",
         "domain": "custom.pytorch",
-        "inputs": ["$pad_mask"]
-      },
-      "pytorch_custom": {
-        "op_type": "AttentionKeyPaddingMask",
-        "domain": "custom.pytorch",
-        "inputs": ["$pad_mask"]
+        "inputs": [
+          "$pad_mask"
+        ]
       }
     }
   }

@@ -7,26 +7,45 @@
       {
         "id": "tanh_node",
         "op_type": "Tanh",
-        "inputs": ["$tanh_in"],
-        "outputs": ["$tanh_out"]
+        "inputs": [
+          "$tanh_in"
+        ],
+        "outputs": [
+          "$tanh_out"
+        ]
       },
       {
         "id": "add_node",
         "op_type": "Add",
-        "inputs": ["$tanh_out", "$c_one"],
-        "outputs": ["$add_out"]
+        "inputs": [
+          "$tanh_out",
+          "$c_one"
+        ],
+        "outputs": [
+          "$add_out"
+        ]
       },
       {
         "id": "mul_x_node",
         "op_type": "Mul",
-        "inputs": ["$x", "$add_out"],
-        "outputs": ["$mul_x_out"]
+        "inputs": [
+          "$x",
+          "$add_out"
+        ],
+        "outputs": [
+          "$mul_x_out"
+        ]
       },
       {
         "id": "mul_half_node",
         "op_type": "Mul",
-        "inputs": ["$mul_x_out", "$c_half"],
-        "outputs": ["$y"]
+        "inputs": [
+          "$mul_x_out",
+          "$c_half"
+        ],
+        "outputs": [
+          "$y"
+        ]
       }
     ]
   },
@@ -34,32 +53,25 @@
     "type": "replace_op",
     "op_type": "Gelu",
     "domain": "custom.pytorch",
-    "inputs": ["$x"],
-    "outputs": ["$y"],
+    "inputs": [
+      "$x"
+    ],
+    "outputs": [
+      "$y"
+    ],
     "attributes": {
       "approximate": "tanh"
     },
     "targets": {
-      "modern_onnx": {
-        "op_type": "Gelu",
-        "domain": "",
-        "inputs": ["$x"],
-        "attributes": {
-          "approximate": "tanh"
-        }
-      },
       "function_proto": {
         "op_type": "Gelu",
         "domain": "custom.pytorch",
-        "inputs": ["$x"],
+        "inputs": [
+          "$x"
+        ],
         "attributes": {
           "approximate": "tanh"
         }
-      },
-      "pytorch_custom": {
-        "op_type": "Gelu",
-        "domain": "custom.pytorch",
-        "inputs": ["$x"]
       }
     }
   }

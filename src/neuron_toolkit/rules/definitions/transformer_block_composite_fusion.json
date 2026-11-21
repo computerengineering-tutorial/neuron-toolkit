@@ -7,26 +7,44 @@
       {
         "id": "attn",
         "op_type": "GatedMultiHeadAttention|MultiHeadAttention|SDPA|ScaledDotProductAttention",
-        "inputs": ["$x"],
-        "outputs": ["$attn_out"]
+        "inputs": [
+          "$x"
+        ],
+        "outputs": [
+          "$attn_out"
+        ]
       },
       {
         "id": "add1",
         "op_type": "Add",
-        "inputs": ["$attn_out", "$x"],
-        "outputs": ["$res1"]
+        "inputs": [
+          "$attn_out",
+          "$x"
+        ],
+        "outputs": [
+          "$res1"
+        ]
       },
       {
         "id": "ffn",
         "op_type": "FeedForward|FeedForwardSwiGLU",
-        "inputs": ["$res1"],
-        "outputs": ["$ffn_out"]
+        "inputs": [
+          "$res1"
+        ],
+        "outputs": [
+          "$ffn_out"
+        ]
       },
       {
         "id": "add2",
         "op_type": "Add",
-        "inputs": ["$ffn_out", "$res1"],
-        "outputs": ["$final_out"]
+        "inputs": [
+          "$ffn_out",
+          "$res1"
+        ],
+        "outputs": [
+          "$final_out"
+        ]
       }
     ]
   },
@@ -34,23 +52,19 @@
     "type": "fuse_to_function",
     "op_type": "TransformerBlock",
     "domain": "custom.pytorch",
-    "inputs": ["$x"],
-    "outputs": ["$final_out"],
+    "inputs": [
+      "$x"
+    ],
+    "outputs": [
+      "$final_out"
+    ],
     "targets": {
-      "modern_onnx": {
-        "op_type": "TransformerBlock",
-        "domain": "custom.pytorch",
-        "inputs": ["$x"]
-      },
       "function_proto": {
         "op_type": "TransformerBlock",
         "domain": "custom.pytorch",
-        "inputs": ["$x"]
-      },
-      "pytorch_custom": {
-        "op_type": "TransformerBlock",
-        "domain": "custom.pytorch",
-        "inputs": ["$x"]
+        "inputs": [
+          "$x"
+        ]
       }
     }
   }

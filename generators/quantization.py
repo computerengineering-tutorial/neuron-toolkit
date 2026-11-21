@@ -5,7 +5,7 @@ Features:
 - Pure Logic-Based Dynamic Quantization for PyTorch nn.Modules (QuantizedLinear).
 - Topological ONNX Dynamic Quantization Conversion (DynamicQuantizeLinear -> DequantizeLinear -> MatMul).
 - End-to-End ONNX Export, Storage, Compilation, and Differential PyTorch Parity Verification.
-- Seamless Integration with quantization_block_analysis.json and ModelRegistry.
+- Seamless Integration with ModelRegistry on-the-fly execution.
 """
 
 from __future__ import annotations
@@ -209,8 +209,8 @@ def export_quantized_model(
     q_onnx = quantize_onnx_model(raw_onnx)
     onnx.save(q_onnx, str(out_path))
 
-    # 3. Compile with NeuronCompiler (function_proto mode)
-    opt_onnx = NeuronCompiler.compile(q_onnx, mode="function_proto")
+    # 3. Compile with NeuronCompiler
+    opt_onnx = NeuronCompiler.compile(q_onnx)
 
     # 4. Verification against PyTorch
     verification_stats = {
@@ -264,15 +264,6 @@ def export_quantized_model(
 # =============================================================================
 class QuantizationRegistry:
     """Registry and orchestrator for quantized block generation and evaluation."""
-
-    @classmethod
-    def get_catalog_classes(cls) -> dict[str, Any]:
-        """Load and return AST quantization catalog."""
-        catalog_path = _REPO_ROOT / "quantization_block_analysis.json"
-        if not catalog_path.exists():
-            return {}
-        with open(catalog_path, "r", encoding="utf-8") as f:
-            return json.load(f)
 
     @classmethod
     def export_all_quantized(

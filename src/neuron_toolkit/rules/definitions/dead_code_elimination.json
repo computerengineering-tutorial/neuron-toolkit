@@ -7,21 +7,19 @@
       {
         "id": "dead_node",
         "op_type": "*",
-        "inputs": ["$x"],
-        "outputs": ["$unused_out"]
+        "inputs": [
+          "$x"
+        ],
+        "outputs": [
+          "$unused_out"
+        ]
       }
     ]
   },
   "action": {
     "type": "remove_nodes",
     "targets": {
-      "modern_onnx": {
-        "action": "prune"
-      },
       "function_proto": {
-        "action": "prune"
-      },
-      "pytorch_custom": {
         "action": "prune"
       }
     }

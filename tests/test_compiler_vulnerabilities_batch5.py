@@ -220,7 +220,7 @@ def test_vuln_59_norm_canonicalizer_drops_intermediate_consumed_externally():
     )
     model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 18)])
 
-    opt_m = NormCanonicalizer().apply_layernorm_fusion(model, mode="modern_onnx")
+    opt_m = NormCanonicalizer().apply_layernorm_fusion(model)
 
     producers = (
         {out for n in opt_m.graph.node for out in n.output}
@@ -269,7 +269,7 @@ def test_vuln_60_norm_canonicalizer_fails_on_bias_free_layernorm():
     )
     model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 18)])
 
-    opt_m = NormCanonicalizer().apply_layernorm_fusion(model, mode="modern_onnx")
+    opt_m = NormCanonicalizer().apply_layernorm_fusion(model)
 
     ln_nodes = [n for n in opt_m.graph.node if "LayerNorm" in n.op_type]
     assert len(ln_nodes) >= 1, (

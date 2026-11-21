@@ -79,34 +79,7 @@
       "Y"
     ],
     "targets": {
-      "modern_onnx": {
-        "op_type": "Attention",
-        "domain": "",
-        "inputs": [
-          "Q",
-          "K",
-          "V"
-        ]
-      },
-      "ort_contrib": {
-        "op_type": "MultiHeadAttention",
-        "domain": "com.microsoft",
-        "inputs": [
-          "Q",
-          "K",
-          "V"
-        ]
-      },
       "function_proto": {
-        "op_type": "ScaledDotProductAttention",
-        "domain": "custom.pytorch",
-        "inputs": [
-          "Q",
-          "K",
-          "V"
-        ]
-      },
-      "pytorch_custom": {
         "op_type": "ScaledDotProductAttention",
         "domain": "custom.pytorch",
         "inputs": [

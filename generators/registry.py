@@ -155,7 +155,7 @@ class ModelRegistry:
         # 2. Search for addons/*.py files
         addon_files = sorted((directory / "addons").glob("*.py")) if (directory / "addons").exists() else []
 
-        all_files = [f for f in gen_files + addon_files if f.name not in ("gen_all_dl_architectures.py", "__init__.py")]
+        all_files = [f for f in gen_files + addon_files if f.name != "__init__.py"]
 
         for py_path in all_files:
             mod_name = py_path.stem

@@ -72,7 +72,7 @@ def _export_in_memory(spec: ModelSpec, opset: int = 18) -> onnx.ModelProto:
 def test_on_the_fly_canonical_rule(spec: ModelSpec) -> None:
     """Dynamically export, compile, and verify expected target node synthesis on-the-fly."""
     raw_model = _export_in_memory(spec, opset=18)
-    opt_model = NeuronCompiler.compile(raw_model, mode="function_proto")
+    opt_model = NeuronCompiler.compile(raw_model)
 
     # 1. Assert expected target op is synthesized
     expected_op = spec.expected_target_node
@@ -118,8 +118,8 @@ def test_on_the_fly_deobfuscation_invariance(model_name: str) -> None:
     raw_obf, applied = ObfuscationRegistry.apply_onnx(raw_clean, seed=123)
 
     # 3. Compile both models with NeuronCompiler
-    opt_clean = NeuronCompiler.compile(raw_clean, mode="function_proto")
-    opt_obf = NeuronCompiler.compile(raw_obf, mode="function_proto")
+    opt_clean = NeuronCompiler.compile(raw_clean)
+    opt_obf = NeuronCompiler.compile(raw_obf)
 
     # 4. Parity Assertion: Numerical output between clean and obfuscated compiled models
     verifier = CrossVerifier(opt_clean, opt_obf, rtol=1e-4, atol=1e-4)
@@ -143,7 +143,7 @@ def test_tf2onnx_nhwc_layout_normalization() -> None:
     assert "onnx_nhwc_layout_pingpong" in applied
 
     # Compile
-    opt = NeuronCompiler.compile(mutated, mode="function_proto")
+    opt = NeuronCompiler.compile(mutated)
     verifier = CrossVerifier(raw, opt)
     report = verifier.verify()
     assert report.all_passed, f"NHWC ping-pong parity failed:\n{report.summary()}"
@@ -157,7 +157,7 @@ def test_tf2onnx_reciprocal_mul_normalization() -> None:
     mutated, applied = ObfuscationRegistry.apply_onnx(raw, strategy_names=["onnx_reciprocal_mul_for_div"], seed=101)
     assert "onnx_reciprocal_mul_for_div" in applied
 
-    opt = NeuronCompiler.compile(mutated, mode="function_proto")
+    opt = NeuronCompiler.compile(mutated)
     verifier = CrossVerifier(raw, opt)
     report = verifier.verify()
     assert report.all_passed, f"Reciprocal-Mul parity failed:\n{report.summary()}"
@@ -171,7 +171,7 @@ def test_tf2onnx_decomposed_rmsnorm_pow_normalization() -> None:
     mutated, applied = ObfuscationRegistry.apply_onnx(raw, strategy_names=["onnx_decompose_rmsnorm_pow"], seed=202)
     assert "onnx_decompose_rmsnorm_pow" in applied
 
-    opt = NeuronCompiler.compile(mutated, mode="function_proto")
+    opt = NeuronCompiler.compile(mutated)
     opt_ops = {n.op_type for n in opt.graph.node}
     assert any("RMSNorm" in op for op in opt_ops), f"Decomposed RMSNorm was not fused back into RMSNorm! Ops: {opt_ops}"
 
@@ -188,7 +188,7 @@ def test_tf2onnx_decomposed_tanh_gelu_normalization() -> None:
     mutated, applied = ObfuscationRegistry.apply_onnx(raw, strategy_names=["onnx_decompose_tanh_gelu"], seed=303)
     assert "onnx_decompose_tanh_gelu" in applied
 
-    opt = NeuronCompiler.compile(mutated, mode="function_proto")
+    opt = NeuronCompiler.compile(mutated)
     opt_ops = {n.op_type for n in opt.graph.node}
     assert any("Gelu" in op for op in opt_ops), f"Decomposed GELU was not fused back into Gelu! Ops: {opt_ops}"
 

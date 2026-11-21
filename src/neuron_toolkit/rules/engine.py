@@ -31,17 +31,11 @@ class JSONRuleEngine:
     Delegates execution directly to the modular 3-Stage Optimization Pipeline.
     """
 
-    def __init__(self, mode: str = "function_proto") -> None:
-        """Initialize engine.
-
-        Args:
-            mode: 'modern_onnx' (converts to modern standard modern ONNX ops like RMSNormalization, Gelu, GroupNormalization),
-                  'function_proto' (dual-mode with formal FunctionProto attached for Netron visual hierarchy),
-                  'plain_custom_op' or 'pytorch_custom' (minimalist custom op node without function body for PyTorch runtime).
-        """
-        self.mode = mode
+    def __init__(self) -> None:
+        """Initialize engine."""
+        self.mode = "function_proto"
         self.rules: list[JSONRule] = []
-        self.pipeline = OptimizationPipeline(mode=mode)
+        self.pipeline = OptimizationPipeline()
 
     def load_rule_from_file(self, path: str | Path) -> JSONRule:
         """Load and register a single JSON rule file."""

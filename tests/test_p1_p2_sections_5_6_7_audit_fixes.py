@@ -206,7 +206,7 @@ def test_bug_6_2_feedforward_swiglu_supports_geglu_and_reglu_with_exact_numerica
         graph = helper.make_graph(nodes, f"test_{act_name}", [x], [y], initializer=[w1, w2, w3])
         orig_model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 18)])
 
-        opt_model = NeuronCompiler.compile(orig_model, mode="function_proto")
+        opt_model = NeuronCompiler.compile(orig_model)
         report = CrossVerifier(orig_model, opt_model, atol=1e-5, min_cosine_similarity=0.9999).verify()
         assert report.all_passed, f"CrossVerifier failed for {act_name}:\n{report.summary()}"
 

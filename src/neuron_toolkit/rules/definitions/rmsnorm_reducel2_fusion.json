@@ -61,27 +61,7 @@
       "$y"
     ],
     "targets": {
-      "modern_onnx": {
-        "op_type": "RMSNormalization",
-        "domain": "",
-        "inputs": [
-          "$x",
-          "$gamma"
-        ],
-        "attributes": {
-          "axis": -1,
-          "epsilon": 1e-12
-        }
-      },
       "function_proto": {
-        "op_type": "RMSNorm",
-        "domain": "custom.pytorch",
-        "inputs": [
-          "$x",
-          "$gamma"
-        ]
-      },
-      "pytorch_custom": {
         "op_type": "RMSNorm",
         "domain": "custom.pytorch",
         "inputs": [

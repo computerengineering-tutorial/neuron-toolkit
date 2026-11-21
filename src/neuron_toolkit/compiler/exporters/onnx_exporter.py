@@ -35,9 +35,7 @@ class OnnxExporter:
         del model.graph.node[:]
         model.graph.node.extend(sorted_nodes)
 
-        # 2. Mode-specific adjustments and Opset imports
-        if context.mode in ("plain_custom_op", "pytorch_custom"):
-            del model.functions[:]
+        # 2. Opset imports and domain preservation
 
         # Always export simplified models with modern latest ONNX opset
         has_main = False

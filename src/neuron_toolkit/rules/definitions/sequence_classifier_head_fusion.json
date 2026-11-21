@@ -7,20 +7,37 @@
       {
         "id": "norm",
         "op_type": "LayerNormalization",
-        "inputs": ["$x", "$scale", "$bias"],
-        "outputs": ["$norm_out"]
+        "inputs": [
+          "$x",
+          "$scale",
+          "$bias"
+        ],
+        "outputs": [
+          "$norm_out"
+        ]
       },
       {
         "id": "linear",
         "op_type": "Linear",
-        "inputs": ["$norm_out", "$w", "$b"],
-        "outputs": ["$lin_out"]
+        "inputs": [
+          "$norm_out",
+          "$w",
+          "$b"
+        ],
+        "outputs": [
+          "$lin_out"
+        ]
       },
       {
         "id": "squeeze",
         "op_type": "Squeeze",
-        "inputs": ["$lin_out", "$axis"],
-        "outputs": ["$logits"]
+        "inputs": [
+          "$lin_out",
+          "$axis"
+        ],
+        "outputs": [
+          "$logits"
+        ]
       }
     ]
   },
@@ -28,23 +45,19 @@
     "type": "fuse_to_function",
     "op_type": "SequenceClassifierHead",
     "domain": "custom.pytorch",
-    "inputs": ["$x"],
-    "outputs": ["$logits"],
+    "inputs": [
+      "$x"
+    ],
+    "outputs": [
+      "$logits"
+    ],
     "targets": {
-      "modern_onnx": {
-        "op_type": "SequenceClassifierHead",
-        "domain": "custom.pytorch",
-        "inputs": ["$x"]
-      },
       "function_proto": {
         "op_type": "SequenceClassifierHead",
         "domain": "custom.pytorch",
-        "inputs": ["$x"]
-      },
-      "pytorch_custom": {
-        "op_type": "SequenceClassifierHead",
-        "domain": "custom.pytorch",
-        "inputs": ["$x"]
+        "inputs": [
+          "$x"
+        ]
       }
     }
   }

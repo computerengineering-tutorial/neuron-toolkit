@@ -91,24 +91,7 @@
       "$gelu_out"
     ],
     "targets": {
-      "modern_onnx": {
-        "op_type": "Gelu",
-        "domain": "",
-        "inputs": [
-          "$x"
-        ],
-        "attributes": {
-          "approximate": "none"
-        }
-      },
       "function_proto": {
-        "op_type": "Gelu",
-        "domain": "custom.pytorch",
-        "inputs": [
-          "$x"
-        ]
-      },
-      "pytorch_custom": {
         "op_type": "Gelu",
         "domain": "custom.pytorch",
         "inputs": [

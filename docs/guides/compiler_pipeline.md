@@ -53,13 +53,11 @@ from neuron_toolkit.compiler import NeuronCompiler
 # Load ONNX model
 model = onnx.load("llama_block.onnx")
 
-# Compile with dual-mode Netron FunctionProto representation
+# Compile with unified production-grade pipeline
 compiled_model = NeuronCompiler.compile(
     model,
-    mode="function_proto",  # "function_proto", "modern_onnx", or "plain_custom_op"
-    opset_version=23,
     rule_ids=None,          # None runs all registered pipeline passes, or specify list
-    options={"enable_macro_blocks": True}  # Optional: enable macro block synthesis
+    options=None,           # Optional: e.g. {"max_fixed_point_iters": 5}
 )
 
 # Save optimized model
@@ -77,15 +75,12 @@ from neuron_toolkit.compiler.pipeline import OptimizationPipeline
 from neuron_toolkit.compiler.base import CompilerContext
 
 # Instantiate pipeline driver with fixed-point iteration control
-pipeline = OptimizationPipeline(mode="function_proto", max_fixed_point_iters=5)
+pipeline = OptimizationPipeline()
 
 # Create execution context with pass filtering or profiling
 context = CompilerContext(
-    mode="function_proto",  # 'function_proto', 'modern_onnx', 'plain_custom_op'
-    opset_version=23,
     custom_domain="custom.pytorch",
     rule_ids=None,          # Filter specific passes by ID (e.g. ['erf_gelu', 'rmsnorm'])
-    options={"enable_macro_blocks": True}
 )
 
 # Run complete 3-stage optimization with fixed-point convergence
@@ -106,16 +101,15 @@ Real-world model optimization requires cascading passes: for example, fusing a `
 2. All Stage 1 and Stage 2 passes are executed sequentially.
 3. If the graph topological signature after the iteration matches the signature before the iteration, **fixed-point convergence has been reached**, and the pipeline exits immediately to Stage 3 Target Export without unnecessary iterations (capped at `max_fixed_point_iters=5`).
 
-### Compiler Modes
+### Unified Compiler Pipeline
 
-`CompilerContext` supports three distinct target compilation modes:
+`neuron-toolkit` operates under a single, unified, production-grade compilation pipeline:
 
-1. **`function_proto` (Default - Netron Visual Hierarchy)**:
-   Fuses subgraphs into custom operators under `custom.pytorch` domain while generating formal ONNX `FunctionProto` subroutines attached to `model.functions`. In Netron, clicking any fused node (e.g., `FeedForwardSwiGLU` or `RMSNorm`) reveals the full sub-graph hierarchy.
-2. **`modern_onnx` (Standard ONNX Opset 23+)**:
-   Emits standard ONNX specification operators without custom domains where supported (e.g., ONNX `RMSNormalization` in Opset 23+, `GroupNormalization` in Opset 21+, `LayerNormalization` in Opset 17+, and `Gelu`).
-3. **`plain_custom_op` / `pytorch_custom` (Minimalist PyTorch Runtime)**:
-   Emits lightweight custom operator nodes without embedding function bodies, optimized for minimal binary size and immediate execution via `PyTorchRunner`.
+- **Automatic Modern Opset**: Always targets `LATEST_OPSET` (`onnx.defs.onnx_opset_version()`), ensuring support for standard modern operators.
+- **Modern ONNX Operators**: Emits standard ONNX operators (`RMSNormalization`, `GroupNormalization`, `LayerNormalization`, `Gelu`) in the default domain `""`.
+- **Macro-Block Synthesis**: Fused multi-node macro-blocks (`FeedForwardSwiGLU`, `ScaledDotProductAttention`, `RotaryEmbedding`, `SqueezeExcitation`, `SpatialGatingUnit`, `HighwayBlock`, etc.) are synthesized unconditionally and encapsulated into formal ONNX `FunctionProto` subroutines attached to `model.functions` for Netron visual hierarchy and inspection.
+- **Non-Decomposable Operations**: Only non-decomposable operations (`AxialRearrange`, `TensorRoute` / `IndexSelect`, `DynamicQuantLinear`) remain as pure custom domain nodes (`custom.pytorch`) without function bodies.
+- **PyTorch Runtime Interop**: `PyTorchRunner` natively executes models containing attached `FunctionProto` definitions.
 
 ---
 

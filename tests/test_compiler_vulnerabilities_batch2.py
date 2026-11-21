@@ -136,7 +136,7 @@ def test_vuln_21_groupnorm_opset_version_guard_violation():
     model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 17)])
 
     pass_obj = NormCanonicalizer()
-    optimized = pass_obj.apply_groupnorm_fusion(model, mode="modern_onnx")
+    optimized = pass_obj.apply_groupnorm_fusion(model)
 
     onnx.checker.check_model(optimized)
 
@@ -191,7 +191,7 @@ def test_vuln_22_rmsnorm_opset_version_guard_violation():
     model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 17)])
 
     pass_obj = NormCanonicalizer()
-    optimized = pass_obj.apply_rmsnorm_fusion(model, mode="modern_onnx")
+    optimized = pass_obj.apply_rmsnorm_fusion(model)
 
     onnx.checker.check_model(optimized)
 
@@ -260,7 +260,7 @@ def test_vuln_23_layernorm_opset_version_guard_violation():
     model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 14)])
 
     pass_obj = NormCanonicalizer()
-    optimized = pass_obj.apply_layernorm_fusion(model, mode="modern_onnx")
+    optimized = pass_obj.apply_layernorm_fusion(model)
 
     onnx.checker.check_model(optimized)
 

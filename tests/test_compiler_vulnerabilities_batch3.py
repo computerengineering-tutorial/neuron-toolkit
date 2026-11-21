@@ -52,7 +52,7 @@ def test_vuln_39_alibi_additive_relative_position_bias_blocks_sdpa():
     dummy_x = torch.randn(1, 16, 64)
     proto = export_model_to_onnx(model, dummy_x, ["x"], ["out"], opset_version=17)
 
-    pipeline = OptimizationPipeline(mode="function_proto")
+    pipeline = OptimizationPipeline()
     opt_m = pipeline.run(proto)
 
     sdpa_ops = [n for n in opt_m.graph.node if n.op_type in ("ScaledDotProductAttention", "SDPA", "MultiHeadAttention")]
@@ -78,7 +78,7 @@ def test_vuln_40_huggingface_split_concat_rotate_half_rope_ignored():
     sin = torch.randn(1, 1, 16, d)
     proto = export_model_to_onnx(model, (x, cos, sin), ["x", "cos", "sin"], ["out"], opset_version=17)
 
-    pipeline = OptimizationPipeline(mode="function_proto")
+    pipeline = OptimizationPipeline()
     opt_m = pipeline.run(proto)
 
     rope_ops = [n for n in opt_m.graph.node if n.op_type == "RotaryEmbedding"]
@@ -101,7 +101,7 @@ def test_vuln_41_dual_linear_swiglu_mlp_unfused():
     x = torch.randn(1, 16, 64)
     proto = export_model_to_onnx(model, x, ["x"], ["out"], opset_version=17)
 
-    pipeline = OptimizationPipeline(mode="function_proto")
+    pipeline = OptimizationPipeline()
     opt_m = pipeline.run(proto)
 
     ffn_ops = [n for n in opt_m.graph.node if n.op_type.startswith("FeedForward")]
@@ -124,7 +124,7 @@ def test_vuln_42_qk_norm_attention_blocks_macro_attention_fusion():
     x = torch.randn(1, 16, 64)
     proto = export_model_to_onnx(model, x, ["x"], ["out"], opset_version=17)
 
-    pipeline = OptimizationPipeline(mode="function_proto")
+    pipeline = OptimizationPipeline()
     opt_m = pipeline.run(proto)
 
     # Contract: Whole attention block must fuse into a macro-block (MultiHeadAttention or GatedAttention)
@@ -149,7 +149,7 @@ def test_vuln_43_sliding_window_causal_mask_where_blocks_sdpa():
     causal_mask = torch.tril(torch.ones(1, 1, 16, 16)).bool()
     proto = export_model_to_onnx(model, (x, causal_mask), ["x", "causal_mask"], ["out"], opset_version=17)
 
-    pipeline = OptimizationPipeline(mode="function_proto")
+    pipeline = OptimizationPipeline()
     opt_m = pipeline.run(proto)
 
     sdpa_ops = [n for n in opt_m.graph.node if n.op_type in ("ScaledDotProductAttention", "SDPA", "MultiHeadAttention")]
@@ -172,7 +172,7 @@ def test_vuln_44_parallel_attention_mlp_shared_norm_double_computation():
     x = torch.randn(1, 16, 64)
     proto = export_model_to_onnx(model, x, ["x"], ["out"], opset_version=17)
 
-    pipeline = OptimizationPipeline(mode="function_proto")
+    pipeline = OptimizationPipeline()
     opt_m = pipeline.run(proto)
 
     # Contract: Parallel attention + MLP block should collapse to a unified TransformerBlock or <= 10 ops
@@ -195,7 +195,7 @@ def test_vuln_45_gqa_kv_head_broadcast_expand_unfolded_memory_waste():
     x = torch.randn(1, 16, 64)
     proto = export_model_to_onnx(model, x, ["x"], ["out"], opset_version=17)
 
-    pipeline = OptimizationPipeline(mode="function_proto")
+    pipeline = OptimizationPipeline()
     opt_m = pipeline.run(proto)
 
     # Contract: GQA broadcast Expand ops should be eliminated by native GQA stride handling
@@ -222,7 +222,7 @@ def test_vuln_46_stateful_kv_cache_concat_blocks_attention_fusion():
     past_v = torch.randn(1, 4, 15, 16)
     proto = export_model_to_onnx(model, (x_new, past_k, past_v), ["x_new", "past_k", "past_v"], ["out"], opset_version=17)
 
-    pipeline = OptimizationPipeline(mode="function_proto")
+    pipeline = OptimizationPipeline()
     opt_m = pipeline.run(proto)
 
     # Contract: Stateful Attention layer with autoregressive KV-cache concat should fuse into a single

@@ -13,3 +13,5 @@ wheels/
 .coverage
 .pytest_cache/
 htmlcov/
+.helper
+PROMPT.md

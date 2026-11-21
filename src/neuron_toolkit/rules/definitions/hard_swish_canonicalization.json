@@ -62,21 +62,7 @@
       "$y"
     ],
     "targets": {
-      "modern_onnx": {
-        "op_type": "HardSwish",
-        "domain": "",
-        "inputs": [
-          "$x"
-        ]
-      },
       "function_proto": {
-        "op_type": "HardSwish",
-        "domain": "custom.pytorch",
-        "inputs": [
-          "$x"
-        ]
-      },
-      "pytorch_custom": {
         "op_type": "HardSwish",
         "domain": "custom.pytorch",
         "inputs": [
